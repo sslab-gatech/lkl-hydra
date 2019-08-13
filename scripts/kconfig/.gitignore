@@ -1,0 +1,15 @@
+#
+# Generated files
+#
+*.moc
+*conf-cfg
+
+#
+# configuration programs
+#
+conf
+conf.exe
+mconf
+nconf
+qconf
+gconf

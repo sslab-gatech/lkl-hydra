@@ -1,0 +1,32 @@
+# original
+tests/boot
+fs2tar
+cptofs
+cpfromfs
+lklfuse
+tests/valgrind*.xml
+*.exe
+*.dll
+tests/net-test
+tests/disk
+Makefile.conf
+include/lkl_autoconf.h
+tests/autoconf.sh
+
+# python
+*.pyc
+
+# fuzzer executable
+tfuzz
+fsfuzz
+executor
+combined
+combined-consistency
+*-fsfuzz
+*-executor
+*-tfuzz
+*-combined
+*-combined-consistency
+
+# image
+*.img

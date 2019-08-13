@@ -1,0 +1,44 @@
+#!/usr/bin/python
+
+import sys, argparse, errno, os, shutil, subprocess
+
+supported = ['ext4', 'xfs', 'btrfs', 'f2fs', 'gfs2', 'hfsplus', 'reiserfs', 'fat', 'sdcardfs']
+
+def cmd(command, check=False, shell=True):
+    print(command)
+    if check is False:
+        subprocess.call(command, shell=shell)
+    else:
+        subprocess.check_call(command, shell=shell)
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-t', dest='type')
+  parser.add_argument('-c', action='store_true')
+  # parser.add_argument('-o', dest='object')
+
+  args = parser.parse_args()
+
+  if args.type is None or args.type not in supported:
+    print 'Please set valid type'
+    sys.exit(1)
+
+  # if args.object is None or args.object not in ['fsfuzz', 'executor']:
+  #   print 'Please set valid object'
+  #   sys.exit(1)
+
+  if args.c:
+    cmd('make mrproper', check=True)
+    cmd('make -C tools/lkl clean', check=True)
+
+  # copy config
+  cmd('cp -f %s-config arch/lkl/defconfig' % args.type)
+
+  # compile with instrumenting gcc
+  dir_path = os.path.dirname(os.path.realpath(__file__))
+  cmd('make -C tools/lkl -j CC="%s/../ff-gcc/ff-gcc fs/%s"' % (dir_path, args.type))
+
+  # copy object file
+  cmd('cp -f tools/lkl/executor tools/lkl/%s-executor' % args.type)
+  cmd('cp -f tools/lkl/combined tools/lkl/%s-combined' % args.type)
+  cmd('cp -f tools/lkl/combined-consistency tools/lkl/%s-combined-consistency' % args.type)
