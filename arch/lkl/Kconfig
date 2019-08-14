@@ -42,14 +42,12 @@ config LKL
        select ARCH_NO_COHERENT_DMA_MMAP
        select HAVE_MEMBLOCK
        select NO_BOOTMEM
-	   select GENERIG_BUG
+       select GENERIG_BUG
        select HAVE_DEBUG_BUGVERBOSE
        select DEBUG_BUGVERBOSE
-       select DEBUG_INFO 
-       select READABLE_ASM
+       select DEBUG_INFO
        select FRAME_POINTER
-       select DEBUG_INFO_DWARF4 
-	
+       select DEBUG_INFO_DWARF4
 
 config OUTPUT_FORMAT
        string "Output format"
