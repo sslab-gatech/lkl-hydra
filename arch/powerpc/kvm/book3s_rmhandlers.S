@@ -23,7 +23,6 @@
 #include <asm/mmu.h>
 #include <asm/page.h>
 #include <asm/asm-offsets.h>
-#include <asm/asm-compat.h>
 
 #ifdef CONFIG_PPC_BOOK3S_64
 #include <asm/exception-64s.h>

@@ -54,11 +54,13 @@
 #include <linux/nvram.h>
 #include <linux/adb.h>
 #include <linux/cuda.h>
+#include <asm/io.h>
 #ifdef CONFIG_MAC
 #include <asm/macintosh.h>
 #else
 #include <asm/prom.h>
 #endif
+#include <asm/pgtable.h>
 
 #include "macmodes.h"
 #include "valkyriefb.h"
@@ -316,7 +318,7 @@ static void __init valkyrie_choose_mode(struct fb_info_valkyrie *p)
 int __init valkyriefb_init(void)
 {
 	struct fb_info_valkyrie	*p;
-	unsigned long frame_buffer_phys, cmap_regs_phys;
+	unsigned long frame_buffer_phys, cmap_regs_phys, flags;
 	int err;
 	char *option = NULL;
 
@@ -335,6 +337,7 @@ int __init valkyriefb_init(void)
 	/* Hardcoded addresses... welcome to 68k Macintosh country :-) */
 	frame_buffer_phys = 0xf9000000;
 	cmap_regs_phys = 0x50f24000;
+	flags = IOMAP_NOCACHE_SER; /* IOMAP_WRITETHROUGH?? */
 #else /* ppc (!CONFIG_MAC) */
 	{
 		struct device_node *dp;
@@ -351,6 +354,7 @@ int __init valkyriefb_init(void)
 
 		frame_buffer_phys = r.start;
 		cmap_regs_phys = r.start + 0x304000;
+		flags = _PAGE_WRITETHRU;
 	}
 #endif /* ppc (!CONFIG_MAC) */
 
@@ -365,11 +369,7 @@ int __init valkyriefb_init(void)
 	}
 	p->total_vram = 0x100000;
 	p->frame_buffer_phys = frame_buffer_phys;
-#ifdef CONFIG_MAC
-	p->frame_buffer = ioremap_nocache(frame_buffer_phys, p->total_vram);
-#else
-	p->frame_buffer = ioremap_wt(frame_buffer_phys, p->total_vram);
-#endif
+	p->frame_buffer = __ioremap(frame_buffer_phys, p->total_vram, flags);
 	p->cmap_regs_phys = cmap_regs_phys;
 	p->cmap_regs = ioremap(p->cmap_regs_phys, 0x1000);
 	p->valkyrie_regs_phys = cmap_regs_phys+0x6000;

@@ -212,7 +212,7 @@ static irqreturn_t mtk_ir_irq(int irqno, void *dev_id)
 	struct mtk_ir *ir = dev_id;
 	u8  wid = 0;
 	u32 i, j, val;
-	struct ir_raw_event rawir = {};
+	DEFINE_IR_RAW_EVENT(rawir);
 
 	/*
 	 * Reset decoder state machine explicitly is required
@@ -299,6 +299,8 @@ static int mtk_ir_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *dn = dev->of_node;
+	const struct of_device_id *of_id =
+		of_match_device(mtk_ir_match, &pdev->dev);
 	struct resource *res;
 	struct mtk_ir *ir;
 	u32 val;
@@ -310,7 +312,7 @@ static int mtk_ir_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ir->dev = dev;
-	ir->data = of_device_get_match_data(dev);
+	ir->data = of_id->data;
 
 	ir->clk = devm_clk_get(dev, "clk");
 	if (IS_ERR(ir->clk)) {

@@ -50,9 +50,9 @@ void do_page_fault(unsigned long address, long cause, struct pt_regs *regs)
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
-	int si_signo;
+	siginfo_t info;
 	int si_code = SEGV_MAPERR;
-	vm_fault_t fault;
+	int fault;
 	const struct exception_table_entry *fixup;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
@@ -140,22 +140,28 @@ good_area:
 	 * unable to fix up the page fault.
 	 */
 	if (fault & VM_FAULT_SIGBUS) {
-		si_signo = SIGBUS;
-		si_code = BUS_ADRERR;
+		info.si_signo = SIGBUS;
+		info.si_code = BUS_ADRERR;
 	}
 	/* Address is not in the memory map */
 	else {
-		si_signo = SIGSEGV;
-		si_code  = SEGV_ACCERR;
+		info.si_signo = SIGSEGV;
+		info.si_code = SEGV_ACCERR;
 	}
-	force_sig_fault(si_signo, si_code, (void __user *)address, current);
+	info.si_errno = 0;
+	info.si_addr = (void __user *)address;
+	force_sig_info(info.si_signo, &info, current);
 	return;
 
 bad_area:
 	up_read(&mm->mmap_sem);
 
 	if (user_mode(regs)) {
-		force_sig_fault(SIGSEGV, si_code, (void __user *)address, current);
+		info.si_signo = SIGSEGV;
+		info.si_errno = 0;
+		info.si_code = si_code;
+		info.si_addr = (void *)address;
+		force_sig_info(info.si_signo, &info, current);
 		return;
 	}
 	/* Kernel-mode fault falls through */

@@ -167,9 +167,6 @@ struct qed_spq_entry {
 	enum spq_mode			comp_mode;
 	struct qed_spq_comp_cb		comp_cb;
 	struct qed_spq_comp_done	comp_done; /* SPQ_MODE_EBLOCK */
-
-	/* Posted entry for unlimited list entry in EBLOCK mode */
-	struct qed_spq_entry		*post_ent;
 };
 
 struct qed_eq {
@@ -227,9 +224,7 @@ struct qed_spq {
 	u32			comp_count;
 
 	u32			cid;
-	u32			db_addr_offset;
-	struct core_db_data	db_data;
-	qed_spq_async_comp_cb	async_comp_cb[MAX_PROTOCOL_TYPE];
+	qed_spq_async_comp_cb async_comp_cb[MAX_PROTOCOL_TYPE];
 };
 
 /**
@@ -382,7 +377,6 @@ void qed_consq_setup(struct qed_hwfn *p_hwfn);
  * @param p_hwfn
  */
 void qed_consq_free(struct qed_hwfn *p_hwfn);
-int qed_spq_pend_post(struct qed_hwfn *p_hwfn);
 
 /**
  * @file
@@ -401,17 +395,6 @@ struct qed_sp_init_data {
 	enum spq_mode		comp_mode;
 	struct qed_spq_comp_cb *p_comp_data;
 };
-
-/**
- * @brief Returns a SPQ entry to the pool / frees the entry if allocated.
- *        Should be called on in error flows after initializing the SPQ entry
- *        and before posting it.
- *
- * @param p_hwfn
- * @param p_ent
- */
-void qed_sp_destroy_request(struct qed_hwfn *p_hwfn,
-			    struct qed_spq_entry *p_ent);
 
 int qed_sp_init_request(struct qed_hwfn *p_hwfn,
 			struct qed_spq_entry **pp_ent,
@@ -433,6 +416,7 @@ int qed_sp_init_request(struct qed_hwfn *p_hwfn,
  * @param p_hwfn
  * @param p_ptt
  * @param p_tunn
+ * @param mode
  * @param allow_npar_tx_switch
  *
  * @return int
@@ -441,7 +425,7 @@ int qed_sp_init_request(struct qed_hwfn *p_hwfn,
 int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 		    struct qed_ptt *p_ptt,
 		    struct qed_tunnel_info *p_tunn,
-		    bool allow_npar_tx_switch);
+		    enum qed_mf_mode mode, bool allow_npar_tx_switch);
 
 /**
  * @brief qed_sp_pf_update - PF Function Update Ramrod
@@ -478,15 +462,6 @@ int qed_sp_pf_update_stag(struct qed_hwfn *p_hwfn);
  *
  * @return int
  */
-
-/**
- * @brief qed_sp_pf_update_ufp - PF ufp update Ramrod
- *
- * @param p_hwfn
- *
- * @return int
- */
-int qed_sp_pf_update_ufp(struct qed_hwfn *p_hwfn);
 
 int qed_sp_pf_stop(struct qed_hwfn *p_hwfn);
 

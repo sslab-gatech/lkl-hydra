@@ -55,7 +55,7 @@ target_scsi3_ua_check(struct se_cmd *cmd)
 		rcu_read_unlock();
 		return 0;
 	}
-	if (list_empty_careful(&deve->ua_list)) {
+	if (!atomic_read(&deve->ua_count)) {
 		rcu_read_unlock();
 		return 0;
 	}
@@ -154,6 +154,7 @@ int core_scsi3_ua_allocate(
 				&deve->ua_list);
 		spin_unlock(&deve->ua_lock);
 
+		atomic_inc_mb(&deve->ua_count);
 		return 0;
 	}
 	list_add_tail(&ua->ua_nacl_list, &deve->ua_list);
@@ -163,6 +164,7 @@ int core_scsi3_ua_allocate(
 		" 0x%02x, ASCQ: 0x%02x\n", deve->mapped_lun,
 		asc, ascq);
 
+	atomic_inc_mb(&deve->ua_count);
 	return 0;
 }
 
@@ -194,17 +196,16 @@ void core_scsi3_ua_release_all(
 	list_for_each_entry_safe(ua, ua_p, &deve->ua_list, ua_nacl_list) {
 		list_del(&ua->ua_nacl_list);
 		kmem_cache_free(se_ua_cache, ua);
+
+		atomic_dec_mb(&deve->ua_count);
 	}
 	spin_unlock(&deve->ua_lock);
 }
 
-/*
- * Dequeue a unit attention from the unit attention list. This function
- * returns true if the dequeuing succeeded and if *@key, *@asc and *@ascq have
- * been set.
- */
-bool core_scsi3_ua_for_check_condition(struct se_cmd *cmd, u8 *key, u8 *asc,
-				       u8 *ascq)
+void core_scsi3_ua_for_check_condition(
+	struct se_cmd *cmd,
+	u8 *asc,
+	u8 *ascq)
 {
 	struct se_device *dev = cmd->se_dev;
 	struct se_dev_entry *deve;
@@ -213,23 +214,23 @@ bool core_scsi3_ua_for_check_condition(struct se_cmd *cmd, u8 *key, u8 *asc,
 	struct se_ua *ua = NULL, *ua_p;
 	int head = 1;
 
-	if (WARN_ON_ONCE(!sess))
-		return false;
+	if (!sess)
+		return;
 
 	nacl = sess->se_node_acl;
-	if (WARN_ON_ONCE(!nacl))
-		return false;
+	if (!nacl)
+		return;
 
 	rcu_read_lock();
 	deve = target_nacl_find_deve(nacl, cmd->orig_fe_lun);
 	if (!deve) {
 		rcu_read_unlock();
-		*key = ILLEGAL_REQUEST;
-		*asc = 0x25; /* LOGICAL UNIT NOT SUPPORTED */
-		*ascq = 0;
-		return true;
+		return;
 	}
-	*key = UNIT_ATTENTION;
+	if (!atomic_read(&deve->ua_count)) {
+		rcu_read_unlock();
+		return;
+	}
 	/*
 	 * The highest priority Unit Attentions are placed at the head of the
 	 * struct se_dev_entry->ua_list, and will be returned in CHECK_CONDITION +
@@ -259,6 +260,8 @@ bool core_scsi3_ua_for_check_condition(struct se_cmd *cmd, u8 *key, u8 *asc,
 		}
 		list_del(&ua->ua_nacl_list);
 		kmem_cache_free(se_ua_cache, ua);
+
+		atomic_dec_mb(&deve->ua_count);
 	}
 	spin_unlock(&deve->ua_lock);
 	rcu_read_unlock();
@@ -266,12 +269,10 @@ bool core_scsi3_ua_for_check_condition(struct se_cmd *cmd, u8 *key, u8 *asc,
 	pr_debug("[%s]: %s UNIT ATTENTION condition with"
 		" INTLCK_CTRL: %d, mapped LUN: %llu, got CDB: 0x%02x"
 		" reported ASC: 0x%02x, ASCQ: 0x%02x\n",
-		nacl->se_tpg->se_tpg_tfo->fabric_name,
+		nacl->se_tpg->se_tpg_tfo->get_fabric_name(),
 		(dev->dev_attrib.emulate_ua_intlck_ctrl != 0) ? "Reporting" :
 		"Releasing", dev->dev_attrib.emulate_ua_intlck_ctrl,
 		cmd->orig_fe_lun, cmd->t_task_cdb[0], *asc, *ascq);
-
-	return head == 0;
 }
 
 int core_scsi3_ua_clear_for_request_sense(
@@ -298,7 +299,7 @@ int core_scsi3_ua_clear_for_request_sense(
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	if (list_empty_careful(&deve->ua_list)) {
+	if (!atomic_read(&deve->ua_count)) {
 		rcu_read_unlock();
 		return -EPERM;
 	}
@@ -321,13 +322,15 @@ int core_scsi3_ua_clear_for_request_sense(
 		}
 		list_del(&ua->ua_nacl_list);
 		kmem_cache_free(se_ua_cache, ua);
+
+		atomic_dec_mb(&deve->ua_count);
 	}
 	spin_unlock(&deve->ua_lock);
 	rcu_read_unlock();
 
 	pr_debug("[%s]: Released UNIT ATTENTION condition, mapped"
 		" LUN: %llu, got REQUEST_SENSE reported ASC: 0x%02x,"
-		" ASCQ: 0x%02x\n", nacl->se_tpg->se_tpg_tfo->fabric_name,
+		" ASCQ: 0x%02x\n", nacl->se_tpg->se_tpg_tfo->get_fabric_name(),
 		cmd->orig_fe_lun, *asc, *ascq);
 
 	return (head) ? -EPERM : 0;

@@ -173,7 +173,7 @@ static int jz4740_rtc_read_time(struct device *dev, struct rtc_time *time)
 
 	rtc_time_to_tm(secs, time);
 
-	return 0;
+	return rtc_valid_tm(time);
 }
 
 static int jz4740_rtc_set_mmss(struct device *dev, unsigned long secs)

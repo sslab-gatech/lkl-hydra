@@ -85,8 +85,7 @@ static void snd_ad1816a_write_mask(struct snd_ad1816a *chip, unsigned char reg,
 
 
 static unsigned char snd_ad1816a_get_format(struct snd_ad1816a *chip,
-					    snd_pcm_format_t format,
-					    int channels)
+					    unsigned int format, int channels)
 {
 	unsigned char retval = AD1816A_FMT_LINEAR_8;
 

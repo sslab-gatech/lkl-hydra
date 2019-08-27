@@ -116,13 +116,6 @@ static const struct dmi_system_id stk_upside_down_dmi_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "T12Rg-H")
 		}
 	},
-	{
-		.ident = "ASUS A6VM",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK Computer Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "A6VM")
-		}
-	},
 	{}
 };
 
@@ -171,11 +164,7 @@ int stk_camera_read_reg(struct stk_camera *dev, u16 index, u8 *value)
 		*value = *buf;
 
 	kfree(buf);
-
-	if (ret < 0)
-		return ret;
-	else
-		return 0;
+	return ret;
 }
 
 static int stk_start_stream(struct stk_camera *dev)
@@ -578,9 +567,8 @@ static int stk_prepare_sio_buffers(struct stk_camera *dev, unsigned n_sbufs)
 	if (dev->sio_bufs != NULL)
 		pr_err("sio_bufs already allocated\n");
 	else {
-		dev->sio_bufs = kcalloc(n_sbufs,
-					sizeof(struct stk_sio_buffer),
-					GFP_KERNEL);
+		dev->sio_bufs = kzalloc(n_sbufs * sizeof(struct stk_sio_buffer),
+				GFP_KERNEL);
 		if (dev->sio_bufs == NULL)
 			return -ENOMEM;
 		for (i = 0; i < n_sbufs; i++) {
@@ -804,8 +792,8 @@ static int stk_vidioc_querycap(struct file *filp,
 {
 	struct stk_camera *dev = video_drvdata(filp);
 
-	strscpy(cap->driver, "stk", sizeof(cap->driver));
-	strscpy(cap->card, "stk", sizeof(cap->card));
+	strcpy(cap->driver, "stk");
+	strcpy(cap->card, "stk");
 	usb_make_path(dev->udev, cap->bus_info, sizeof(cap->bus_info));
 
 	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE
@@ -820,7 +808,7 @@ static int stk_vidioc_enum_input(struct file *filp,
 	if (input->index != 0)
 		return -EINVAL;
 
-	strscpy(input->name, "Syntek USB Camera", sizeof(input->name));
+	strcpy(input->name, "Syntek USB Camera");
 	input->type = V4L2_INPUT_TYPE_CAMERA;
 	return 0;
 }
@@ -870,23 +858,23 @@ static int stk_vidioc_enum_fmt_vid_cap(struct file *filp,
 	switch (fmtd->index) {
 	case 0:
 		fmtd->pixelformat = V4L2_PIX_FMT_RGB565;
-		strscpy(fmtd->description, "r5g6b5", sizeof(fmtd->description));
+		strcpy(fmtd->description, "r5g6b5");
 		break;
 	case 1:
 		fmtd->pixelformat = V4L2_PIX_FMT_RGB565X;
-		strscpy(fmtd->description, "r5g6b5BE", sizeof(fmtd->description));
+		strcpy(fmtd->description, "r5g6b5BE");
 		break;
 	case 2:
 		fmtd->pixelformat = V4L2_PIX_FMT_UYVY;
-		strscpy(fmtd->description, "yuv4:2:2", sizeof(fmtd->description));
+		strcpy(fmtd->description, "yuv4:2:2");
 		break;
 	case 3:
 		fmtd->pixelformat = V4L2_PIX_FMT_SBGGR8;
-		strscpy(fmtd->description, "Raw bayer", sizeof(fmtd->description));
+		strcpy(fmtd->description, "Raw bayer");
 		break;
 	case 4:
 		fmtd->pixelformat = V4L2_PIX_FMT_YUYV;
-		strscpy(fmtd->description, "yuv4:2:2", sizeof(fmtd->description));
+		strcpy(fmtd->description, "yuv4:2:2");
 		break;
 	default:
 		return -EINVAL;

@@ -701,3 +701,4 @@ void dn_nsp_send_conninit(struct sock *sk, unsigned char msgflg)
 
 	dn_nsp_send(skb);
 }
+

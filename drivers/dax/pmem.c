@@ -34,7 +34,7 @@ static void dax_pmem_percpu_release(struct percpu_ref *ref)
 {
 	struct dax_pmem *dax_pmem = to_dax_pmem(ref);
 
-	dev_dbg(dax_pmem->dev, "trace\n");
+	dev_dbg(dax_pmem->dev, "%s\n", __func__);
 	complete(&dax_pmem->cmp);
 }
 
@@ -43,16 +43,17 @@ static void dax_pmem_percpu_exit(void *data)
 	struct percpu_ref *ref = data;
 	struct dax_pmem *dax_pmem = to_dax_pmem(ref);
 
-	dev_dbg(dax_pmem->dev, "trace\n");
+	dev_dbg(dax_pmem->dev, "%s\n", __func__);
 	wait_for_completion(&dax_pmem->cmp);
 	percpu_ref_exit(ref);
 }
 
-static void dax_pmem_percpu_kill(struct percpu_ref *ref)
+static void dax_pmem_percpu_kill(void *data)
 {
+	struct percpu_ref *ref = data;
 	struct dax_pmem *dax_pmem = to_dax_pmem(ref);
 
-	dev_dbg(dax_pmem->dev, "trace\n");
+	dev_dbg(dax_pmem->dev, "%s\n", __func__);
 	percpu_ref_kill(ref);
 }
 
@@ -104,17 +105,20 @@ static int dax_pmem_probe(struct device *dev)
 	if (rc)
 		return rc;
 
-	rc = devm_add_action(dev, dax_pmem_percpu_exit, &dax_pmem->ref);
-	if (rc) {
-		percpu_ref_exit(&dax_pmem->ref);
+	rc = devm_add_action_or_reset(dev, dax_pmem_percpu_exit,
+							&dax_pmem->ref);
+	if (rc)
 		return rc;
-	}
 
 	dax_pmem->pgmap.ref = &dax_pmem->ref;
-	dax_pmem->pgmap.kill = dax_pmem_percpu_kill;
 	addr = devm_memremap_pages(dev, &dax_pmem->pgmap);
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
+
+	rc = devm_add_action_or_reset(dev, dax_pmem_percpu_kill,
+							&dax_pmem->ref);
+	if (rc)
+		return rc;
 
 	/* adjust the dax_region resource to the start of data */
 	memcpy(&res, &dax_pmem->pgmap.res, sizeof(res));
@@ -146,7 +150,17 @@ static struct nd_device_driver dax_pmem_driver = {
 	.type = ND_DRIVER_DAX_PMEM,
 };
 
-module_nd_driver(dax_pmem_driver);
+static int __init dax_pmem_init(void)
+{
+	return nd_driver_register(&dax_pmem_driver);
+}
+module_init(dax_pmem_init);
+
+static void __exit dax_pmem_exit(void)
+{
+	driver_unregister(&dax_pmem_driver.drv);
+}
+module_exit(dax_pmem_exit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");

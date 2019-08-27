@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR Linux-OpenIB) */
+/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-2-Clause) */
 /*
  * Copyright (c) 2016-2017, Mellanox Technologies. All rights reserved.
  *
@@ -38,7 +38,6 @@
 
 /* TLS socket options */
 #define TLS_TX			1	/* Set transmit parameters */
-#define TLS_RX			2	/* Set receive parameters */
 
 /* Supported versions */
 #define TLS_VERSION_MINOR(ver)	((ver) & 0xFF)
@@ -60,7 +59,6 @@
 #define TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE		8
 
 #define TLS_SET_RECORD_TYPE	1
-#define TLS_GET_RECORD_TYPE	2
 
 struct tls_crypto_info {
 	__u16 version;

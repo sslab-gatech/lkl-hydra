@@ -7,9 +7,10 @@
  * for more details.
  */
 
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/memblock.h>
 #include <linux/mm.h> /* mem_init */
 #include <linux/initrd.h>
 #include <linux/pagemap.h>
@@ -203,7 +204,7 @@ void __init mem_init(void)
 	high_memory = (void *)__va(memory_start + lowmem_size - 1);
 
 	/* this will put all memory onto the freelists */
-	memblock_free_all();
+	free_all_bootmem();
 #ifdef CONFIG_HIGHMEM
 	highmem_setup();
 #endif
@@ -376,7 +377,7 @@ void * __ref zalloc_maybe_bootmem(size_t size, gfp_t mask)
 	if (mem_init_done)
 		p = kzalloc(size, mask);
 	else {
-		p = memblock_alloc(size, SMP_CACHE_BYTES);
+		p = alloc_bootmem(size);
 		if (p)
 			memset(p, 0, size);
 	}

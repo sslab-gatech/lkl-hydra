@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2017 Marvell
  *
  * Antoine Tenart <antoine.tenart@free-electrons.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 #include <linux/dma-mapping.h>
@@ -11,8 +14,8 @@
 #include "safexcel.h"
 
 int safexcel_init_ring_descriptors(struct safexcel_crypto_priv *priv,
-				   struct safexcel_desc_ring *cdr,
-				   struct safexcel_desc_ring *rdr)
+				   struct safexcel_ring *cdr,
+				   struct safexcel_ring *rdr)
 {
 	cdr->offset = sizeof(u32) * priv->config.cd_offset;
 	cdr->base = dmam_alloc_coherent(priv->dev,
@@ -21,7 +24,7 @@ int safexcel_init_ring_descriptors(struct safexcel_crypto_priv *priv,
 	if (!cdr->base)
 		return -ENOMEM;
 	cdr->write = cdr->base;
-	cdr->base_end = cdr->base + cdr->offset * (EIP197_DEFAULT_RING_SIZE - 1);
+	cdr->base_end = cdr->base + cdr->offset * EIP197_DEFAULT_RING_SIZE;
 	cdr->read = cdr->base;
 
 	rdr->offset = sizeof(u32) * priv->config.rd_offset;
@@ -31,7 +34,7 @@ int safexcel_init_ring_descriptors(struct safexcel_crypto_priv *priv,
 	if (!rdr->base)
 		return -ENOMEM;
 	rdr->write = rdr->base;
-	rdr->base_end = rdr->base + rdr->offset  * (EIP197_DEFAULT_RING_SIZE - 1);
+	rdr->base_end = rdr->base + rdr->offset * EIP197_DEFAULT_RING_SIZE;
 	rdr->read = rdr->base;
 
 	return 0;
@@ -43,73 +46,49 @@ inline int safexcel_select_ring(struct safexcel_crypto_priv *priv)
 }
 
 static void *safexcel_ring_next_wptr(struct safexcel_crypto_priv *priv,
-				     struct safexcel_desc_ring *ring)
+				     struct safexcel_ring *ring)
 {
 	void *ptr = ring->write;
 
-	if ((ring->write == ring->read - ring->offset) ||
-	    (ring->read == ring->base && ring->write == ring->base_end))
+	if (ring->nr == EIP197_DEFAULT_RING_SIZE - 1)
 		return ERR_PTR(-ENOMEM);
 
+	ring->write += ring->offset;
 	if (ring->write == ring->base_end)
 		ring->write = ring->base;
-	else
-		ring->write += ring->offset;
 
+	ring->nr++;
 	return ptr;
 }
 
 void *safexcel_ring_next_rptr(struct safexcel_crypto_priv *priv,
-			      struct safexcel_desc_ring *ring)
+			      struct safexcel_ring *ring)
 {
 	void *ptr = ring->read;
 
-	if (ring->write == ring->read)
+	if (!ring->nr)
 		return ERR_PTR(-ENOENT);
 
+	ring->read += ring->offset;
 	if (ring->read == ring->base_end)
 		ring->read = ring->base;
-	else
-		ring->read += ring->offset;
 
+	ring->nr--;
 	return ptr;
 }
 
-inline void *safexcel_ring_curr_rptr(struct safexcel_crypto_priv *priv,
-				     int ring)
-{
-	struct safexcel_desc_ring *rdr = &priv->ring[ring].rdr;
-
-	return rdr->read;
-}
-
-inline int safexcel_ring_first_rdr_index(struct safexcel_crypto_priv *priv,
-					 int ring)
-{
-	struct safexcel_desc_ring *rdr = &priv->ring[ring].rdr;
-
-	return (rdr->read - rdr->base) / rdr->offset;
-}
-
-inline int safexcel_ring_rdr_rdesc_index(struct safexcel_crypto_priv *priv,
-					 int ring,
-					 struct safexcel_result_desc *rdesc)
-{
-	struct safexcel_desc_ring *rdr = &priv->ring[ring].rdr;
-
-	return ((void *)rdesc - rdr->base) / rdr->offset;
-}
-
 void safexcel_ring_rollback_wptr(struct safexcel_crypto_priv *priv,
-				 struct safexcel_desc_ring *ring)
+				 struct safexcel_ring *ring)
 {
-	if (ring->write == ring->read)
+	if (!ring->nr)
 		return;
 
 	if (ring->write == ring->base)
-		ring->write = ring->base_end;
+		ring->write = ring->base_end - ring->offset;
 	else
 		ring->write -= ring->offset;
+
+	ring->nr--;
 }
 
 struct safexcel_command_desc *safexcel_add_cdesc(struct safexcel_crypto_priv *priv,

@@ -15,6 +15,7 @@
 #include <linux/vmalloc.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/kmemleak.h>
 
 #include <net/ip.h>
 #include <net/sock.h>
@@ -28,13 +29,8 @@ static int two __maybe_unused = 2;
 static int min_sndbuf = SOCK_MIN_SNDBUF;
 static int min_rcvbuf = SOCK_MIN_RCVBUF;
 static int max_skb_frags = MAX_SKB_FRAGS;
-static long long_one __maybe_unused = 1;
-static long long_max __maybe_unused = LONG_MAX;
 
 static int net_msg_warn;	/* Unused, but still a sysctl */
-
-int sysctl_fb_tunnels_only_for_init_net __read_mostly = 0;
-EXPORT_SYMBOL(sysctl_fb_tunnels_only_for_init_net);
 
 #ifdef CONFIG_RPS
 static int rps_sock_flow_sysctl(struct ctl_table *table, int write,
@@ -281,6 +277,7 @@ static int proc_dointvec_minmax_bpf_enable(struct ctl_table *table, int write,
 	return ret;
 }
 
+# ifdef CONFIG_HAVE_EBPF_JIT
 static int
 proc_dointvec_minmax_bpf_restricted(struct ctl_table *table, int write,
 				    void __user *buffer, size_t *lenp,
@@ -291,17 +288,7 @@ proc_dointvec_minmax_bpf_restricted(struct ctl_table *table, int write,
 
 	return proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 }
-
-static int
-proc_dolongvec_minmax_bpf_restricted(struct ctl_table *table, int write,
-				     void __user *buffer, size_t *lenp,
-				     loff_t *ppos)
-{
-	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
-
-	return proc_doulongvec_minmax(table, write, buffer, lenp, ppos);
-}
+# endif
 #endif
 
 static struct ctl_table net_core_table[] = {
@@ -408,15 +395,6 @@ static struct ctl_table net_core_table[] = {
 		.extra2		= &one,
 	},
 # endif
-	{
-		.procname	= "bpf_jit_limit",
-		.data		= &bpf_jit_limit,
-		.maxlen		= sizeof(long),
-		.mode		= 0600,
-		.proc_handler	= proc_dolongvec_minmax_bpf_restricted,
-		.extra1		= &long_one,
-		.extra2		= &long_max,
-	},
 #endif
 	{
 		.procname	= "netdev_tstamp_prequeue",
@@ -534,15 +512,6 @@ static struct ctl_table net_core_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
-	},
-	{
-		.procname	= "fb_tunnels_only_for_init_net",
-		.data		= &sysctl_fb_tunnels_only_for_init_net,
-		.maxlen		= sizeof(int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &zero,
-		.extra2		= &one,
 	},
 	{ }
 };

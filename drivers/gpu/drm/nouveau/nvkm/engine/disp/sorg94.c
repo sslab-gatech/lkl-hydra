@@ -279,13 +279,5 @@ g94_sor = {
 int
 g94_sor_new(struct nvkm_disp *disp, int id)
 {
-	return nvkm_ior_new_(&g94_sor, disp, SOR, id);
-}
-
-int
-g94_sor_cnt(struct nvkm_disp *disp, unsigned long *pmask)
-{
-	struct nvkm_device *device = disp->engine.subdev.device;
-	*pmask = (nvkm_rd32(device, 0x610184) & 0x0f000000) >> 24;
-	return 4;
+	return nv50_sor_new_(&g94_sor, disp, id);
 }

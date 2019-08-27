@@ -1,6 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2014 Facebook.  All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License v2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this program; if not, write to the
+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
+ * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/sched.h>
@@ -43,7 +56,7 @@ struct ref_entry {
  * back to the delayed ref action.  We hold the ref we are changing in the
  * action so we can account for the history properly, and we record the root we
  * were called with since it could be different from ref_root.  We also store
- * stack traces because that's how I roll.
+ * stack traces because thats how I roll.
  */
 struct ref_action {
 	int action;
@@ -56,7 +69,7 @@ struct ref_action {
 
 /*
  * One of these for every block we reference, it holds the roots and references
- * to it as well as all of the ref actions that have occurred to it.  We never
+ * to it as well as all of the ref actions that have occured to it.  We never
  * free it until we unmount the file system in order to make sure re-allocations
  * are happening properly.
  */
@@ -566,16 +579,11 @@ static int walk_down_tree(struct btrfs_root *root, struct btrfs_path *path,
 
 	while (level >= 0) {
 		if (level) {
-			struct btrfs_key first_key;
-
 			block_bytenr = btrfs_node_blockptr(path->nodes[level],
 							   path->slots[level]);
 			gen = btrfs_node_ptr_generation(path->nodes[level],
 							path->slots[level]);
-			btrfs_node_key_to_cpu(path->nodes[level], &first_key,
-					      path->slots[level]);
-			eb = read_tree_block(fs_info, block_bytenr, gen,
-					     level - 1, &first_key);
+			eb = read_tree_block(fs_info, block_bytenr, gen);
 			if (IS_ERR(eb))
 				return PTR_ERR(eb);
 			if (!extent_buffer_uptodate(eb)) {
@@ -732,7 +740,7 @@ int btrfs_ref_tree_mod(struct btrfs_root *root, u64 bytenr, u64 num_bytes,
 
 	INIT_LIST_HEAD(&ra->list);
 	ra->action = action;
-	ra->root = root->root_key.objectid;
+	ra->root = root->objectid;
 
 	/*
 	 * This is an allocation, preallocate the block_entry in case we haven't
@@ -787,8 +795,8 @@ int btrfs_ref_tree_mod(struct btrfs_root *root, u64 bytenr, u64 num_bytes,
 			 * one we want to lookup below when we modify the
 			 * re->num_refs.
 			 */
-			ref_root = root->root_key.objectid;
-			re->root_objectid = root->root_key.objectid;
+			ref_root = root->objectid;
+			re->root_objectid = root->objectid;
 			re->num_refs = 0;
 		}
 
@@ -859,10 +867,10 @@ int btrfs_ref_tree_mod(struct btrfs_root *root, u64 bytenr, u64 num_bytes,
 			 * This shouldn't happen because we will add our re
 			 * above when we lookup the be with !parent, but just in
 			 * case catch this case so we don't panic because I
-			 * didn't think of some other corner case.
+			 * didn't thik of some other corner case.
 			 */
 			btrfs_err(fs_info, "failed to find root %llu for %llu",
-				  root->root_key.objectid, be->bytenr);
+				  root->objectid, be->bytenr);
 			dump_block_entry(fs_info, be);
 			dump_ref_action(fs_info, ra);
 			kfree(ra);

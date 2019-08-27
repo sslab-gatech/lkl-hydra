@@ -24,7 +24,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/etherdevice.h>
-#include <linux/pm_runtime.h>
 #include <linux/spinlock.h>
 
 #include "wlcore.h"
@@ -869,11 +868,9 @@ void wl1271_tx_work(struct work_struct *work)
 	int ret;
 
 	mutex_lock(&wl->mutex);
-	ret = pm_runtime_get_sync(wl->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(wl->dev);
+	ret = wl1271_ps_elp_wakeup(wl);
+	if (ret < 0)
 		goto out;
-	}
 
 	ret = wlcore_tx_work_locked(wl);
 	if (ret < 0) {
@@ -881,8 +878,7 @@ void wl1271_tx_work(struct work_struct *work)
 		goto out;
 	}
 
-	pm_runtime_mark_last_busy(wl->dev);
-	pm_runtime_put_autosuspend(wl->dev);
+	wl1271_ps_elp_sleep(wl);
 out:
 	mutex_unlock(&wl->mutex);
 }

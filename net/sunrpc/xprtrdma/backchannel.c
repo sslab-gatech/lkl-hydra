@@ -5,13 +5,12 @@
  * Support for backward direction RPCs on RPC/RDMA.
  */
 
+#include <linux/module.h>
 #include <linux/sunrpc/xprt.h>
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/svc_xprt.h>
-#include <linux/sunrpc/svc_rdma.h>
 
 #include "xprt_rdma.h"
-#include <trace/events/rpcrdma.h>
 
 #if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define RPCDBG_FACILITY	RPCDBG_TRANS
@@ -19,43 +18,69 @@
 
 #undef RPCRDMA_BACKCHANNEL_DEBUG
 
-static int rpcrdma_bc_setup_reqs(struct rpcrdma_xprt *r_xprt,
-				 unsigned int count)
+static void rpcrdma_bc_free_rqst(struct rpcrdma_xprt *r_xprt,
+				 struct rpc_rqst *rqst)
 {
-	struct rpc_xprt *xprt = &r_xprt->rx_xprt;
+	struct rpcrdma_buffer *buf = &r_xprt->rx_buf;
+	struct rpcrdma_req *req = rpcr_to_rdmar(rqst);
+
+	spin_lock(&buf->rb_reqslock);
+	list_del(&req->rl_all);
+	spin_unlock(&buf->rb_reqslock);
+
+	rpcrdma_destroy_req(req);
+
+	kfree(rqst);
+}
+
+static int rpcrdma_bc_setup_rqst(struct rpcrdma_xprt *r_xprt,
+				 struct rpc_rqst *rqst)
+{
+	struct rpcrdma_regbuf *rb;
 	struct rpcrdma_req *req;
-	struct rpc_rqst *rqst;
-	unsigned int i;
+	size_t size;
 
-	for (i = 0; i < (count << 1); i++) {
-		struct rpcrdma_regbuf *rb;
-		size_t size;
+	req = rpcrdma_create_req(r_xprt);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
 
-		req = rpcrdma_create_req(r_xprt);
-		if (IS_ERR(req))
-			return PTR_ERR(req);
-		rqst = &req->rl_slot;
+	rb = rpcrdma_alloc_regbuf(RPCRDMA_HDRBUF_SIZE,
+				  DMA_TO_DEVICE, GFP_KERNEL);
+	if (IS_ERR(rb))
+		goto out_fail;
+	req->rl_rdmabuf = rb;
+	xdr_buf_init(&req->rl_hdrbuf, rb->rg_base, rdmab_length(rb));
 
-		rqst->rq_xprt = xprt;
-		INIT_LIST_HEAD(&rqst->rq_bc_list);
-		__set_bit(RPC_BC_PA_IN_USE, &rqst->rq_bc_pa_state);
-		spin_lock(&xprt->bc_pa_lock);
-		list_add(&rqst->rq_bc_pa_list, &xprt->bc_pa_list);
-		spin_unlock(&xprt->bc_pa_lock);
-
-		size = r_xprt->rx_data.inline_rsize;
-		rb = rpcrdma_alloc_regbuf(size, DMA_TO_DEVICE, GFP_KERNEL);
-		if (IS_ERR(rb))
-			goto out_fail;
-		req->rl_sendbuf = rb;
-		xdr_buf_init(&rqst->rq_snd_buf, rb->rg_base,
-			     min_t(size_t, size, PAGE_SIZE));
-	}
+	size = r_xprt->rx_data.inline_rsize;
+	rb = rpcrdma_alloc_regbuf(size, DMA_TO_DEVICE, GFP_KERNEL);
+	if (IS_ERR(rb))
+		goto out_fail;
+	req->rl_sendbuf = rb;
+	xdr_buf_init(&rqst->rq_snd_buf, rb->rg_base,
+		     min_t(size_t, size, PAGE_SIZE));
+	rpcrdma_set_xprtdata(rqst, req);
 	return 0;
 
 out_fail:
-	rpcrdma_req_destroy(req);
+	rpcrdma_bc_free_rqst(r_xprt, rqst);
 	return -ENOMEM;
+}
+
+/* Allocate and add receive buffers to the rpcrdma_buffer's
+ * existing list of rep's. These are released when the
+ * transport is destroyed.
+ */
+static int rpcrdma_bc_setup_reps(struct rpcrdma_xprt *r_xprt,
+				 unsigned int count)
+{
+	int rc = 0;
+
+	while (count--) {
+		rc = rpcrdma_create_rep(r_xprt);
+		if (rc)
+			break;
+	}
+	return rc;
 }
 
 /**
@@ -68,6 +93,9 @@ out_fail:
 int xprt_rdma_bc_setup(struct rpc_xprt *xprt, unsigned int reqs)
 {
 	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
+	struct rpcrdma_buffer *buffer = &r_xprt->rx_buf;
+	struct rpc_rqst *rqst;
+	unsigned int i;
 	int rc;
 
 	/* The backchannel reply path returns each rpc_rqst to the
@@ -82,11 +110,36 @@ int xprt_rdma_bc_setup(struct rpc_xprt *xprt, unsigned int reqs)
 	if (reqs > RPCRDMA_BACKWARD_WRS >> 1)
 		goto out_err;
 
-	rc = rpcrdma_bc_setup_reqs(r_xprt, reqs);
+	for (i = 0; i < (reqs << 1); i++) {
+		rqst = kzalloc(sizeof(*rqst), GFP_KERNEL);
+		if (!rqst)
+			goto out_free;
+
+		dprintk("RPC:       %s: new rqst %p\n", __func__, rqst);
+
+		rqst->rq_xprt = &r_xprt->rx_xprt;
+		INIT_LIST_HEAD(&rqst->rq_list);
+		INIT_LIST_HEAD(&rqst->rq_bc_list);
+		__set_bit(RPC_BC_PA_IN_USE, &rqst->rq_bc_pa_state);
+
+		if (rpcrdma_bc_setup_rqst(r_xprt, rqst))
+			goto out_free;
+
+		spin_lock_bh(&xprt->bc_pa_lock);
+		list_add(&rqst->rq_bc_pa_list, &xprt->bc_pa_list);
+		spin_unlock_bh(&xprt->bc_pa_lock);
+	}
+
+	rc = rpcrdma_bc_setup_reps(r_xprt, reqs);
 	if (rc)
 		goto out_free;
 
-	r_xprt->rx_buf.rb_bc_srv_max_requests = reqs;
+	rc = rpcrdma_ep_post_extra_recv(r_xprt, reqs);
+	if (rc)
+		goto out_free;
+
+	buffer->rb_bc_srv_max_requests = reqs;
+	request_module("svcrdma");
 	trace_xprtrdma_cb_setup(r_xprt, reqs);
 	return 0;
 
@@ -96,6 +149,26 @@ out_free:
 out_err:
 	pr_err("RPC:       %s: setup backchannel transport failed\n", __func__);
 	return -ENOMEM;
+}
+
+/**
+ * xprt_rdma_bc_up - Create transport endpoint for backchannel service
+ * @serv: server endpoint
+ * @net: network namespace
+ *
+ * The "xprt" is an implied argument: it supplies the name of the
+ * backchannel transport class.
+ *
+ * Returns zero on success, negative errno on failure
+ */
+int xprt_rdma_bc_up(struct svc_serv *serv, struct net *net)
+{
+	int ret;
+
+	ret = svc_create_xprt(serv, "rdma-bc", net, PF_INET, 0, 0);
+	if (ret < 0)
+		return ret;
+	return 0;
 }
 
 /**
@@ -158,16 +231,12 @@ static int rpcrdma_bc_marshal_reply(struct rpc_rqst *rqst)
  */
 int xprt_rdma_bc_send_reply(struct rpc_rqst *rqst)
 {
-	struct rpc_xprt *xprt = rqst->rq_xprt;
-	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
+	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(rqst->rq_xprt);
 	struct rpcrdma_req *req = rpcr_to_rdmar(rqst);
 	int rc;
 
-	if (!xprt_connected(xprt))
-		return -ENOTCONN;
-
-	if (!xprt_request_get_cong(xprt, rqst))
-		return -EBADSLT;
+	if (!xprt_connected(rqst->rq_xprt))
+		goto drop_connection;
 
 	rc = rpcrdma_bc_marshal_reply(rqst);
 	if (rc < 0)
@@ -181,7 +250,7 @@ failed_marshal:
 	if (rc != -ENOTCONN)
 		return rc;
 drop_connection:
-	xprt_rdma_close(xprt);
+	xprt_disconnect_done(rqst->rq_xprt);
 	return -ENOTCONN;
 }
 
@@ -192,18 +261,19 @@ drop_connection:
  */
 void xprt_rdma_bc_destroy(struct rpc_xprt *xprt, unsigned int reqs)
 {
+	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
 	struct rpc_rqst *rqst, *tmp;
 
-	spin_lock(&xprt->bc_pa_lock);
+	spin_lock_bh(&xprt->bc_pa_lock);
 	list_for_each_entry_safe(rqst, tmp, &xprt->bc_pa_list, rq_bc_pa_list) {
 		list_del(&rqst->rq_bc_pa_list);
-		spin_unlock(&xprt->bc_pa_lock);
+		spin_unlock_bh(&xprt->bc_pa_lock);
 
-		rpcrdma_req_destroy(rpcr_to_rdmar(rqst));
+		rpcrdma_bc_free_rqst(r_xprt, rqst);
 
-		spin_lock(&xprt->bc_pa_lock);
+		spin_lock_bh(&xprt->bc_pa_lock);
 	}
-	spin_unlock(&xprt->bc_pa_lock);
+	spin_unlock_bh(&xprt->bc_pa_lock);
 }
 
 /**
@@ -212,15 +282,14 @@ void xprt_rdma_bc_destroy(struct rpc_xprt *xprt, unsigned int reqs)
  */
 void xprt_rdma_bc_free_rqst(struct rpc_rqst *rqst)
 {
-	struct rpcrdma_req *req = rpcr_to_rdmar(rqst);
 	struct rpc_xprt *xprt = rqst->rq_xprt;
 
-	rpcrdma_recv_buffer_put(req->rl_reply);
-	req->rl_reply = NULL;
+	dprintk("RPC:       %s: freeing rqst %p (req %p)\n",
+		__func__, rqst, rpcr_to_rdmar(rqst));
 
-	spin_lock(&xprt->bc_pa_lock);
+	spin_lock_bh(&xprt->bc_pa_lock);
 	list_add_tail(&rqst->rq_bc_pa_list, &xprt->bc_pa_list);
-	spin_unlock(&xprt->bc_pa_lock);
+	spin_unlock_bh(&xprt->bc_pa_lock);
 }
 
 /**
@@ -300,7 +369,7 @@ void rpcrdma_bc_receive_call(struct rpcrdma_xprt *r_xprt,
 
 out_overflow:
 	pr_warn("RPC/RDMA backchannel overflow\n");
-	xprt_force_disconnect(xprt);
+	xprt_disconnect_done(xprt);
 	/* This receive buffer gets reposted automatically
 	 * when the connection is re-established.
 	 */

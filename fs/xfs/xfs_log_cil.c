@@ -1,6 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2010 Red Hat, Inc. All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include "xfs.h"
@@ -129,9 +141,10 @@ xlog_cil_alloc_shadow_bufs(
 	struct xlog		*log,
 	struct xfs_trans	*tp)
 {
-	struct xfs_log_item	*lip;
+	struct xfs_log_item_desc *lidp;
 
-	list_for_each_entry(lip, &tp->t_items, li_trans) {
+	list_for_each_entry(lidp, &tp->t_items, lid_trans) {
+		struct xfs_log_item *lip = lidp->lid_item;
 		struct xfs_log_vec *lv;
 		int	niovecs = 0;
 		int	nbytes = 0;
@@ -139,7 +152,7 @@ xlog_cil_alloc_shadow_bufs(
 		bool	ordered = false;
 
 		/* Skip items which aren't dirty in this transaction. */
-		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
+		if (!(lidp->lid_flags & XFS_LID_DIRTY))
 			continue;
 
 		/* get number of vecs and size of data to be stored */
@@ -189,7 +202,7 @@ xlog_cil_alloc_shadow_bufs(
 			 */
 			kmem_free(lip->li_lv_shadow);
 
-			lv = kmem_alloc_large(buf_size, KM_SLEEP | KM_NOFS);
+			lv = kmem_alloc(buf_size, KM_SLEEP|KM_NOFS);
 			memset(lv, 0, xlog_cil_iovec_space(niovecs));
 
 			lv->lv_item = lip;
@@ -304,7 +317,7 @@ xlog_cil_insert_format_items(
 	int			*diff_len,
 	int			*diff_iovecs)
 {
-	struct xfs_log_item	*lip;
+	struct xfs_log_item_desc *lidp;
 
 
 	/* Bail out if we didn't find a log item.  */
@@ -313,14 +326,15 @@ xlog_cil_insert_format_items(
 		return;
 	}
 
-	list_for_each_entry(lip, &tp->t_items, li_trans) {
+	list_for_each_entry(lidp, &tp->t_items, lid_trans) {
+		struct xfs_log_item *lip = lidp->lid_item;
 		struct xfs_log_vec *lv;
 		struct xfs_log_vec *old_lv = NULL;
 		struct xfs_log_vec *shadow;
 		bool	ordered = false;
 
 		/* Skip items which aren't dirty in this transaction. */
-		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
+		if (!(lidp->lid_flags & XFS_LID_DIRTY))
 			continue;
 
 		/*
@@ -392,7 +406,7 @@ xlog_cil_insert_items(
 {
 	struct xfs_cil		*cil = log->l_cilp;
 	struct xfs_cil_ctx	*ctx = cil->xc_ctx;
-	struct xfs_log_item	*lip;
+	struct xfs_log_item_desc *lidp;
 	int			len = 0;
 	int			diff_iovecs = 0;
 	int			iclog_space;
@@ -465,10 +479,11 @@ xlog_cil_insert_items(
 	 * We do this here so we only need to take the CIL lock once during
 	 * the transaction commit.
 	 */
-	list_for_each_entry(lip, &tp->t_items, li_trans) {
+	list_for_each_entry(lidp, &tp->t_items, lid_trans) {
+		struct xfs_log_item	*lip = lidp->lid_item;
 
 		/* Skip items which aren't dirty in this transaction. */
-		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
+		if (!(lidp->lid_flags & XFS_LID_DIRTY))
 			continue;
 
 		/*
@@ -833,7 +848,7 @@ restart:
 	/* attach all the transactions w/ busy extents to iclog */
 	ctx->log_cb.cb_func = xlog_cil_committed;
 	ctx->log_cb.cb_arg = ctx;
-	error = xfs_log_notify(commit_iclog, &ctx->log_cb);
+	error = xfs_log_notify(log->l_mp, commit_iclog, &ctx->log_cb);
 	if (error)
 		goto out_abort;
 
@@ -998,7 +1013,6 @@ xfs_log_commit_cil(
 		*commit_lsn = xc_commit_lsn;
 
 	xfs_log_done(mp, tp->t_ticket, NULL, regrant);
-	tp->t_ticket = NULL;
 	xfs_trans_unreserve_and_mod_sb(tp);
 
 	/*

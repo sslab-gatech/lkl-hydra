@@ -25,9 +25,6 @@
 #define XICS_MFRR		0xc
 #define XICS_IPI		2	/* interrupt source # for IPIs */
 
-/* LPIDs we support with this build -- runtime limit may be lower */
-#define KVMPPC_NR_LPIDS			(LPID_RSVD + 1)
-
 /* Maximum number of threads per physical core */
 #define MAX_SMT_THREADS		8
 
@@ -122,7 +119,6 @@ struct kvmppc_host_state {
 	u8 host_ipi;
 	u8 ptid;		/* thread number within subcore when split */
 	u8 tid;			/* thread number within whole core */
-	u8 fake_suspend;
 	struct kvm_vcpu *kvm_vcpu;
 	struct kvmppc_vcore *kvm_vcore;
 	void __iomem *xics_phys;

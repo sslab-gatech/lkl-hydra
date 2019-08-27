@@ -10,9 +10,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
-/* Hardening for Spectre-v1 */
-#include <linux/nospec.h>
-
 #include "usbip_common.h"
 #include "vhci.h"
 
@@ -208,20 +205,16 @@ static int vhci_port_disconnect(struct vhci_hcd *vhci_hcd, __u32 rhport)
 	return 0;
 }
 
-static int valid_port(__u32 *pdev_nr, __u32 *rhport)
+static int valid_port(__u32 pdev_nr, __u32 rhport)
 {
-	if (*pdev_nr >= vhci_num_controllers) {
-		pr_err("pdev %u\n", *pdev_nr);
+	if (pdev_nr >= vhci_num_controllers) {
+		pr_err("pdev %u\n", pdev_nr);
 		return 0;
 	}
-	*pdev_nr = array_index_nospec(*pdev_nr, vhci_num_controllers);
-
-	if (*rhport >= VHCI_HC_PORTS) {
-		pr_err("rhport %u\n", *rhport);
+	if (rhport >= VHCI_HC_PORTS) {
+		pr_err("rhport %u\n", rhport);
 		return 0;
 	}
-	*rhport = array_index_nospec(*rhport, VHCI_HC_PORTS);
-
 	return 1;
 }
 
@@ -239,7 +232,7 @@ static ssize_t detach_store(struct device *dev, struct device_attribute *attr,
 	pdev_nr = port_to_pdev_nr(port);
 	rhport = port_to_rhport(port);
 
-	if (!valid_port(&pdev_nr, &rhport))
+	if (!valid_port(pdev_nr, rhport))
 		return -EINVAL;
 
 	hcd = platform_get_drvdata(vhcis[pdev_nr].pdev);
@@ -265,8 +258,7 @@ static ssize_t detach_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_WO(detach);
 
-static int valid_args(__u32 *pdev_nr, __u32 *rhport,
-		      enum usb_device_speed speed)
+static int valid_args(__u32 pdev_nr, __u32 rhport, enum usb_device_speed speed)
 {
 	if (!valid_port(pdev_nr, rhport)) {
 		return 0;
@@ -330,7 +322,7 @@ static ssize_t attach_store(struct device *dev, struct device_attribute *attr,
 			     sockfd, devid, speed);
 
 	/* check received parameters */
-	if (!valid_args(&pdev_nr, &rhport, speed))
+	if (!valid_args(pdev_nr, rhport, speed))
 		return -EINVAL;
 
 	hcd = platform_get_drvdata(vhcis[pdev_nr].pdev);

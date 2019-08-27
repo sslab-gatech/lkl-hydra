@@ -40,6 +40,11 @@
 #include <net/bonding.h>
 #include <net/bond_alb.h>
 
+
+
+static const u8 mac_bcast[ETH_ALEN + 2] __long_aligned = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
 static const u8 mac_v6_allmcast[ETH_ALEN + 2] __long_aligned = {
 	0x33, 0x33, 0x00, 0x00, 0x00, 0x01
 };
@@ -415,7 +420,8 @@ static void rlb_clear_slave(struct bonding *bond, struct slave *slave)
 
 			if (assigned_slave) {
 				rx_hash_table[index].slave = assigned_slave;
-				if (is_valid_ether_addr(rx_hash_table[index].mac_dst)) {
+				if (!ether_addr_equal_64bits(rx_hash_table[index].mac_dst,
+							     mac_bcast)) {
 					bond_info->rx_hashtbl[index].ntt = 1;
 					bond_info->rx_ntt = 1;
 					/* A slave has been removed from the
@@ -444,7 +450,7 @@ static void rlb_update_client(struct rlb_client_info *client_info)
 {
 	int i;
 
-	if (!client_info->slave || !is_valid_ether_addr(client_info->mac_dst))
+	if (!client_info->slave)
 		return;
 
 	for (i = 0; i < RLB_ARP_BURST_SIZE; i++) {
@@ -518,7 +524,7 @@ static void rlb_req_update_slave_clients(struct bonding *bond, struct slave *sla
 		client_info = &(bond_info->rx_hashtbl[hash_index]);
 
 		if ((client_info->slave == slave) &&
-		    is_valid_ether_addr(client_info->mac_dst)) {
+		    !ether_addr_equal_64bits(client_info->mac_dst, mac_bcast)) {
 			client_info->ntt = 1;
 			ntt = 1;
 		}
@@ -559,7 +565,7 @@ static void rlb_req_update_subnet_clients(struct bonding *bond, __be32 src_ip)
 		if ((client_info->ip_src == src_ip) &&
 		    !ether_addr_equal_64bits(client_info->slave->dev->dev_addr,
 					     bond->dev->dev_addr) &&
-		    is_valid_ether_addr(client_info->mac_dst)) {
+		    !ether_addr_equal_64bits(client_info->mac_dst, mac_bcast)) {
 			client_info->ntt = 1;
 			bond_info->rx_ntt = 1;
 		}
@@ -587,7 +593,7 @@ static struct slave *rlb_choose_channel(struct sk_buff *skb, struct bonding *bon
 		if ((client_info->ip_src == arp->ip_src) &&
 		    (client_info->ip_dst == arp->ip_dst)) {
 			/* the entry is already assigned to this client */
-			if (!is_broadcast_ether_addr(arp->mac_dst)) {
+			if (!ether_addr_equal_64bits(arp->mac_dst, mac_bcast)) {
 				/* update mac address from arp */
 				ether_addr_copy(client_info->mac_dst, arp->mac_dst);
 			}
@@ -635,7 +641,7 @@ static struct slave *rlb_choose_channel(struct sk_buff *skb, struct bonding *bon
 		ether_addr_copy(client_info->mac_src, arp->mac_src);
 		client_info->slave = assigned_slave;
 
-		if (is_valid_ether_addr(client_info->mac_dst)) {
+		if (!ether_addr_equal_64bits(client_info->mac_dst, mac_bcast)) {
 			client_info->ntt = 1;
 			bond->alb_info.rx_ntt = 1;
 		} else {
@@ -727,10 +733,8 @@ static void rlb_rebalance(struct bonding *bond)
 		assigned_slave = __rlb_next_rx_slave(bond);
 		if (assigned_slave && (client_info->slave != assigned_slave)) {
 			client_info->slave = assigned_slave;
-			if (!is_zero_ether_addr(client_info->mac_dst)) {
-				client_info->ntt = 1;
-				ntt = 1;
-			}
+			client_info->ntt = 1;
+			ntt = 1;
 		}
 	}
 
@@ -939,10 +943,6 @@ static void alb_send_lp_vid(struct slave *slave, u8 mac_addr[],
 	skb->priority = TC_PRIO_CONTROL;
 	skb->dev = slave->dev;
 
-	netdev_dbg(slave->bond->dev,
-		   "Send learning packet: dev %s mac %pM vlan %d\n",
-		   slave->dev->name, mac_addr, vid);
-
 	if (vid)
 		__vlan_hwaccel_put_tag(skb, vlan_proto, vid);
 
@@ -965,13 +965,14 @@ static int alb_upper_dev_walk(struct net_device *upper, void *_data)
 	u8 *mac_addr = data->mac_addr;
 	struct bond_vlan_tag *tags;
 
-	if (is_vlan_dev(upper) &&
-	    bond->nest_level == vlan_get_encap_level(upper) - 1) {
-		if (upper->addr_assign_type == NET_ADDR_STOLEN) {
+	if (is_vlan_dev(upper) && vlan_get_encap_level(upper) == 0) {
+		if (strict_match &&
+		    ether_addr_equal_64bits(mac_addr,
+					    upper->dev_addr)) {
 			alb_send_lp_vid(slave, mac_addr,
 					vlan_dev_vlan_proto(upper),
 					vlan_dev_vlan_id(upper));
-		} else {
+		} else if (!strict_match) {
 			alb_send_lp_vid(slave, upper->dev_addr,
 					vlan_dev_vlan_proto(upper),
 					vlan_dev_vlan_id(upper));
@@ -1031,7 +1032,7 @@ static int alb_set_slave_mac_addr(struct slave *slave, u8 addr[],
 	 */
 	memcpy(ss.__data, addr, len);
 	ss.ss_family = dev->type;
-	if (dev_set_mac_address(dev, (struct sockaddr *)&ss, NULL)) {
+	if (dev_set_mac_address(dev, (struct sockaddr *)&ss)) {
 		netdev_err(slave->bond->dev, "dev_set_mac_address of dev %s failed! ALB mode requires that the base driver support setting the hw address also when the network device's interface is open\n",
 			   dev->name);
 		return -EOPNOTSUPP;
@@ -1250,7 +1251,7 @@ static int alb_set_mac_address(struct bonding *bond, void *addr)
 		bond_hw_addr_copy(tmp_addr, slave->dev->dev_addr,
 				  slave->dev->addr_len);
 
-		res = dev_set_mac_address(slave->dev, addr, NULL);
+		res = dev_set_mac_address(slave->dev, addr);
 
 		/* restore net_device's hw address */
 		bond_hw_addr_copy(slave->dev->dev_addr, tmp_addr,
@@ -1273,7 +1274,7 @@ unwind:
 		bond_hw_addr_copy(tmp_addr, rollback_slave->dev->dev_addr,
 				  rollback_slave->dev->addr_len);
 		dev_set_mac_address(rollback_slave->dev,
-				    (struct sockaddr *)&ss, NULL);
+				    (struct sockaddr *)&ss);
 		bond_hw_addr_copy(rollback_slave->dev->dev_addr, tmp_addr,
 				  rollback_slave->dev->addr_len);
 	}
@@ -1315,8 +1316,8 @@ void bond_alb_deinitialize(struct bonding *bond)
 		rlb_deinitialize(bond);
 }
 
-static netdev_tx_t bond_do_alb_xmit(struct sk_buff *skb, struct bonding *bond,
-				    struct slave *tx_slave)
+static int bond_do_alb_xmit(struct sk_buff *skb, struct bonding *bond,
+			    struct slave *tx_slave)
 {
 	struct alb_bond_info *bond_info = &(BOND_ALB_INFO(bond));
 	struct ethhdr *eth_data = eth_hdr(skb);
@@ -1350,7 +1351,7 @@ out:
 	return NETDEV_TX_OK;
 }
 
-netdev_tx_t bond_tlb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
+int bond_tlb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct ethhdr *eth_data;
@@ -1388,7 +1389,7 @@ netdev_tx_t bond_tlb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 	return bond_do_alb_xmit(skb, bond, tx_slave);
 }
 
-netdev_tx_t bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
+int bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct ethhdr *eth_data;
@@ -1408,9 +1409,9 @@ netdev_tx_t bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 	case ETH_P_IP: {
 		const struct iphdr *iph = ip_hdr(skb);
 
-		if (is_broadcast_ether_addr(eth_data->h_dest) ||
-		    iph->daddr == ip_bcast ||
-		    iph->protocol == IPPROTO_IGMP) {
+		if (ether_addr_equal_64bits(eth_data->h_dest, mac_bcast) ||
+		    (iph->daddr == ip_bcast) ||
+		    (iph->protocol == IPPROTO_IGMP)) {
 			do_tx_balance = false;
 			break;
 		}
@@ -1422,7 +1423,7 @@ netdev_tx_t bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 		/* IPv6 doesn't really use broadcast mac address, but leave
 		 * that here just in case.
 		 */
-		if (is_broadcast_ether_addr(eth_data->h_dest)) {
+		if (ether_addr_equal_64bits(eth_data->h_dest, mac_bcast)) {
 			do_tx_balance = false;
 			break;
 		}
@@ -1478,24 +1479,8 @@ netdev_tx_t bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 	}
 
 	if (do_tx_balance) {
-		if (bond->params.tlb_dynamic_lb) {
-			hash_index = _simple_hash(hash_start, hash_size);
-			tx_slave = tlb_choose_channel(bond, hash_index, skb->len);
-		} else {
-			/*
-			 * do_tx_balance means we are free to select the tx_slave
-			 * So we do exactly what tlb would do for hash selection
-			 */
-
-			struct bond_up_slave *slaves;
-			unsigned int count;
-
-			slaves = rcu_dereference(bond->slave_arr);
-			count = slaves ? READ_ONCE(slaves->count) : 0;
-			if (likely(count))
-				tx_slave = slaves->arr[bond_xmit_hash(bond, skb) %
-						       count];
-		}
+		hash_index = _simple_hash(hash_start, hash_size);
+		tx_slave = tlb_choose_channel(bond, hash_index, skb->len);
 	}
 
 	return bond_do_alb_xmit(skb, bond, tx_slave);
@@ -1732,8 +1717,7 @@ void bond_alb_handle_active_change(struct bonding *bond, struct slave *new_slave
 				  bond->dev->addr_len);
 		ss.ss_family = bond->dev->type;
 		/* we don't care if it can't change its mac, best effort */
-		dev_set_mac_address(new_slave->dev, (struct sockaddr *)&ss,
-				    NULL);
+		dev_set_mac_address(new_slave->dev, (struct sockaddr *)&ss);
 
 		bond_hw_addr_copy(new_slave->dev->dev_addr, tmp_addr,
 				  new_slave->dev->addr_len);

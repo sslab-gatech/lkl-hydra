@@ -31,7 +31,6 @@
 #include <asm/prom.h>
 #include <asm/mmu.h>
 #include <asm/machdep.h>
-#include <asm/code-patching.h>
 
 #include "mmu_decl.h"
 
@@ -53,7 +52,7 @@ struct batrange {		/* stores address ranges mapped by BATs */
 phys_addr_t v_block_mapped(unsigned long va)
 {
 	int b;
-	for (b = 0; b < ARRAY_SIZE(bat_addrs); ++b)
+	for (b = 0; b < 4; ++b)
 		if (va >= bat_addrs[b].start && va < bat_addrs[b].limit)
 			return bat_addrs[b].phys + (va - bat_addrs[b].start);
 	return 0;
@@ -65,7 +64,7 @@ phys_addr_t v_block_mapped(unsigned long va)
 unsigned long p_block_mapped(phys_addr_t pa)
 {
 	int b;
-	for (b = 0; b < ARRAY_SIZE(bat_addrs); ++b)
+	for (b = 0; b < 4; ++b)
 		if (pa >= bat_addrs[b].phys
 	    	    && pa < (bat_addrs[b].limit-bat_addrs[b].start)
 		              +bat_addrs[b].phys)
@@ -164,11 +163,11 @@ void __init setbat(int index, unsigned long virt, phys_addr_t phys,
  * Preload a translation in the hash table
  */
 void hash_preload(struct mm_struct *mm, unsigned long ea,
-		  bool is_exec, unsigned long trap)
+		  unsigned long access, unsigned long trap)
 {
 	pmd_t *pmd;
 
-	if (!Hash)
+	if (Hash == 0)
 		return;
 	pmd = pmd_offset(pud_offset(pgd_offset(mm, ea), ea), ea);
 	if (!pmd_none(*pmd))
@@ -183,8 +182,22 @@ void __init MMU_init_hw(void)
 	unsigned int hmask, mb, mb2;
 	unsigned int n_hpteg, lg_n_hpteg;
 
-	if (!mmu_has_feature(MMU_FTR_HPTE_TABLE))
+	extern unsigned int hash_page_patch_A[];
+	extern unsigned int hash_page_patch_B[], hash_page_patch_C[];
+	extern unsigned int hash_page[];
+	extern unsigned int flush_hash_patch_A[], flush_hash_patch_B[];
+
+	if (!mmu_has_feature(MMU_FTR_HPTE_TABLE)) {
+		/*
+		 * Put a blr (procedure return) instruction at the
+		 * start of hash_page, since we can still get DSI
+		 * exceptions on a 603.
+		 */
+		hash_page[0] = 0x4e800020;
+		flush_icache_range((unsigned long) &hash_page[0],
+				   (unsigned long) &hash_page[1]);
 		return;
+	}
 
 	if ( ppc_md.progress ) ppc_md.progress("hash:enter", 0x105);
 
@@ -211,7 +224,7 @@ void __init MMU_init_hw(void)
 	 * Find some memory for the hash table.
 	 */
 	if ( ppc_md.progress ) ppc_md.progress("hash:find piece", 0x322);
-	Hash = __va(memblock_phys_alloc(Hash_size, Hash_size));
+	Hash = __va(memblock_alloc(Hash_size, Hash_size));
 	memset(Hash, 0, Hash_size);
 	_SDR1 = __pa(Hash) | SDR1_LOW_BITS;
 
@@ -231,19 +244,31 @@ void __init MMU_init_hw(void)
 	if (lg_n_hpteg > 16)
 		mb2 = 16 - LG_HPTEG_SIZE;
 
-	modify_instruction_site(&patch__hash_page_A0, 0xffff, (unsigned int)Hash >> 16);
-	modify_instruction_site(&patch__hash_page_A1, 0x7c0, mb << 6);
-	modify_instruction_site(&patch__hash_page_A2, 0x7c0, mb2 << 6);
-	modify_instruction_site(&patch__hash_page_B, 0xffff, hmask);
-	modify_instruction_site(&patch__hash_page_C, 0xffff, hmask);
+	hash_page_patch_A[0] = (hash_page_patch_A[0] & ~0xffff)
+		| ((unsigned int)(Hash) >> 16);
+	hash_page_patch_A[1] = (hash_page_patch_A[1] & ~0x7c0) | (mb << 6);
+	hash_page_patch_A[2] = (hash_page_patch_A[2] & ~0x7c0) | (mb2 << 6);
+	hash_page_patch_B[0] = (hash_page_patch_B[0] & ~0xffff) | hmask;
+	hash_page_patch_C[0] = (hash_page_patch_C[0] & ~0xffff) | hmask;
+
+	/*
+	 * Ensure that the locations we've patched have been written
+	 * out from the data cache and invalidated in the instruction
+	 * cache, on those machines with split caches.
+	 */
+	flush_icache_range((unsigned long) &hash_page_patch_A[0],
+			   (unsigned long) &hash_page_patch_C[1]);
 
 	/*
 	 * Patch up the instructions in hashtable.S:flush_hash_page
 	 */
-	modify_instruction_site(&patch__flush_hash_A0, 0xffff, (unsigned int)Hash >> 16);
-	modify_instruction_site(&patch__flush_hash_A1, 0x7c0, mb << 6);
-	modify_instruction_site(&patch__flush_hash_A2, 0x7c0, mb2 << 6);
-	modify_instruction_site(&patch__flush_hash_B, 0xffff, hmask);
+	flush_hash_patch_A[0] = (flush_hash_patch_A[0] & ~0xffff)
+		| ((unsigned int)(Hash) >> 16);
+	flush_hash_patch_A[1] = (flush_hash_patch_A[1] & ~0x7c0) | (mb << 6);
+	flush_hash_patch_A[2] = (flush_hash_patch_A[2] & ~0x7c0) | (mb2 << 6);
+	flush_hash_patch_B[0] = (flush_hash_patch_B[0] & ~0xffff) | hmask;
+	flush_icache_range((unsigned long) &flush_hash_patch_A[0],
+			   (unsigned long) &flush_hash_patch_B[1]);
 
 	if ( ppc_md.progress ) ppc_md.progress("hash:done", 0x205);
 }

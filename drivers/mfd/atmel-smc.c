@@ -12,7 +12,6 @@
  */
 
 #include <linux/mfd/syscon/atmel-smc.h>
-#include <linux/string.h>
 
 /**
  * atmel_smc_cs_conf_init - initialize a SMC CS conf

@@ -62,5 +62,6 @@
 
 struct max98371_priv {
 	struct regmap *regmap;
+	struct snd_soc_codec *codec;
 };
 #endif

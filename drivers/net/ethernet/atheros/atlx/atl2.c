@@ -1335,10 +1335,12 @@ static int atl2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct net_device *netdev;
 	struct atl2_adapter *adapter;
-	static int cards_found = 0;
+	static int cards_found;
 	unsigned long mmio_start;
 	int mmio_len;
 	int err;
+
+	cards_found = 0;
 
 	err = pci_enable_device(pdev);
 	if (err)
@@ -1939,8 +1941,8 @@ static int atl2_get_eeprom(struct net_device *netdev,
 	first_dword = eeprom->offset >> 2;
 	last_dword = (eeprom->offset + eeprom->len - 1) >> 2;
 
-	eeprom_buff = kmalloc_array(last_dword - first_dword + 1, sizeof(u32),
-				    GFP_KERNEL);
+	eeprom_buff = kmalloc(sizeof(u32) * (last_dword - first_dword + 1),
+		GFP_KERNEL);
 	if (!eeprom_buff)
 		return -ENOMEM;
 

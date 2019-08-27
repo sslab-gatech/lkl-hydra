@@ -19,7 +19,6 @@
  *   device_print_info - print out resource
  *   device_rx_srv - rx service function
  *   device_alloc_rx_buf - rx buffer pre-allocated function
- *   device_free_rx_buf - free rx buffer function
  *   device_free_tx_buf - free tx buffer function
  *   device_init_rd0_ring- initial rd dma0 ring
  *   device_init_rd1_ring- initial rd dma1 ring
@@ -125,15 +124,14 @@ static int  vt6655_probe(struct pci_dev *pcid, const struct pci_device_id *ent);
 static void device_free_info(struct vnt_private *priv);
 static void device_print_info(struct vnt_private *priv);
 
-static int device_init_rd0_ring(struct vnt_private *priv);
-static int device_init_rd1_ring(struct vnt_private *priv);
-static int device_init_td0_ring(struct vnt_private *priv);
-static int device_init_td1_ring(struct vnt_private *priv);
+static void device_init_rd0_ring(struct vnt_private *priv);
+static void device_init_rd1_ring(struct vnt_private *priv);
+static void device_init_td0_ring(struct vnt_private *priv);
+static void device_init_td1_ring(struct vnt_private *priv);
 
 static int  device_rx_srv(struct vnt_private *priv, unsigned int idx);
 static int  device_tx_srv(struct vnt_private *priv, unsigned int idx);
 static bool device_alloc_rx_buf(struct vnt_private *, struct vnt_rx_desc *);
-static void device_free_rx_buf(struct vnt_private *priv, struct vnt_rx_desc *rd);
 static void device_init_registers(struct vnt_private *priv);
 static void device_free_tx_buf(struct vnt_private *, struct vnt_tx_desc *);
 static void device_free_td0_ring(struct vnt_private *priv);
@@ -440,9 +438,12 @@ static bool device_init_rings(struct vnt_private *priv)
 	void *vir_pool;
 
 	/*allocate all RD/TD rings a single pool*/
-	vir_pool = dma_alloc_coherent(&priv->pcid->dev,
-				      priv->opts.rx_descs0 * sizeof(struct vnt_rx_desc) + priv->opts.rx_descs1 * sizeof(struct vnt_rx_desc) + priv->opts.tx_descs[0] * sizeof(struct vnt_tx_desc) + priv->opts.tx_descs[1] * sizeof(struct vnt_tx_desc),
-				      &priv->pool_dma, GFP_ATOMIC);
+	vir_pool = dma_zalloc_coherent(&priv->pcid->dev,
+				       priv->opts.rx_descs0 * sizeof(struct vnt_rx_desc) +
+				       priv->opts.rx_descs1 * sizeof(struct vnt_rx_desc) +
+				       priv->opts.tx_descs[0] * sizeof(struct vnt_tx_desc) +
+				       priv->opts.tx_descs[1] * sizeof(struct vnt_tx_desc),
+				       &priv->pool_dma, GFP_ATOMIC);
 	if (!vir_pool) {
 		dev_err(&priv->pcid->dev, "allocate desc dma memory failed\n");
 		return false;
@@ -456,9 +457,13 @@ static bool device_init_rings(struct vnt_private *priv)
 	priv->rd1_pool_dma = priv->rd0_pool_dma +
 		priv->opts.rx_descs0 * sizeof(struct vnt_rx_desc);
 
-	priv->tx0_bufs = dma_alloc_coherent(&priv->pcid->dev,
-					    priv->opts.tx_descs[0] * PKT_BUF_SZ + priv->opts.tx_descs[1] * PKT_BUF_SZ + CB_BEACON_BUF_SIZE + CB_MAX_BUF_SIZE,
-					    &priv->tx_bufs_dma0, GFP_ATOMIC);
+	priv->tx0_bufs = dma_zalloc_coherent(&priv->pcid->dev,
+					     priv->opts.tx_descs[0] * PKT_BUF_SZ +
+					     priv->opts.tx_descs[1] * PKT_BUF_SZ +
+					     CB_BEACON_BUF_SIZE +
+					     CB_MAX_BUF_SIZE,
+					     &priv->tx_bufs_dma0,
+					     GFP_ATOMIC);
 	if (!priv->tx0_bufs) {
 		dev_err(&priv->pcid->dev, "allocate buf dma memory failed\n");
 
@@ -523,96 +528,52 @@ static void device_free_rings(struct vnt_private *priv)
 				  priv->tx0_bufs, priv->tx_bufs_dma0);
 }
 
-static int device_init_rd0_ring(struct vnt_private *priv)
+static void device_init_rd0_ring(struct vnt_private *priv)
 {
 	int i;
 	dma_addr_t      curr = priv->rd0_pool_dma;
 	struct vnt_rx_desc *desc;
-	int ret;
 
 	/* Init the RD0 ring entries */
 	for (i = 0; i < priv->opts.rx_descs0;
 	     i ++, curr += sizeof(struct vnt_rx_desc)) {
 		desc = &priv->aRD0Ring[i];
 		desc->rd_info = kzalloc(sizeof(*desc->rd_info), GFP_KERNEL);
-		if (!desc->rd_info) {
-			ret = -ENOMEM;
-			goto err_free_desc;
-		}
 
-		if (!device_alloc_rx_buf(priv, desc)) {
+		if (!device_alloc_rx_buf(priv, desc))
 			dev_err(&priv->pcid->dev, "can not alloc rx bufs\n");
-			ret = -ENOMEM;
-			goto err_free_rd;
-		}
 
-		desc->next = &priv->aRD0Ring[(i + 1) % priv->opts.rx_descs0];
+		desc->next = &(priv->aRD0Ring[(i + 1) % priv->opts.rx_descs0]);
 		desc->next_desc = cpu_to_le32(curr + sizeof(struct vnt_rx_desc));
 	}
 
 	if (i > 0)
 		priv->aRD0Ring[i-1].next_desc = cpu_to_le32(priv->rd0_pool_dma);
 	priv->pCurrRD[0] = &priv->aRD0Ring[0];
-
-	return 0;
-
-err_free_rd:
-	kfree(desc->rd_info);
-
-err_free_desc:
-	while (--i) {
-		desc = &priv->aRD0Ring[i];
-		device_free_rx_buf(priv, desc);
-		kfree(desc->rd_info);
-	}
-
-	return ret;
 }
 
-static int device_init_rd1_ring(struct vnt_private *priv)
+static void device_init_rd1_ring(struct vnt_private *priv)
 {
 	int i;
 	dma_addr_t      curr = priv->rd1_pool_dma;
 	struct vnt_rx_desc *desc;
-	int ret;
 
 	/* Init the RD1 ring entries */
 	for (i = 0; i < priv->opts.rx_descs1;
 	     i ++, curr += sizeof(struct vnt_rx_desc)) {
 		desc = &priv->aRD1Ring[i];
 		desc->rd_info = kzalloc(sizeof(*desc->rd_info), GFP_KERNEL);
-		if (!desc->rd_info) {
-			ret = -ENOMEM;
-			goto err_free_desc;
-		}
 
-		if (!device_alloc_rx_buf(priv, desc)) {
+		if (!device_alloc_rx_buf(priv, desc))
 			dev_err(&priv->pcid->dev, "can not alloc rx bufs\n");
-			ret = -ENOMEM;
-			goto err_free_rd;
-		}
 
-		desc->next = &priv->aRD1Ring[(i+1) % priv->opts.rx_descs1];
+		desc->next = &(priv->aRD1Ring[(i+1) % priv->opts.rx_descs1]);
 		desc->next_desc = cpu_to_le32(curr + sizeof(struct vnt_rx_desc));
 	}
 
 	if (i > 0)
 		priv->aRD1Ring[i-1].next_desc = cpu_to_le32(priv->rd1_pool_dma);
 	priv->pCurrRD[1] = &priv->aRD1Ring[0];
-
-	return 0;
-
-err_free_rd:
-	kfree(desc->rd_info);
-
-err_free_desc:
-	while (--i) {
-		desc = &priv->aRD1Ring[i];
-		device_free_rx_buf(priv, desc);
-		kfree(desc->rd_info);
-	}
-
-	return ret;
 }
 
 static void device_free_rd0_ring(struct vnt_private *priv)
@@ -620,9 +581,14 @@ static void device_free_rd0_ring(struct vnt_private *priv)
 	int i;
 
 	for (i = 0; i < priv->opts.rx_descs0; i++) {
-		struct vnt_rx_desc *desc = &priv->aRD0Ring[i];
+		struct vnt_rx_desc *desc = &(priv->aRD0Ring[i]);
+		struct vnt_rd_info *rd_info = desc->rd_info;
 
-		device_free_rx_buf(priv, desc);
+		dma_unmap_single(&priv->pcid->dev, rd_info->skb_dma,
+				 priv->rx_buf_sz, DMA_FROM_DEVICE);
+
+		dev_kfree_skb(rd_info->skb);
+
 		kfree(desc->rd_info);
 	}
 }
@@ -633,28 +599,28 @@ static void device_free_rd1_ring(struct vnt_private *priv)
 
 	for (i = 0; i < priv->opts.rx_descs1; i++) {
 		struct vnt_rx_desc *desc = &priv->aRD1Ring[i];
+		struct vnt_rd_info *rd_info = desc->rd_info;
 
-		device_free_rx_buf(priv, desc);
+		dma_unmap_single(&priv->pcid->dev, rd_info->skb_dma,
+				 priv->rx_buf_sz, DMA_FROM_DEVICE);
+
+		dev_kfree_skb(rd_info->skb);
+
 		kfree(desc->rd_info);
 	}
 }
 
-static int device_init_td0_ring(struct vnt_private *priv)
+static void device_init_td0_ring(struct vnt_private *priv)
 {
 	int i;
 	dma_addr_t  curr;
 	struct vnt_tx_desc *desc;
-	int ret;
 
 	curr = priv->td0_pool_dma;
 	for (i = 0; i < priv->opts.tx_descs[0];
 	     i++, curr += sizeof(struct vnt_tx_desc)) {
 		desc = &priv->apTD0Rings[i];
 		desc->td_info = kzalloc(sizeof(*desc->td_info), GFP_KERNEL);
-		if (!desc->td_info) {
-			ret = -ENOMEM;
-			goto err_free_desc;
-		}
 
 		desc->td_info->buf = priv->tx0_bufs + i * PKT_BUF_SZ;
 		desc->td_info->buf_dma = priv->tx_bufs_dma0 + i * PKT_BUF_SZ;
@@ -666,24 +632,13 @@ static int device_init_td0_ring(struct vnt_private *priv)
 	if (i > 0)
 		priv->apTD0Rings[i-1].next_desc = cpu_to_le32(priv->td0_pool_dma);
 	priv->apTailTD[0] = priv->apCurrTD[0] = &priv->apTD0Rings[0];
-
-	return 0;
-
-err_free_desc:
-	while (--i) {
-		desc = &priv->apTD0Rings[i];
-		kfree(desc->td_info);
-	}
-
-	return ret;
 }
 
-static int device_init_td1_ring(struct vnt_private *priv)
+static void device_init_td1_ring(struct vnt_private *priv)
 {
 	int i;
 	dma_addr_t  curr;
 	struct vnt_tx_desc *desc;
-	int ret;
 
 	/* Init the TD ring entries */
 	curr = priv->td1_pool_dma;
@@ -691,10 +646,6 @@ static int device_init_td1_ring(struct vnt_private *priv)
 	     i++, curr += sizeof(struct vnt_tx_desc)) {
 		desc = &priv->apTD1Rings[i];
 		desc->td_info = kzalloc(sizeof(*desc->td_info), GFP_KERNEL);
-		if (!desc->td_info) {
-			ret = -ENOMEM;
-			goto err_free_desc;
-		}
 
 		desc->td_info->buf = priv->tx1_bufs + i * PKT_BUF_SZ;
 		desc->td_info->buf_dma = priv->tx_bufs_dma1 + i * PKT_BUF_SZ;
@@ -706,16 +657,6 @@ static int device_init_td1_ring(struct vnt_private *priv)
 	if (i > 0)
 		priv->apTD1Rings[i-1].next_desc = cpu_to_le32(priv->td1_pool_dma);
 	priv->apTailTD[1] = priv->apCurrTD[1] = &priv->apTD1Rings[0];
-
-	return 0;
-
-err_free_desc:
-	while (--i) {
-		desc = &priv->apTD1Rings[i];
-		kfree(desc->td_info);
-	}
-
-	return ret;
 }
 
 static void device_free_td0_ring(struct vnt_private *priv)
@@ -802,16 +743,6 @@ static bool device_alloc_rx_buf(struct vnt_private *priv,
 	rd->buff_addr = cpu_to_le32(rd_info->skb_dma);
 
 	return true;
-}
-
-static void device_free_rx_buf(struct vnt_private *priv,
-				struct vnt_rx_desc *rd)
-{
-	struct vnt_rd_info *rd_info = rd->rd_info;
-
-	dma_unmap_single(&priv->pcid->dev, rd_info->skb_dma,
-			priv->rx_buf_sz, DMA_FROM_DEVICE);
-	dev_kfree_skb(rd_info->skb);
 }
 
 static const u8 fallback_rate0[5][5] = {
@@ -1230,22 +1161,14 @@ static int vnt_start(struct ieee80211_hw *hw)
 			  IRQF_SHARED, "vt6655", priv);
 	if (ret) {
 		dev_dbg(&priv->pcid->dev, "failed to start irq\n");
-		goto err_free_rings;
+		return ret;
 	}
 
 	dev_dbg(&priv->pcid->dev, "call device init rd0 ring\n");
-	ret = device_init_rd0_ring(priv);
-	if (ret)
-		goto err_free_irq;
-	ret = device_init_rd1_ring(priv);
-	if (ret)
-		goto err_free_rd0_ring;
-	ret = device_init_td0_ring(priv);
-	if (ret)
-		goto err_free_rd1_ring;
-	ret = device_init_td1_ring(priv);
-	if (ret)
-		goto err_free_td0_ring;
+	device_init_rd0_ring(priv);
+	device_init_rd1_ring(priv);
+	device_init_td0_ring(priv);
+	device_init_td1_ring(priv);
 
 	device_init_registers(priv);
 
@@ -1255,18 +1178,6 @@ static int vnt_start(struct ieee80211_hw *hw)
 	ieee80211_wake_queues(hw);
 
 	return 0;
-
-err_free_td0_ring:
-	device_free_td0_ring(priv);
-err_free_rd1_ring:
-	device_free_rd1_ring(priv);
-err_free_rd0_ring:
-	device_free_rd0_ring(priv);
-err_free_irq:
-	free_irq(priv->pcid->irq, priv);
-err_free_rings:
-	device_free_rings(priv);
-	return ret;
 }
 
 static void vnt_stop(struct ieee80211_hw *hw)

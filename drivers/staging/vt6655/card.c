@@ -557,7 +557,10 @@ CARDvSafeResetTx(
  *
  * Return Value: none
  */
-void CARDvSafeResetRx(struct vnt_private *priv)
+void
+CARDvSafeResetRx(
+	struct vnt_private *priv
+)
 {
 	unsigned int uu;
 	struct vnt_rx_desc *pDesc;

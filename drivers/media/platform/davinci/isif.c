@@ -31,6 +31,8 @@
 #include <linux/err.h>
 #include <linux/module.h>
 
+#include <mach/mux.h>
+
 #include <media/davinci/isif.h>
 #include <media/davinci/vpss.h>
 
@@ -1027,7 +1029,7 @@ static int isif_probe(struct platform_device *pdev)
 {
 	void (*setup_pinmux)(void);
 	struct resource	*res;
-	void __iomem *addr;
+	void *__iomem addr;
 	int status = 0, i;
 
 	/* Platform data holds setup_pinmux function ptr */
@@ -1100,8 +1102,7 @@ fail_nobase_res:
 
 	while (i >= 0) {
 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
-		if (res)
-			release_mem_region(res->start, resource_size(res));
+		release_mem_region(res->start, resource_size(res));
 		i--;
 	}
 	vpfe_unregister_ccdc_device(&isif_hw_dev);

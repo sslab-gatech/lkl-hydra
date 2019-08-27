@@ -100,7 +100,7 @@ int x25_parse_address_block(struct sk_buff *skb,
 	}
 
 	len = *skb->data;
-	needed = 1 + ((len >> 4) + (len & 0x0f) + 1) / 2;
+	needed = 1 + (len >> 4) + (len & 0x0f);
 
 	if (!pskb_may_pull(skb, needed)) {
 		/* packet is too short to hold the addresses it claims
@@ -288,7 +288,7 @@ static struct sock *x25_find_listener(struct x25_address *addr,
 	sk_for_each(s, &x25_list)
 		if ((!strcmp(addr->x25_addr,
 			x25_sk(s)->source_addr.x25_addr) ||
-				!strcmp(x25_sk(s)->source_addr.x25_addr,
+				!strcmp(addr->x25_addr,
 					null_x25_address.x25_addr)) &&
 					s->sk_state == TCP_LISTEN) {
 			/*
@@ -352,15 +352,17 @@ static unsigned int x25_new_lci(struct x25_neigh *nb)
 	unsigned int lci = 1;
 	struct sock *sk;
 
-	while ((sk = x25_find_socket(lci, nb)) != NULL) {
+	read_lock_bh(&x25_list_lock);
+
+	while ((sk = __x25_find_socket(lci, nb)) != NULL) {
 		sock_put(sk);
 		if (++lci == 4096) {
 			lci = 0;
 			break;
 		}
-		cond_resched();
 	}
 
+	read_unlock_bh(&x25_list_lock);
 	return lci;
 }
 
@@ -679,32 +681,25 @@ static int x25_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	struct sockaddr_x25 *addr = (struct sockaddr_x25 *)uaddr;
 	int len, i, rc = 0;
 
-	if (addr_len != sizeof(struct sockaddr_x25) ||
+	if (!sock_flag(sk, SOCK_ZAPPED) ||
+	    addr_len != sizeof(struct sockaddr_x25) ||
 	    addr->sx25_family != AF_X25) {
 		rc = -EINVAL;
 		goto out;
 	}
 
-	/* check for the null_x25_address */
-	if (strcmp(addr->sx25_addr.x25_addr, null_x25_address.x25_addr)) {
-
-		len = strlen(addr->sx25_addr.x25_addr);
-		for (i = 0; i < len; i++) {
-			if (!isdigit(addr->sx25_addr.x25_addr[i])) {
-				rc = -EINVAL;
-				goto out;
-			}
+	len = strlen(addr->sx25_addr.x25_addr);
+	for (i = 0; i < len; i++) {
+		if (!isdigit(addr->sx25_addr.x25_addr[i])) {
+			rc = -EINVAL;
+			goto out;
 		}
 	}
 
 	lock_sock(sk);
-	if (sock_flag(sk, SOCK_ZAPPED)) {
-		x25_sk(sk)->source_addr = addr->sx25_addr;
-		x25_insert_socket(sk);
-		sock_reset_flag(sk, SOCK_ZAPPED);
-	} else {
-		rc = -EINVAL;
-	}
+	x25_sk(sk)->source_addr = addr->sx25_addr;
+	x25_insert_socket(sk);
+	sock_reset_flag(sk, SOCK_ZAPPED);
 	release_sock(sk);
 	SOCK_DEBUG(sk, "x25_bind: socket is bound\n");
 out:
@@ -901,7 +896,7 @@ out:
 }
 
 static int x25_getname(struct socket *sock, struct sockaddr *uaddr,
-		       int peer)
+		       int *uaddr_len, int peer)
 {
 	struct sockaddr_x25 *sx25 = (struct sockaddr_x25 *)uaddr;
 	struct sock *sk = sock->sk;
@@ -918,7 +913,7 @@ static int x25_getname(struct socket *sock, struct sockaddr *uaddr,
 		sx25->sx25_addr = x25->source_addr;
 
 	sx25->sx25_family = AF_X25;
-	rc = sizeof(*sx25);
+	*uaddr_len = sizeof(*sx25);
 
 out:
 	return rc;

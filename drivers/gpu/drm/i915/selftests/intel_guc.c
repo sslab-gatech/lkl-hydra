@@ -65,40 +65,6 @@ static int check_all_doorbells(struct intel_guc *guc)
 	return 0;
 }
 
-static int ring_doorbell_nop(struct intel_guc_client *client)
-{
-	struct guc_process_desc *desc = __get_process_desc(client);
-	int err;
-
-	client->use_nop_wqi = true;
-
-	spin_lock_irq(&client->wq_lock);
-
-	guc_wq_item_append(client, 0, 0, 0, 0);
-	guc_ring_doorbell(client);
-
-	spin_unlock_irq(&client->wq_lock);
-
-	client->use_nop_wqi = false;
-
-	/* if there are no issues GuC will update the WQ head and keep the
-	 * WQ in active status
-	 */
-	err = wait_for(READ_ONCE(desc->head) == READ_ONCE(desc->tail), 10);
-	if (err) {
-		pr_err("doorbell %u ring failed!\n", client->doorbell_id);
-		return -EIO;
-	}
-
-	if (desc->wq_status != WQ_STATUS_ACTIVE) {
-		pr_err("doorbell %u ring put WQ in bad state (%u)!\n",
-		       client->doorbell_id, desc->wq_status);
-		return -EIO;
-	}
-
-	return 0;
-}
-
 /*
  * Basic client sanity check, handy to validate create_clients.
  */
@@ -121,7 +87,7 @@ static int validate_client(struct intel_guc_client *client,
 
 static bool client_doorbell_in_sync(struct intel_guc_client *client)
 {
-	return !client || doorbell_ok(client->guc, client->doorbell_id);
+	return doorbell_ok(client->guc, client->doorbell_id);
 }
 
 /*
@@ -142,7 +108,6 @@ static int igt_guc_clients(void *args)
 
 	GEM_BUG_ON(!HAS_GUC(dev_priv));
 	mutex_lock(&dev_priv->drm.struct_mutex);
-	intel_runtime_pm_get(dev_priv);
 
 	guc = &dev_priv->guc;
 	if (!guc) {
@@ -159,7 +124,6 @@ static int igt_guc_clients(void *args)
 	 * Get rid of clients created during driver load because the test will
 	 * recreate them.
 	 */
-	guc_clients_disable(guc);
 	guc_clients_destroy(guc);
 	if (guc->execbuf_client || guc->preempt_client) {
 		pr_err("guc_clients_destroy lied!\n");
@@ -173,6 +137,7 @@ static int igt_guc_clients(void *args)
 		goto unlock;
 	}
 	GEM_BUG_ON(!guc->execbuf_client);
+	GEM_BUG_ON(!guc->preempt_client);
 
 	err = validate_client(guc->execbuf_client,
 			      GUC_CLIENT_PRIORITY_KMD_NORMAL, false);
@@ -181,25 +146,23 @@ static int igt_guc_clients(void *args)
 		goto out;
 	}
 
-	if (guc->preempt_client) {
-		err = validate_client(guc->preempt_client,
-				      GUC_CLIENT_PRIORITY_KMD_HIGH, true);
-		if (err) {
-			pr_err("preempt client validation failed\n");
-			goto out;
-		}
+	err = validate_client(guc->preempt_client,
+			      GUC_CLIENT_PRIORITY_KMD_HIGH, true);
+	if (err) {
+		pr_err("preempt client validation failed\n");
+		goto out;
 	}
 
 	/* each client should now have reserved a doorbell */
 	if (!has_doorbell(guc->execbuf_client) ||
-	    (guc->preempt_client && !has_doorbell(guc->preempt_client))) {
+	    !has_doorbell(guc->preempt_client)) {
 		pr_err("guc_clients_create didn't reserve doorbells\n");
 		err = -EINVAL;
 		goto out;
 	}
 
-	/* Now enable the clients */
-	guc_clients_enable(guc);
+	/* Now create the doorbells */
+	guc_clients_doorbell_init(guc);
 
 	/* each client should now have received a doorbell */
 	if (!client_doorbell_in_sync(guc->execbuf_client) ||
@@ -213,19 +176,59 @@ static int igt_guc_clients(void *args)
 	 * Basic test - an attempt to reallocate a valid doorbell to the
 	 * client it is currently assigned should not cause a failure.
 	 */
+	err = guc_clients_doorbell_init(guc);
+	if (err)
+		goto out;
+
+	/*
+	 * Negative test - a client with no doorbell (invalid db id).
+	 * After destroying the doorbell, the db id is changed to
+	 * GUC_DOORBELL_INVALID and the firmware will reject any attempt to
+	 * allocate a doorbell with an invalid id (db has to be reserved before
+	 * allocation).
+	 */
+	destroy_doorbell(guc->execbuf_client);
+	if (client_doorbell_in_sync(guc->execbuf_client)) {
+		pr_err("destroy db did not work\n");
+		err = -EINVAL;
+		goto out;
+	}
+
+	unreserve_doorbell(guc->execbuf_client);
+	err = guc_clients_doorbell_init(guc);
+	if (err != -EIO) {
+		pr_err("unexpected (err = %d)", err);
+		goto out;
+	}
+
+	if (!available_dbs(guc, guc->execbuf_client->priority)) {
+		pr_err("doorbell not available when it should\n");
+		err = -EIO;
+		goto out;
+	}
+
+	/* clean after test */
+	err = reserve_doorbell(guc->execbuf_client);
+	if (err) {
+		pr_err("failed to reserve back the doorbell back\n");
+	}
 	err = create_doorbell(guc->execbuf_client);
+	if (err) {
+		pr_err("recreate doorbell failed\n");
+		goto out;
+	}
 
 out:
 	/*
 	 * Leave clean state for other test, plus the driver always destroy the
 	 * clients during unload.
 	 */
-	guc_clients_disable(guc);
+	destroy_doorbell(guc->execbuf_client);
+	destroy_doorbell(guc->preempt_client);
 	guc_clients_destroy(guc);
 	guc_clients_create(guc);
-	guc_clients_enable(guc);
+	guc_clients_doorbell_init(guc);
 unlock:
-	intel_runtime_pm_put(dev_priv);
 	mutex_unlock(&dev_priv->drm.struct_mutex);
 	return err;
 }
@@ -244,7 +247,6 @@ static int igt_guc_doorbells(void *arg)
 
 	GEM_BUG_ON(!HAS_GUC(dev_priv));
 	mutex_lock(&dev_priv->drm.struct_mutex);
-	intel_runtime_pm_get(dev_priv);
 
 	guc = &dev_priv->guc;
 	if (!guc) {
@@ -307,7 +309,7 @@ static int igt_guc_doorbells(void *arg)
 
 		db_id = clients[i]->doorbell_id;
 
-		err = __guc_client_enable(clients[i]);
+		err = create_doorbell(clients[i]);
 		if (err) {
 			pr_err("[%d] Failed to create a doorbell\n", i);
 			goto out;
@@ -324,20 +326,15 @@ static int igt_guc_doorbells(void *arg)
 		err = check_all_doorbells(guc);
 		if (err)
 			goto out;
-
-		err = ring_doorbell_nop(clients[i]);
-		if (err)
-			goto out;
 	}
 
 out:
 	for (i = 0; i < ATTEMPTS; i++)
 		if (!IS_ERR_OR_NULL(clients[i])) {
-			__guc_client_disable(clients[i]);
+			destroy_doorbell(clients[i]);
 			guc_client_free(clients[i]);
 		}
 unlock:
-	intel_runtime_pm_put(dev_priv);
 	mutex_unlock(&dev_priv->drm.struct_mutex);
 	return err;
 }

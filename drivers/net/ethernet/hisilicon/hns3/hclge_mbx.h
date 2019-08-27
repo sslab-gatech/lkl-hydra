@@ -11,7 +11,6 @@
 
 enum HCLGE_MBX_OPCODE {
 	HCLGE_MBX_RESET = 0x01,		/* (VF -> PF) assert reset */
-	HCLGE_MBX_ASSERTING_RESET,	/* (PF -> VF) PF is asserting reset*/
 	HCLGE_MBX_SET_UNICAST,		/* (VF -> PF) set UC addr */
 	HCLGE_MBX_SET_MULTICAST,	/* (VF -> PF) set MC addr */
 	HCLGE_MBX_SET_VLAN,		/* (VF -> PF) set VLAN */
@@ -36,10 +35,6 @@ enum HCLGE_MBX_OPCODE {
 	HCLGE_MBX_BIND_FUNC_QUEUE,	/* (VF -> PF) bind function and queue */
 	HCLGE_MBX_GET_LINK_STATUS,	/* (VF -> PF) get link status */
 	HCLGE_MBX_QUEUE_RESET,		/* (VF -> PF) reset queue */
-	HCLGE_MBX_KEEP_ALIVE,		/* (VF -> PF) send keep alive cmd */
-	HCLGE_MBX_SET_ALIVE,		/* (VF -> PF) set alive state */
-	HCLGE_MBX_SET_MTU,		/* (VF -> PF) set mtu */
-	HCLGE_MBX_GET_QID_IN_PF,	/* (VF -> PF) get queue id in pf */
 };
 
 /* below are per-VF mac-vlan subcodes */
@@ -50,6 +45,7 @@ enum hclge_mbx_mac_vlan_subcode {
 	HCLGE_MBX_MAC_VLAN_MC_MODIFY,		/* modify MC mac addr */
 	HCLGE_MBX_MAC_VLAN_MC_ADD,		/* add new MC mac addr */
 	HCLGE_MBX_MAC_VLAN_MC_REMOVE,		/* remove MC mac addr */
+	HCLGE_MBX_MAC_VLAN_MC_FUNC_MTA_ENABLE,	/* config func MTA enable */
 };
 
 /* below are per-VF vlan cfg subcodes */
@@ -61,8 +57,6 @@ enum hclge_mbx_vlan_cfg_subcode {
 
 #define HCLGE_MBX_MAX_MSG_SIZE	16
 #define HCLGE_MBX_MAX_RESP_DATA_SIZE	8
-#define HCLGE_MBX_RING_MAP_BASIC_MSG_NUM	3
-#define HCLGE_MBX_RING_NODE_VARIABLE_NUM	3
 
 struct hclgevf_mbx_resp_status {
 	struct mutex mbx_mutex; /* protects against contending sync cmd resp */
@@ -89,27 +83,6 @@ struct hclge_mbx_pf_to_vf_cmd {
 	u16 msg[8];
 };
 
-struct hclge_vf_rst_cmd {
-	u8 dest_vfid;
-	u8 vf_rst;
-	u8 rsv[22];
-};
-
-/* used by VF to store the received Async responses from PF */
-struct hclgevf_mbx_arq_ring {
-#define HCLGE_MBX_MAX_ARQ_MSG_SIZE	8
-#define HCLGE_MBX_MAX_ARQ_MSG_NUM	1024
-	struct hclgevf_dev *hdev;
-	u32 head;
-	u32 tail;
-	u32 count;
-	u16 msg_q[HCLGE_MBX_MAX_ARQ_MSG_NUM][HCLGE_MBX_MAX_ARQ_MSG_SIZE];
-};
-
 #define hclge_mbx_ring_ptr_move_crq(crq) \
 	(crq->next_to_use = (crq->next_to_use + 1) % crq->desc_num)
-#define hclge_mbx_tail_ptr_move_arq(arq) \
-	(arq.tail = (arq.tail + 1) % HCLGE_MBX_MAX_ARQ_MSG_SIZE)
-#define hclge_mbx_head_ptr_move_arq(arq) \
-		(arq.head = (arq.head + 1) % HCLGE_MBX_MAX_ARQ_MSG_SIZE)
 #endif

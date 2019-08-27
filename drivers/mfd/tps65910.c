@@ -229,7 +229,7 @@ static struct regmap_irq_chip tps65910_irq_chip = {
 static int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 		    struct tps65910_platform_data *pdata)
 {
-	int ret;
+	int ret = 0;
 	static struct regmap_irq_chip *tps6591x_irqs_chip;
 
 	if (!irq) {
@@ -312,13 +312,13 @@ static int tps65910_ck32k_init(struct tps65910 *tps65910,
 static int tps65910_sleepinit(struct tps65910 *tps65910,
 		struct tps65910_board *pmic_pdata)
 {
-	struct device *dev;
-	int ret;
+	struct device *dev = NULL;
+	int ret = 0;
+
+	dev = tps65910->dev;
 
 	if (!pmic_pdata->en_dev_slp)
 		return 0;
-
-	dev = tps65910->dev;
 
 	/* enabling SLEEP device state */
 	ret = tps65910_reg_set_bits(tps65910, TPS65910_DEVCTRL,
@@ -383,7 +383,7 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 	struct tps65910_board *board_info;
 	unsigned int prop;
 	const struct of_device_id *match;
-	int ret;
+	int ret = 0;
 
 	match = of_match_device(tps65910_of_match, &client->dev);
 	if (!match) {
@@ -395,8 +395,10 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 
 	board_info = devm_kzalloc(&client->dev, sizeof(*board_info),
 			GFP_KERNEL);
-	if (!board_info)
+	if (!board_info) {
+		dev_err(&client->dev, "Failed to allocate pdata\n");
 		return NULL;
+	}
 
 	ret = of_property_read_u32(np, "ti,vmbch-threshold", &prop);
 	if (!ret)
@@ -460,7 +462,7 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 	struct tps65910_board *of_pmic_plat_data = NULL;
 	struct tps65910_platform_data *init_data;
 	unsigned long chip_id = id->driver_data;
-	int ret;
+	int ret = 0;
 
 	pmic_plat_data = dev_get_platdata(&i2c->dev);
 

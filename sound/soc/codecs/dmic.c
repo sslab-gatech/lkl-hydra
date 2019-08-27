@@ -19,7 +19,6 @@
  *
  */
 
-#include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
@@ -30,31 +29,24 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 
-#define MAX_MODESWITCH_DELAY 70
-static int modeswitch_delay;
-module_param(modeswitch_delay, uint, 0644);
-
-static int wakeup_delay;
-module_param(wakeup_delay, uint, 0644);
-
-struct dmic {
-	struct gpio_desc *gpio_en;
-	int wakeup_delay;
-	/* Delay after DMIC mode switch */
-	int modeswitch_delay;
-};
-
-int dmic_daiops_trigger(struct snd_pcm_substream *substream,
+static int dmic_daiops_trigger(struct snd_pcm_substream *substream,
 		int cmd, struct snd_soc_dai *dai)
 {
-	struct snd_soc_component *component = dai->component;
-	struct dmic *dmic = snd_soc_component_get_drvdata(component);
+	struct gpio_desc *dmic_en = snd_soc_dai_get_drvdata(dai);
+
+	if (!dmic_en)
+		return 0;
 
 	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		gpiod_set_value(dmic_en, 1);
+		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		if (dmic->modeswitch_delay)
-			mdelay(dmic->modeswitch_delay);
-
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		gpiod_set_value(dmic_en, 0);
 		break;
 	}
 
@@ -64,28 +56,6 @@ int dmic_daiops_trigger(struct snd_pcm_substream *substream,
 static const struct snd_soc_dai_ops dmic_dai_ops = {
 	.trigger	= dmic_daiops_trigger,
 };
-
-static int dmic_aif_event(struct snd_soc_dapm_widget *w,
-			  struct snd_kcontrol *kcontrol, int event) {
-	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
-	struct dmic *dmic = snd_soc_component_get_drvdata(component);
-
-	switch (event) {
-	case SND_SOC_DAPM_POST_PMU:
-		if (dmic->gpio_en)
-			gpiod_set_value(dmic->gpio_en, 1);
-
-		if (dmic->wakeup_delay)
-			msleep(dmic->wakeup_delay);
-		break;
-	case SND_SOC_DAPM_POST_PMD:
-		if (dmic->gpio_en)
-			gpiod_set_value(dmic->gpio_en, 0);
-		break;
-	}
-
-	return 0;
-}
 
 static struct snd_soc_dai_driver dmic_dai = {
 	.name = "dmic-hifi",
@@ -101,40 +71,23 @@ static struct snd_soc_dai_driver dmic_dai = {
 	.ops    = &dmic_dai_ops,
 };
 
-static int dmic_component_probe(struct snd_soc_component *component)
+static int dmic_codec_probe(struct snd_soc_codec *codec)
 {
-	struct dmic *dmic;
+	struct gpio_desc *dmic_en;
 
-	dmic = devm_kzalloc(component->dev, sizeof(*dmic), GFP_KERNEL);
-	if (!dmic)
-		return -ENOMEM;
+	dmic_en = devm_gpiod_get_optional(codec->dev,
+					"dmicen", GPIOD_OUT_LOW);
+	if (IS_ERR(dmic_en))
+		return PTR_ERR(dmic_en);
 
-	dmic->gpio_en = devm_gpiod_get_optional(component->dev,
-						"dmicen", GPIOD_OUT_LOW);
-	if (IS_ERR(dmic->gpio_en))
-		return PTR_ERR(dmic->gpio_en);
-
-	device_property_read_u32(component->dev, "wakeup-delay-ms",
-				 &dmic->wakeup_delay);
-	device_property_read_u32(component->dev, "modeswitch-delay-ms",
-				 &dmic->modeswitch_delay);
-	if (wakeup_delay)
-		dmic->wakeup_delay  = wakeup_delay;
-	if (modeswitch_delay)
-		dmic->modeswitch_delay  = modeswitch_delay;
-
-	if (dmic->modeswitch_delay > MAX_MODESWITCH_DELAY)
-		dmic->modeswitch_delay = MAX_MODESWITCH_DELAY;
-
-	snd_soc_component_set_drvdata(component, dmic);
+	snd_soc_codec_set_drvdata(codec, dmic_en);
 
 	return 0;
 }
 
 static const struct snd_soc_dapm_widget dmic_dapm_widgets[] = {
-	SND_SOC_DAPM_AIF_OUT_E("DMIC AIF", "Capture", 0,
-			       SND_SOC_NOPM, 0, 0, dmic_aif_event,
-			       SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_AIF_OUT("DMIC AIF", "Capture", 0,
+			     SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_INPUT("DMic"),
 };
 
@@ -142,16 +95,14 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{"DMIC AIF", NULL, "DMic"},
 };
 
-static const struct snd_soc_component_driver soc_dmic = {
-	.probe			= dmic_component_probe,
-	.dapm_widgets		= dmic_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(dmic_dapm_widgets),
-	.dapm_routes		= intercon,
-	.num_dapm_routes	= ARRAY_SIZE(intercon),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static const struct snd_soc_codec_driver soc_dmic = {
+	.probe = dmic_codec_probe,
+	.component_driver = {
+		.dapm_widgets		= dmic_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(dmic_dapm_widgets),
+		.dapm_routes		= intercon,
+		.num_dapm_routes	= ARRAY_SIZE(intercon),
+	},
 };
 
 static int dmic_dev_probe(struct platform_device *pdev)
@@ -178,8 +129,14 @@ static int dmic_dev_probe(struct platform_device *pdev)
 		}
 	}
 
-	return devm_snd_soc_register_component(&pdev->dev,
+	return snd_soc_register_codec(&pdev->dev,
 			&soc_dmic, dai_drv, 1);
+}
+
+static int dmic_dev_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_codec(&pdev->dev);
+	return 0;
 }
 
 MODULE_ALIAS("platform:dmic-codec");
@@ -188,7 +145,6 @@ static const struct of_device_id dmic_dev_match[] = {
 	{.compatible = "dmic-codec"},
 	{}
 };
-MODULE_DEVICE_TABLE(of, dmic_dev_match);
 
 static struct platform_driver dmic_driver = {
 	.driver = {
@@ -196,6 +152,7 @@ static struct platform_driver dmic_driver = {
 		.of_match_table = dmic_dev_match,
 	},
 	.probe = dmic_dev_probe,
+	.remove = dmic_dev_remove,
 };
 
 module_platform_driver(dmic_driver);

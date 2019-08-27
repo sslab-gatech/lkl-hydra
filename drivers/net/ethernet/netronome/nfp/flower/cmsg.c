@@ -1,5 +1,35 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-/* Copyright (C) 2015-2018 Netronome Systems, Inc. */
+/*
+ * Copyright (C) 2015-2017 Netronome Systems, Inc.
+ *
+ * This software is dual licensed under the GNU General License Version 2,
+ * June 1991 as shown in the file COPYING in the top-level directory of this
+ * source tree or the BSD 2-Clause License provided below.  You have the
+ * option to license this software under the complete terms of either license.
+ *
+ * The BSD 2-Clause License:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      1. Redistributions of source code must retain the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer.
+ *
+ *      2. Redistributions in binary form must reproduce the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer in the documentation and/or other materials
+ *         provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 
 #include <linux/bitfield.h>
 #include <linux/netdevice.h>
@@ -74,8 +104,7 @@ nfp_flower_cmsg_mac_repr_add(struct sk_buff *skb, unsigned int idx,
 	msg->ports[idx].phys_port = phys_port;
 }
 
-int nfp_flower_cmsg_portmod(struct nfp_repr *repr, bool carrier_ok,
-			    unsigned int mtu, bool mtu_only)
+int nfp_flower_cmsg_portmod(struct nfp_repr *repr, bool carrier_ok)
 {
 	struct nfp_flower_cmsg_portmod *msg;
 	struct sk_buff *skb;
@@ -89,11 +118,7 @@ int nfp_flower_cmsg_portmod(struct nfp_repr *repr, bool carrier_ok,
 	msg->portnum = cpu_to_be32(repr->dst->u.port_info.port_id);
 	msg->reserved = 0;
 	msg->info = carrier_ok;
-
-	if (mtu_only)
-		msg->info |= NFP_FLOWER_CMSG_PORTMOD_MTU_CHANGE_ONLY;
-
-	msg->mtu = cpu_to_be16(mtu);
+	msg->mtu = cpu_to_be16(repr->netdev->mtu);
 
 	nfp_ctrl_tx(repr->app->ctrl, skb);
 
@@ -119,34 +144,6 @@ int nfp_flower_cmsg_portreify(struct nfp_repr *repr, bool exists)
 	nfp_ctrl_tx(repr->app->ctrl, skb);
 
 	return 0;
-}
-
-static bool
-nfp_flower_process_mtu_ack(struct nfp_app *app, struct sk_buff *skb)
-{
-	struct nfp_flower_priv *app_priv = app->priv;
-	struct nfp_flower_cmsg_portmod *msg;
-
-	msg = nfp_flower_cmsg_get_data(skb);
-
-	if (!(msg->info & NFP_FLOWER_CMSG_PORTMOD_MTU_CHANGE_ONLY))
-		return false;
-
-	spin_lock_bh(&app_priv->mtu_conf.lock);
-	if (!app_priv->mtu_conf.requested_val ||
-	    app_priv->mtu_conf.portnum != be32_to_cpu(msg->portnum) ||
-	    be16_to_cpu(msg->mtu) != app_priv->mtu_conf.requested_val) {
-		/* Not an ack for requested MTU change. */
-		spin_unlock_bh(&app_priv->mtu_conf.lock);
-		return false;
-	}
-
-	app_priv->mtu_conf.ack = true;
-	app_priv->mtu_conf.requested_val = 0;
-	wake_up(&app_priv->mtu_conf.wait_q);
-	spin_unlock_bh(&app_priv->mtu_conf.lock);
-
-	return true;
 }
 
 static void
@@ -209,10 +206,8 @@ nfp_flower_cmsg_portreify_rx(struct nfp_app *app, struct sk_buff *skb)
 static void
 nfp_flower_cmsg_process_one_rx(struct nfp_app *app, struct sk_buff *skb)
 {
-	struct nfp_flower_priv *app_priv = app->priv;
 	struct nfp_flower_cmsg_hdr *cmsg_hdr;
 	enum nfp_flower_cmsg_type_port type;
-	bool skb_stored = false;
 
 	cmsg_hdr = nfp_flower_cmsg_get_hdr(skb);
 
@@ -230,20 +225,16 @@ nfp_flower_cmsg_process_one_rx(struct nfp_app *app, struct sk_buff *skb)
 	case NFP_FLOWER_CMSG_TYPE_ACTIVE_TUNS:
 		nfp_tunnel_keep_alive(app, skb);
 		break;
-	case NFP_FLOWER_CMSG_TYPE_LAG_CONFIG:
-		if (app_priv->flower_ext_feats & NFP_FL_FEATS_LAG) {
-			skb_stored = nfp_flower_lag_unprocessed_msg(app, skb);
-			break;
-		}
-		/* fall through */
+	case NFP_FLOWER_CMSG_TYPE_TUN_NEIGH:
+		/* Acks from the NFP that the route is added - ignore. */
+		break;
 	default:
 		nfp_flower_cmsg_warn(app, "Cannot handle invalid repr control type %u\n",
 				     type);
 		goto out;
 	}
 
-	if (!skb_stored)
-		dev_consume_skb_any(skb);
+	dev_consume_skb_any(skb);
 	return;
 out:
 	dev_kfree_skb_any(skb);
@@ -251,49 +242,18 @@ out:
 
 void nfp_flower_cmsg_process_rx(struct work_struct *work)
 {
-	struct sk_buff_head cmsg_joined;
 	struct nfp_flower_priv *priv;
 	struct sk_buff *skb;
 
 	priv = container_of(work, struct nfp_flower_priv, cmsg_work);
-	skb_queue_head_init(&cmsg_joined);
 
-	spin_lock_bh(&priv->cmsg_skbs_high.lock);
-	skb_queue_splice_tail_init(&priv->cmsg_skbs_high, &cmsg_joined);
-	spin_unlock_bh(&priv->cmsg_skbs_high.lock);
-
-	spin_lock_bh(&priv->cmsg_skbs_low.lock);
-	skb_queue_splice_tail_init(&priv->cmsg_skbs_low, &cmsg_joined);
-	spin_unlock_bh(&priv->cmsg_skbs_low.lock);
-
-	while ((skb = __skb_dequeue(&cmsg_joined)))
+	while ((skb = skb_dequeue(&priv->cmsg_skbs)))
 		nfp_flower_cmsg_process_one_rx(priv->app, skb);
-}
-
-static void
-nfp_flower_queue_ctl_msg(struct nfp_app *app, struct sk_buff *skb, int type)
-{
-	struct nfp_flower_priv *priv = app->priv;
-	struct sk_buff_head *skb_head;
-
-	if (type == NFP_FLOWER_CMSG_TYPE_PORT_REIFY ||
-	    type == NFP_FLOWER_CMSG_TYPE_PORT_MOD)
-		skb_head = &priv->cmsg_skbs_high;
-	else
-		skb_head = &priv->cmsg_skbs_low;
-
-	if (skb_queue_len(skb_head) >= NFP_FLOWER_WORKQ_MAX_SKBS) {
-		nfp_flower_cmsg_warn(app, "Dropping queued control messages\n");
-		dev_kfree_skb_any(skb);
-		return;
-	}
-
-	skb_queue_tail(skb_head, skb);
-	schedule_work(&priv->cmsg_work);
 }
 
 void nfp_flower_cmsg_rx(struct nfp_app *app, struct sk_buff *skb)
 {
+	struct nfp_flower_priv *priv = app->priv;
 	struct nfp_flower_cmsg_hdr *cmsg_hdr;
 
 	cmsg_hdr = nfp_flower_cmsg_get_hdr(skb);
@@ -309,14 +269,8 @@ void nfp_flower_cmsg_rx(struct nfp_app *app, struct sk_buff *skb)
 		/* We need to deal with stats updates from HW asap */
 		nfp_flower_rx_flow_stats(app, skb);
 		dev_consume_skb_any(skb);
-	} else if (cmsg_hdr->type == NFP_FLOWER_CMSG_TYPE_PORT_MOD &&
-		   nfp_flower_process_mtu_ack(app, skb)) {
-		/* Handle MTU acks outside wq to prevent RTNL conflict. */
-		dev_consume_skb_any(skb);
-	} else if (cmsg_hdr->type == NFP_FLOWER_CMSG_TYPE_TUN_NEIGH) {
-		/* Acks from the NFP that the route is added - ignore. */
-		dev_consume_skb_any(skb);
 	} else {
-		nfp_flower_queue_ctl_msg(app, skb, cmsg_hdr->type);
+		skb_queue_tail(&priv->cmsg_skbs, skb);
+		schedule_work(&priv->cmsg_work);
 	}
 }

@@ -273,7 +273,8 @@ static void __init asm9260_acc_init(struct device_node *np)
 	int n;
 	u32 accuracy = 0;
 
-	clk_data = kzalloc(struct_size(clk_data, hws, MAX_CLKS), GFP_KERNEL);
+	clk_data = kzalloc(sizeof(*clk_data) +
+			   sizeof(*clk_data->hws) * MAX_CLKS, GFP_KERNEL);
 	if (!clk_data)
 		return;
 	clk_data->num = MAX_CLKS;
@@ -281,7 +282,7 @@ static void __init asm9260_acc_init(struct device_node *np)
 
 	base = of_io_request_and_map(np, 0, np->name);
 	if (IS_ERR(base))
-		panic("%pOFn: unable to map resource", np);
+		panic("%s: unable to map resource", np->name);
 
 	/* register pll */
 	rate = (ioread32(base + HW_SYSPLLCTRL) & 0xffff) * 1000000;
@@ -292,7 +293,7 @@ static void __init asm9260_acc_init(struct device_node *np)
 			ref_clk, 0, rate, accuracy);
 
 	if (IS_ERR(hw))
-		panic("%pOFn: can't register REFCLK. Check DT!", np);
+		panic("%s: can't register REFCLK. Check DT!", np->name);
 
 	for (n = 0; n < ARRAY_SIZE(asm9260_mux_clks); n++) {
 		const struct asm9260_mux_clock *mc = &asm9260_mux_clks[n];

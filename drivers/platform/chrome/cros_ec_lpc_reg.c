@@ -24,8 +24,7 @@
 #include <linux/io.h>
 #include <linux/mfd/cros_ec.h>
 #include <linux/mfd/cros_ec_commands.h>
-
-#include "cros_ec_lpc_mec.h"
+#include <linux/mfd/cros_ec_lpc_mec.h>
 
 static u8 lpc_read_bytes(unsigned int offset, unsigned int length, u8 *dest)
 {

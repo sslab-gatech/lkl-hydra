@@ -1,11 +1,4 @@
-.. Permission is granted to copy, distribute and/or modify this
-.. document under the terms of the GNU Free Documentation License,
-.. Version 1.1 or any later version published by the Free Software
-.. Foundation, with no Invariant Sections, no Front-Cover Texts
-.. and no Back-Cover Texts. A copy of the license is included at
-.. Documentation/media/uapi/fdl-appendix.rst.
-..
-.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
+.. -*- coding: utf-8; mode: rst -*-
 
 ******************************
 Multi-planar format structures
@@ -62,14 +55,12 @@ describing all planes of that format.
       - ``pixelformat``
       - The pixel format. Both single- and multi-planar four character
 	codes can be used.
-    * - __u32
+    * - enum :c:type:`v4l2_field`
       - ``field``
-      - Field order, from enum :c:type:`v4l2_field`.
-        See struct :c:type:`v4l2_pix_format`.
-    * - __u32
+      - See struct :c:type:`v4l2_pix_format`.
+    * - enum :c:type:`v4l2_colorspace`
       - ``colorspace``
-      - Colorspace encoding, from enum :c:type:`v4l2_colorspace`.
-        See struct :c:type:`v4l2_pix_format`.
+      - See struct :c:type:`v4l2_pix_format`.
     * - struct :c:type:`v4l2_plane_pix_format`
       - ``plane_fmt[VIDEO_MAX_PLANES]``
       - An array of structures describing format of each plane this pixel
@@ -82,34 +73,24 @@ describing all planes of that format.
     * - __u8
       - ``flags``
       - Flags set by the application or driver, see :ref:`format-flags`.
-    * - union {
-      - (anonymous)
-      -
-    * - __u8
+    * - enum :c:type:`v4l2_ycbcr_encoding`
       - ``ycbcr_enc``
-      - Y'CbCr encoding, from enum :c:type:`v4l2_ycbcr_encoding`.
-        This information supplements the ``colorspace`` and must be set by
+      - This information supplements the ``colorspace`` and must be set by
 	the driver for capture streams and by the application for output
 	streams, see :ref:`colorspaces`.
-    * - __u8
+    * - enum :c:type:`v4l2_hsv_encoding`
       - ``hsv_enc``
-      - HSV encoding, from enum :c:type:`v4l2_hsv_encoding`.
-        This information supplements the ``colorspace`` and must be set by
+      - This information supplements the ``colorspace`` and must be set by
 	the driver for capture streams and by the application for output
 	streams, see :ref:`colorspaces`.
-    * - }
-      -
-      -
-    * - __u8
+    * - enum :c:type:`v4l2_quantization`
       - ``quantization``
-      - Quantization range, from enum :c:type:`v4l2_quantization`.
-        This information supplements the ``colorspace`` and must be set by
+      - This information supplements the ``colorspace`` and must be set by
 	the driver for capture streams and by the application for output
 	streams, see :ref:`colorspaces`.
-    * - __u8
+    * - enum :c:type:`v4l2_xfer_func`
       - ``xfer_func``
-      - Transfer function, from enum :c:type:`v4l2_xfer_func`.
-        This information supplements the ``colorspace`` and must be set by
+      - This information supplements the ``colorspace`` and must be set by
 	the driver for capture streams and by the application for output
 	streams, see :ref:`colorspaces`.
     * - __u8

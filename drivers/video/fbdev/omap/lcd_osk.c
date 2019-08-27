@@ -93,7 +93,3 @@ static struct platform_driver osk_panel_driver = {
 };
 
 module_platform_driver(osk_panel_driver);
-
-MODULE_AUTHOR("Imre Deak");
-MODULE_DESCRIPTION("LCD panel support for the TI OMAP OSK board");
-MODULE_LICENSE("GPL");

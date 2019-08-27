@@ -23,9 +23,6 @@
 static DEFINE_MUTEX(reset_list_mutex);
 static LIST_HEAD(reset_controller_list);
 
-static DEFINE_MUTEX(reset_lookup_mutex);
-static LIST_HEAD(reset_lookup_list);
-
 /**
  * struct reset_control - a reset control
  * @rcdev: a pointer to the reset controller device
@@ -150,33 +147,6 @@ int devm_reset_controller_register(struct device *dev,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(devm_reset_controller_register);
-
-/**
- * reset_controller_add_lookup - register a set of lookup entries
- * @lookup: array of reset lookup entries
- * @num_entries: number of entries in the lookup array
- */
-void reset_controller_add_lookup(struct reset_control_lookup *lookup,
-				 unsigned int num_entries)
-{
-	struct reset_control_lookup *entry;
-	unsigned int i;
-
-	mutex_lock(&reset_lookup_mutex);
-	for (i = 0; i < num_entries; i++) {
-		entry = &lookup[i];
-
-		if (!entry->dev_id || !entry->provider) {
-			pr_warn("%s(): reset lookup entry badly specified, skipping\n",
-				__func__);
-			continue;
-		}
-
-		list_add_tail(&entry->list, &reset_lookup_list);
-	}
-	mutex_unlock(&reset_lookup_mutex);
-}
-EXPORT_SYMBOL_GPL(reset_controller_add_lookup);
 
 static inline struct reset_control_array *
 rstc_to_array(struct reset_control *rstc) {
@@ -496,97 +466,32 @@ struct reset_control *__of_reset_control_get(struct device_node *node,
 			break;
 		}
 	}
+	of_node_put(args.np);
 
 	if (!rcdev) {
-		rstc = ERR_PTR(-EPROBE_DEFER);
-		goto out;
+		mutex_unlock(&reset_list_mutex);
+		return ERR_PTR(-EPROBE_DEFER);
 	}
 
 	if (WARN_ON(args.args_count != rcdev->of_reset_n_cells)) {
-		rstc = ERR_PTR(-EINVAL);
-		goto out;
+		mutex_unlock(&reset_list_mutex);
+		return ERR_PTR(-EINVAL);
 	}
 
 	rstc_id = rcdev->of_xlate(rcdev, &args);
 	if (rstc_id < 0) {
-		rstc = ERR_PTR(rstc_id);
-		goto out;
+		mutex_unlock(&reset_list_mutex);
+		return ERR_PTR(rstc_id);
 	}
 
 	/* reset_list_mutex also protects the rcdev's reset_control list */
 	rstc = __reset_control_get_internal(rcdev, rstc_id, shared);
 
-out:
 	mutex_unlock(&reset_list_mutex);
-	of_node_put(args.np);
 
 	return rstc;
 }
 EXPORT_SYMBOL_GPL(__of_reset_control_get);
-
-static struct reset_controller_dev *
-__reset_controller_by_name(const char *name)
-{
-	struct reset_controller_dev *rcdev;
-
-	lockdep_assert_held(&reset_list_mutex);
-
-	list_for_each_entry(rcdev, &reset_controller_list, list) {
-		if (!rcdev->dev)
-			continue;
-
-		if (!strcmp(name, dev_name(rcdev->dev)))
-			return rcdev;
-	}
-
-	return NULL;
-}
-
-static struct reset_control *
-__reset_control_get_from_lookup(struct device *dev, const char *con_id,
-				bool shared, bool optional)
-{
-	const struct reset_control_lookup *lookup;
-	struct reset_controller_dev *rcdev;
-	const char *dev_id = dev_name(dev);
-	struct reset_control *rstc = NULL;
-
-	if (!dev)
-		return ERR_PTR(-EINVAL);
-
-	mutex_lock(&reset_lookup_mutex);
-
-	list_for_each_entry(lookup, &reset_lookup_list, list) {
-		if (strcmp(lookup->dev_id, dev_id))
-			continue;
-
-		if ((!con_id && !lookup->con_id) ||
-		    ((con_id && lookup->con_id) &&
-		     !strcmp(con_id, lookup->con_id))) {
-			mutex_lock(&reset_list_mutex);
-			rcdev = __reset_controller_by_name(lookup->provider);
-			if (!rcdev) {
-				mutex_unlock(&reset_list_mutex);
-				mutex_unlock(&reset_lookup_mutex);
-				/* Reset provider may not be ready yet. */
-				return ERR_PTR(-EPROBE_DEFER);
-			}
-
-			rstc = __reset_control_get_internal(rcdev,
-							    lookup->index,
-							    shared);
-			mutex_unlock(&reset_list_mutex);
-			break;
-		}
-	}
-
-	mutex_unlock(&reset_lookup_mutex);
-
-	if (!rstc)
-		return optional ? NULL : ERR_PTR(-ENOENT);
-
-	return rstc;
-}
 
 struct reset_control *__reset_control_get(struct device *dev, const char *id,
 					  int index, bool shared, bool optional)
@@ -595,7 +500,7 @@ struct reset_control *__reset_control_get(struct device *dev, const char *id,
 		return __of_reset_control_get(dev->of_node, id, index, shared,
 					      optional);
 
-	return __reset_control_get_from_lookup(dev, id, shared, optional);
+	return optional ? NULL : ERR_PTR(-EINVAL);
 }
 EXPORT_SYMBOL_GPL(__reset_control_get);
 
@@ -731,7 +636,8 @@ of_reset_control_array_get(struct device_node *np, bool shared, bool optional)
 	if (num < 0)
 		return optional ? NULL : ERR_PTR(num);
 
-	resets = kzalloc(struct_size(resets, rstc, num), GFP_KERNEL);
+	resets = kzalloc(sizeof(*resets) + sizeof(resets->rstc[0]) * num,
+			 GFP_KERNEL);
 	if (!resets)
 		return ERR_PTR(-ENOMEM);
 
@@ -795,45 +701,3 @@ devm_reset_control_array_get(struct device *dev, bool shared, bool optional)
 	return rstc;
 }
 EXPORT_SYMBOL_GPL(devm_reset_control_array_get);
-
-static int reset_control_get_count_from_lookup(struct device *dev)
-{
-	const struct reset_control_lookup *lookup;
-	const char *dev_id;
-	int count = 0;
-
-	if (!dev)
-		return -EINVAL;
-
-	dev_id = dev_name(dev);
-	mutex_lock(&reset_lookup_mutex);
-
-	list_for_each_entry(lookup, &reset_lookup_list, list) {
-		if (!strcmp(lookup->dev_id, dev_id))
-			count++;
-	}
-
-	mutex_unlock(&reset_lookup_mutex);
-
-	if (count == 0)
-		count = -ENOENT;
-
-	return count;
-}
-
-/**
- * reset_control_get_count - Count number of resets available with a device
- *
- * @dev: device for which to return the number of resets
- *
- * Returns positive reset count on success, or error number on failure and
- * on count being zero.
- */
-int reset_control_get_count(struct device *dev)
-{
-	if (dev->of_node)
-		return of_reset_control_get_count(dev->of_node);
-
-	return reset_control_get_count_from_lookup(dev);
-}
-EXPORT_SYMBOL_GPL(reset_control_get_count);

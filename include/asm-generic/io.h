@@ -1,4 +1,4 @@
-/* Generic I/O port emulation.
+/* Generic I/O port emulation, based on MN10300 code
  *
  * Copyright (C) 2007 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
@@ -24,50 +24,6 @@
 #ifndef mmiowb
 #define mmiowb() do {} while (0)
 #endif
-
-#ifndef __io_br
-#define __io_br()      barrier()
-#endif
-
-/* prevent prefetching of coherent DMA data ahead of a dma-complete */
-#ifndef __io_ar
-#ifdef rmb
-#define __io_ar()      rmb()
-#else
-#define __io_ar()      barrier()
-#endif
-#endif
-
-/* flush writes to coherent DMA data before possibly triggering a DMA read */
-#ifndef __io_bw
-#ifdef wmb
-#define __io_bw()      wmb()
-#else
-#define __io_bw()      barrier()
-#endif
-#endif
-
-/* serialize device access against a spin_unlock, usually handled there. */
-#ifndef __io_aw
-#define __io_aw()      barrier()
-#endif
-
-#ifndef __io_pbw
-#define __io_pbw()     __io_bw()
-#endif
-
-#ifndef __io_paw
-#define __io_paw()     __io_aw()
-#endif
-
-#ifndef __io_pbr
-#define __io_pbr()     __io_br()
-#endif
-
-#ifndef __io_par
-#define __io_par()     __io_ar()
-#endif
-
 
 /*
  * __raw_{read,write}{b,w,l,q}() access memory in native endianness.
@@ -154,12 +110,7 @@ static inline void __raw_writeq(u64 value, volatile void __iomem *addr)
 #define readb readb
 static inline u8 readb(const volatile void __iomem *addr)
 {
-	u8 val;
-
-	__io_br();
-	val = __raw_readb(addr);
-	__io_ar();
-	return val;
+	return __raw_readb(addr);
 }
 #endif
 
@@ -167,12 +118,7 @@ static inline u8 readb(const volatile void __iomem *addr)
 #define readw readw
 static inline u16 readw(const volatile void __iomem *addr)
 {
-	u16 val;
-
-	__io_br();
-	val = __le16_to_cpu(__raw_readw(addr));
-	__io_ar();
-	return val;
+	return __le16_to_cpu(__raw_readw(addr));
 }
 #endif
 
@@ -180,12 +126,7 @@ static inline u16 readw(const volatile void __iomem *addr)
 #define readl readl
 static inline u32 readl(const volatile void __iomem *addr)
 {
-	u32 val;
-
-	__io_br();
-	val = __le32_to_cpu(__raw_readl(addr));
-	__io_ar();
-	return val;
+	return __le32_to_cpu(__raw_readl(addr));
 }
 #endif
 
@@ -194,12 +135,7 @@ static inline u32 readl(const volatile void __iomem *addr)
 #define readq readq
 static inline u64 readq(const volatile void __iomem *addr)
 {
-	u64 val;
-
-	__io_br();
-	val = __le64_to_cpu(__raw_readq(addr));
-	__io_ar();
-	return val;
+	return __le64_to_cpu(__raw_readq(addr));
 }
 #endif
 #endif /* CONFIG_64BIT */
@@ -208,9 +144,7 @@ static inline u64 readq(const volatile void __iomem *addr)
 #define writeb writeb
 static inline void writeb(u8 value, volatile void __iomem *addr)
 {
-	__io_bw();
 	__raw_writeb(value, addr);
-	__io_aw();
 }
 #endif
 
@@ -218,9 +152,7 @@ static inline void writeb(u8 value, volatile void __iomem *addr)
 #define writew writew
 static inline void writew(u16 value, volatile void __iomem *addr)
 {
-	__io_bw();
 	__raw_writew(cpu_to_le16(value), addr);
-	__io_aw();
 }
 #endif
 
@@ -228,9 +160,7 @@ static inline void writew(u16 value, volatile void __iomem *addr)
 #define writel writel
 static inline void writel(u32 value, volatile void __iomem *addr)
 {
-	__io_bw();
 	__raw_writel(__cpu_to_le32(value), addr);
-	__io_aw();
 }
 #endif
 
@@ -239,9 +169,7 @@ static inline void writel(u32 value, volatile void __iomem *addr)
 #define writeq writeq
 static inline void writeq(u64 value, volatile void __iomem *addr)
 {
-	__io_bw();
 	__raw_writeq(__cpu_to_le64(value), addr);
-	__io_aw();
 }
 #endif
 #endif /* CONFIG_64BIT */
@@ -252,67 +180,35 @@ static inline void writeq(u64 value, volatile void __iomem *addr)
  * accesses.
  */
 #ifndef readb_relaxed
-#define readb_relaxed readb_relaxed
-static inline u8 readb_relaxed(const volatile void __iomem *addr)
-{
-	return __raw_readb(addr);
-}
+#define readb_relaxed readb
 #endif
 
 #ifndef readw_relaxed
-#define readw_relaxed readw_relaxed
-static inline u16 readw_relaxed(const volatile void __iomem *addr)
-{
-	return __le16_to_cpu(__raw_readw(addr));
-}
+#define readw_relaxed readw
 #endif
 
 #ifndef readl_relaxed
-#define readl_relaxed readl_relaxed
-static inline u32 readl_relaxed(const volatile void __iomem *addr)
-{
-	return __le32_to_cpu(__raw_readl(addr));
-}
+#define readl_relaxed readl
 #endif
 
 #if defined(readq) && !defined(readq_relaxed)
-#define readq_relaxed readq_relaxed
-static inline u64 readq_relaxed(const volatile void __iomem *addr)
-{
-	return __le64_to_cpu(__raw_readq(addr));
-}
+#define readq_relaxed readq
 #endif
 
 #ifndef writeb_relaxed
-#define writeb_relaxed writeb_relaxed
-static inline void writeb_relaxed(u8 value, volatile void __iomem *addr)
-{
-	__raw_writeb(value, addr);
-}
+#define writeb_relaxed writeb
 #endif
 
 #ifndef writew_relaxed
-#define writew_relaxed writew_relaxed
-static inline void writew_relaxed(u16 value, volatile void __iomem *addr)
-{
-	__raw_writew(cpu_to_le16(value), addr);
-}
+#define writew_relaxed writew
 #endif
 
 #ifndef writel_relaxed
-#define writel_relaxed writel_relaxed
-static inline void writel_relaxed(u32 value, volatile void __iomem *addr)
-{
-	__raw_writel(__cpu_to_le32(value), addr);
-}
+#define writel_relaxed writel
 #endif
 
 #if defined(writeq) && !defined(writeq_relaxed)
-#define writeq_relaxed writeq_relaxed
-static inline void writeq_relaxed(u64 value, volatile void __iomem *addr)
-{
-	__raw_writeq(__cpu_to_le64(value), addr);
-}
+#define writeq_relaxed writeq
 #endif
 
 /*
@@ -455,8 +351,6 @@ static inline void writesq(volatile void __iomem *addr, const void *buffer,
 #define IO_SPACE_LIMIT 0xffff
 #endif
 
-#include <linux/logic_pio.h>
-
 /*
  * {in,out}{b,w,l}() access little endian I/O. {in,out}{b,w,l}_p() can be
  * implemented on hardware that needs an additional delay for I/O accesses to
@@ -467,12 +361,7 @@ static inline void writesq(volatile void __iomem *addr, const void *buffer,
 #define inb inb
 static inline u8 inb(unsigned long addr)
 {
-	u8 val;
-
-	__io_pbr();
-	val = __raw_readb(PCI_IOBASE + addr);
-	__io_par();
-	return val;
+	return readb(PCI_IOBASE + addr);
 }
 #endif
 
@@ -480,12 +369,7 @@ static inline u8 inb(unsigned long addr)
 #define inw inw
 static inline u16 inw(unsigned long addr)
 {
-	u16 val;
-
-	__io_pbr();
-	val = __le16_to_cpu(__raw_readw(PCI_IOBASE + addr));
-	__io_par();
-	return val;
+	return readw(PCI_IOBASE + addr);
 }
 #endif
 
@@ -493,12 +377,7 @@ static inline u16 inw(unsigned long addr)
 #define inl inl
 static inline u32 inl(unsigned long addr)
 {
-	u32 val;
-
-	__io_pbr();
-	val = __le32_to_cpu(__raw_readl(PCI_IOBASE + addr));
-	__io_par();
-	return val;
+	return readl(PCI_IOBASE + addr);
 }
 #endif
 
@@ -506,9 +385,7 @@ static inline u32 inl(unsigned long addr)
 #define outb outb
 static inline void outb(u8 value, unsigned long addr)
 {
-	__io_pbw();
-	__raw_writeb(value, PCI_IOBASE + addr);
-	__io_paw();
+	writeb(value, PCI_IOBASE + addr);
 }
 #endif
 
@@ -516,9 +393,7 @@ static inline void outb(u8 value, unsigned long addr)
 #define outw outw
 static inline void outw(u16 value, unsigned long addr)
 {
-	__io_pbw();
-	__raw_writew(cpu_to_le16(value), PCI_IOBASE + addr);
-	__io_paw();
+	writew(value, PCI_IOBASE + addr);
 }
 #endif
 
@@ -526,9 +401,7 @@ static inline void outw(u16 value, unsigned long addr)
 #define outl outl
 static inline void outl(u32 value, unsigned long addr)
 {
-	__io_pbw();
-	__raw_writel(cpu_to_le32(value), PCI_IOBASE + addr);
-	__io_paw();
+	writel(value, PCI_IOBASE + addr);
 }
 #endif
 
@@ -979,16 +852,7 @@ static inline void __iomem *__ioremap(phys_addr_t offset, size_t size,
 }
 #endif
 
-#ifndef iounmap
-#define iounmap iounmap
-
-static inline void iounmap(void __iomem *addr)
-{
-}
-#endif
-#endif /* CONFIG_MMU */
 #ifndef ioremap_nocache
-void __iomem *ioremap(phys_addr_t phys_addr, size_t size);
 #define ioremap_nocache ioremap_nocache
 static inline void __iomem *ioremap_nocache(phys_addr_t offset, size_t size)
 {
@@ -1020,14 +884,22 @@ static inline void __iomem *ioremap_wt(phys_addr_t offset, size_t size)
 }
 #endif
 
+#ifndef iounmap
+#define iounmap iounmap
+
+static inline void iounmap(void __iomem *addr)
+{
+}
+#endif
+#endif /* CONFIG_MMU */
+
 #ifdef CONFIG_HAS_IOPORT_MAP
 #ifndef CONFIG_GENERIC_IOMAP
 #ifndef ioport_map
 #define ioport_map ioport_map
 static inline void __iomem *ioport_map(unsigned long port, unsigned int nr)
 {
-	port &= IO_SPACE_LIMIT;
-	return (port > MMIO_UPPER_LIMIT) ? NULL : PCI_IOBASE + port;
+	return PCI_IOBASE + (port & IO_SPACE_LIMIT);
 }
 #endif
 

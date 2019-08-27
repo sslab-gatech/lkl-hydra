@@ -28,7 +28,7 @@
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/kallsyms.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/interrupt.h>
 #include <linux/ptrace.h>
 #include <linux/kgdb.h>
@@ -50,7 +50,6 @@
 #include <asm/fpu.h>
 #include <asm/fpu_emulator.h>
 #include <asm/idle.h>
-#include <asm/isa-rev.h>
 #include <asm/mips-cps.h>
 #include <asm/mips-r2-to-r6-emul.h>
 #include <asm/mipsregs.h>
@@ -68,12 +67,14 @@
 #include <asm/mmu_context.h>
 #include <asm/types.h>
 #include <asm/stacktrace.h>
-#include <asm/tlbex.h>
 #include <asm/uasm.h>
 
 extern void check_wait(void);
 extern asmlinkage void rollback_handle_int(void);
 extern asmlinkage void handle_int(void);
+extern u32 handle_tlbl[];
+extern u32 handle_tlbs[];
+extern u32 handle_tlbm[];
 extern asmlinkage void handle_adel(void);
 extern asmlinkage void handle_ades(void);
 extern asmlinkage void handle_ibe(void);
@@ -278,10 +279,8 @@ static void __show_regs(const struct pt_regs *regs)
 #ifdef CONFIG_CPU_HAS_SMARTMIPS
 	printk("Acx    : %0*lx\n", field, regs->acx);
 #endif
-	if (MIPS_ISA_REV < 6) {
-		printk("Hi    : %0*lx\n", field, regs->hi);
-		printk("Lo    : %0*lx\n", field, regs->lo);
-	}
+	printk("Hi    : %0*lx\n", field, regs->hi);
+	printk("Lo    : %0*lx\n", field, regs->lo);
 
 	/*
 	 * Saved cp0 registers
@@ -351,8 +350,7 @@ static void __show_regs(const struct pt_regs *regs)
  */
 void show_regs(struct pt_regs *regs)
 {
-	__show_regs(regs);
-	dump_stack();
+	__show_regs((struct pt_regs *)regs);
 }
 
 void show_registers(struct pt_regs *regs)
@@ -701,15 +699,19 @@ static int simulate_sync(struct pt_regs *regs, unsigned int opcode)
 asmlinkage void do_ov(struct pt_regs *regs)
 {
 	enum ctx_state prev_state;
+	siginfo_t info;
+
+	clear_siginfo(&info);
+	info.si_signo = SIGFPE;
+	info.si_code = FPE_INTOVF;
+	info.si_addr = (void __user *)regs->cp0_epc;
 
 	prev_state = exception_enter();
 	die_if_kernel("Integer overflow", regs);
 
-	force_sig_fault(SIGFPE, FPE_INTOVF, (void __user *)regs->cp0_epc, current);
+	force_sig_info(SIGFPE, &info, current);
 	exception_exit(prev_state);
 }
-
-#ifdef CONFIG_MIPS_FP_SUPPORT
 
 /*
  * Send SIGFPE according to FCSR Cause bits, which must have already
@@ -720,27 +722,32 @@ asmlinkage void do_ov(struct pt_regs *regs)
 void force_fcr31_sig(unsigned long fcr31, void __user *fault_addr,
 		     struct task_struct *tsk)
 {
-	int si_code = FPE_FLTUNK;
+	struct siginfo si;
+
+	clear_siginfo(&si);
+	si.si_addr = fault_addr;
+	si.si_signo = SIGFPE;
 
 	if (fcr31 & FPU_CSR_INV_X)
-		si_code = FPE_FLTINV;
+		si.si_code = FPE_FLTINV;
 	else if (fcr31 & FPU_CSR_DIV_X)
-		si_code = FPE_FLTDIV;
+		si.si_code = FPE_FLTDIV;
 	else if (fcr31 & FPU_CSR_OVF_X)
-		si_code = FPE_FLTOVF;
+		si.si_code = FPE_FLTOVF;
 	else if (fcr31 & FPU_CSR_UDF_X)
-		si_code = FPE_FLTUND;
+		si.si_code = FPE_FLTUND;
 	else if (fcr31 & FPU_CSR_INE_X)
-		si_code = FPE_FLTRES;
+		si.si_code = FPE_FLTRES;
 
-	force_sig_fault(SIGFPE, si_code, fault_addr, tsk);
+	force_sig_info(SIGFPE, &si, tsk);
 }
 
 int process_fpemu_return(int sig, void __user *fault_addr, unsigned long fcr31)
 {
-	int si_code;
+	struct siginfo si;
 	struct vm_area_struct *vma;
 
+	clear_siginfo(&si);
 	switch (sig) {
 	case 0:
 		return 0;
@@ -750,18 +757,23 @@ int process_fpemu_return(int sig, void __user *fault_addr, unsigned long fcr31)
 		return 1;
 
 	case SIGBUS:
-		force_sig_fault(SIGBUS, BUS_ADRERR, fault_addr, current);
+		si.si_addr = fault_addr;
+		si.si_signo = sig;
+		si.si_code = BUS_ADRERR;
+		force_sig_info(sig, &si, current);
 		return 1;
 
 	case SIGSEGV:
+		si.si_addr = fault_addr;
+		si.si_signo = sig;
 		down_read(&current->mm->mmap_sem);
 		vma = find_vma(current->mm, (unsigned long)fault_addr);
 		if (vma && (vma->vm_start <= (unsigned long)fault_addr))
-			si_code = SEGV_ACCERR;
+			si.si_code = SEGV_ACCERR;
 		else
-			si_code = SEGV_MAPERR;
+			si.si_code = SEGV_MAPERR;
 		up_read(&current->mm->mmap_sem);
-		force_sig_fault(SIGSEGV, si_code, fault_addr, current);
+		force_sig_info(sig, &si, current);
 		return 1;
 
 	default:
@@ -798,6 +810,9 @@ static int simulate_fp(struct pt_regs *regs, unsigned int opcode,
 	 */
 	regs->cp0_epc = old_epc;
 	regs->regs[31] = old_ra;
+
+	/* Save the FP context to struct thread_struct */
+	lose_fpu(1);
 
 	/* Run the emulator */
 	sig = fpu_emulator_cop1Handler(regs, &current->thread.fpu, 1,
@@ -850,6 +865,8 @@ asmlinkage void do_fpe(struct pt_regs *regs, unsigned long fcr31)
 		 * register operands before invoking the emulator, which seems
 		 * a bit extreme for what should be an infrequent event.
 		 */
+		/* Ensure 'resume' not overwrite saved fp context again. */
+		lose_fpu(1);
 
 		/* Run the emulator */
 		sig = fpu_emulator_cop1Handler(regs, &current->thread.fpu, 1,
@@ -876,50 +893,13 @@ out:
 	exception_exit(prev_state);
 }
 
-/*
- * MIPS MT processors may have fewer FPU contexts than CPU threads. If we've
- * emulated more than some threshold number of instructions, force migration to
- * a "CPU" that has FP support.
- */
-static void mt_ase_fp_affinity(void)
-{
-#ifdef CONFIG_MIPS_MT_FPAFF
-	if (mt_fpemul_threshold > 0 &&
-	     ((current->thread.emulated_fp++ > mt_fpemul_threshold))) {
-		/*
-		 * If there's no FPU present, or if the application has already
-		 * restricted the allowed set to exclude any CPUs with FPUs,
-		 * we'll skip the procedure.
-		 */
-		if (cpumask_intersects(&current->cpus_allowed, &mt_fpu_cpumask)) {
-			cpumask_t tmask;
-
-			current->thread.user_cpus_allowed
-				= current->cpus_allowed;
-			cpumask_and(&tmask, &current->cpus_allowed,
-				    &mt_fpu_cpumask);
-			set_cpus_allowed_ptr(current, &tmask);
-			set_thread_flag(TIF_FPUBOUND);
-		}
-	}
-#endif /* CONFIG_MIPS_MT_FPAFF */
-}
-
-#else /* !CONFIG_MIPS_FP_SUPPORT */
-
-static int simulate_fp(struct pt_regs *regs, unsigned int opcode,
-		       unsigned long old_epc, unsigned long old_ra)
-{
-	return -1;
-}
-
-#endif /* !CONFIG_MIPS_FP_SUPPORT */
-
 void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 	const char *str)
 {
+	siginfo_t info;
 	char b[40];
 
+	clear_siginfo(&info);
 #ifdef CONFIG_KGDB_LOW_LEVEL_TRAP
 	if (kgdb_ll_trap(DIE_TRAP, str, regs, code, current->thread.trap_nr,
 			 SIGTRAP) == NOTIFY_STOP)
@@ -941,9 +921,13 @@ void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 	case BRK_DIVZERO:
 		scnprintf(b, sizeof(b), "%s instruction in kernel code", str);
 		die_if_kernel(b, regs);
-		force_sig_fault(SIGFPE,
-				code == BRK_DIVZERO ? FPE_INTDIV : FPE_INTOVF,
-				(void __user *) regs->cp0_epc, current);
+		if (code == BRK_DIVZERO)
+			info.si_code = FPE_INTDIV;
+		else
+			info.si_code = FPE_INTOVF;
+		info.si_signo = SIGFPE;
+		info.si_addr = (void __user *) regs->cp0_epc;
+		force_sig_info(SIGFPE, &info, current);
 		break;
 	case BRK_BUG:
 		die_if_kernel("Kernel bug detected", regs);
@@ -968,7 +952,9 @@ void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 		scnprintf(b, sizeof(b), "%s instruction in kernel code", str);
 		die_if_kernel(b, regs);
 		if (si_code) {
-			force_sig_fault(SIGTRAP, si_code, NULL,	current);
+			info.si_signo = SIGTRAP;
+			info.si_code = si_code;
+			force_sig_info(SIGTRAP, &info, current);
 		} else {
 			force_sig(SIGTRAP, current);
 		}
@@ -1199,6 +1185,35 @@ out:
 }
 
 /*
+ * MIPS MT processors may have fewer FPU contexts than CPU threads. If we've
+ * emulated more than some threshold number of instructions, force migration to
+ * a "CPU" that has FP support.
+ */
+static void mt_ase_fp_affinity(void)
+{
+#ifdef CONFIG_MIPS_MT_FPAFF
+	if (mt_fpemul_threshold > 0 &&
+	     ((current->thread.emulated_fp++ > mt_fpemul_threshold))) {
+		/*
+		 * If there's no FPU present, or if the application has already
+		 * restricted the allowed set to exclude any CPUs with FPUs,
+		 * we'll skip the procedure.
+		 */
+		if (cpumask_intersects(&current->cpus_allowed, &mt_fpu_cpumask)) {
+			cpumask_t tmask;
+
+			current->thread.user_cpus_allowed
+				= current->cpus_allowed;
+			cpumask_and(&tmask, &current->cpus_allowed,
+				    &mt_fpu_cpumask);
+			set_cpus_allowed_ptr(current, &tmask);
+			set_thread_flag(TIF_FPUBOUND);
+		}
+	}
+#endif /* CONFIG_MIPS_MT_FPAFF */
+}
+
+/*
  * No lock; only written during early bootup by CPU 0.
  */
 static RAW_NOTIFIER_HEAD(cu2_chain);
@@ -1225,25 +1240,30 @@ static int default_cu2_call(struct notifier_block *nfb, unsigned long action,
 	return NOTIFY_OK;
 }
 
-#ifdef CONFIG_MIPS_FP_SUPPORT
-
 static int enable_restore_fp_context(int msa)
 {
 	int err, was_fpu_owner, prior_msa;
-	bool first_fp;
 
-	/* Initialize context if it hasn't been used already */
-	first_fp = init_fp_ctx(current);
+	/*
+	 * If an FP mode switch is currently underway, wait for it to
+	 * complete before proceeding.
+	 */
+	wait_on_atomic_t(&current->mm->context.fp_mode_switching,
+			 atomic_t_wait, TASK_KILLABLE);
 
-	if (first_fp) {
+	if (!used_math()) {
+		/* First time FP context user. */
 		preempt_disable();
-		err = own_fpu_inatomic(1);
+		err = init_fpu();
 		if (msa && !err) {
 			enable_msa();
+			init_msa_upper();
 			set_thread_flag(TIF_USEDMSA);
 			set_thread_flag(TIF_MSA_CTX_LIVE);
 		}
 		preempt_enable();
+		if (!err)
+			set_used_math();
 		return err;
 	}
 
@@ -1334,23 +1354,17 @@ out:
 	return 0;
 }
 
-#else /* !CONFIG_MIPS_FP_SUPPORT */
-
-static int enable_restore_fp_context(int msa)
-{
-	return SIGILL;
-}
-
-#endif /* CONFIG_MIPS_FP_SUPPORT */
-
 asmlinkage void do_cpu(struct pt_regs *regs)
 {
 	enum ctx_state prev_state;
 	unsigned int __user *epc;
 	unsigned long old_epc, old31;
+	void __user *fault_addr;
 	unsigned int opcode;
+	unsigned long fcr31;
 	unsigned int cpid;
-	int status;
+	int status, err;
+	int sig;
 
 	prev_state = exception_enter();
 	cpid = (regs->cp0_cause >> CAUSEB_CE) & 3;
@@ -1388,7 +1402,6 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 
 		break;
 
-#ifdef CONFIG_MIPS_FP_SUPPORT
 	case 3:
 		/*
 		 * The COP3 opcode space and consequently the CP0.Status.CU3
@@ -1408,11 +1421,7 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 		}
 		/* Fall through.  */
 
-	case 1: {
-		void __user *fault_addr;
-		unsigned long fcr31;
-		int err, sig;
-
+	case 1:
 		err = enable_restore_fp_context(0);
 
 		if (raw_cpu_has_fpu && !err)
@@ -1433,13 +1442,6 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 			mt_ase_fp_affinity();
 
 		break;
-	}
-#else /* CONFIG_MIPS_FP_SUPPORT */
-	case 1:
-	case 3:
-		force_sig(SIGILL, current);
-		break;
-#endif /* CONFIG_MIPS_FP_SUPPORT */
 
 	case 2:
 		raw_notifier_call_chain(&cu2_chain, CU2_EXCEPTION, regs);
@@ -1504,7 +1506,12 @@ asmlinkage void do_mdmx(struct pt_regs *regs)
  */
 asmlinkage void do_watch(struct pt_regs *regs)
 {
+	siginfo_t info;
 	enum ctx_state prev_state;
+
+	clear_siginfo(&info);
+	info.si_signo = SIGTRAP;
+	info.si_code = TRAP_HWBKPT;
 
 	prev_state = exception_enter();
 	/*
@@ -1521,7 +1528,7 @@ asmlinkage void do_watch(struct pt_regs *regs)
 	if (test_tsk_thread_flag(current, TIF_LOAD_WATCH)) {
 		mips_read_watch_registers();
 		local_irq_enable();
-		force_sig_fault(SIGTRAP, TRAP_HWBKPT, NULL, current);
+		force_sig_info(SIGTRAP, &info, current);
 	} else {
 		mips_clear_watch_registers();
 		local_irq_enable();
@@ -2291,7 +2298,7 @@ void __init trap_init(void)
 		phys_addr_t ebase_pa;
 
 		ebase = (unsigned long)
-			memblock_alloc_from(size, 1 << fls(size), 0);
+			__alloc_bootmem(size, 1 << fls(size), 0);
 
 		/*
 		 * Try to ensure ebase resides in KSeg0 if possible.
@@ -2335,7 +2342,6 @@ void __init trap_init(void)
 	if (board_ebase_setup)
 		board_ebase_setup();
 	per_cpu_trap_init(true);
-	memblock_set_bottom_up(false);
 
 	/*
 	 * Copy the generic exception handlers to their final destination.

@@ -207,7 +207,7 @@ void arch_kgdb_breakpoint(void)
 		".set\treorder");
 }
 
-void kgdb_call_nmi_hook(void *ignored)
+static void kgdb_call_nmi_hook(void *ignored)
 {
 	mm_segment_t old_fs;
 
@@ -217,6 +217,13 @@ void kgdb_call_nmi_hook(void *ignored)
 	kgdb_nmicallback(raw_smp_processor_id(), NULL);
 
 	set_fs(old_fs);
+}
+
+void kgdb_roundup_cpus(unsigned long flags)
+{
+	local_irq_enable();
+	smp_call_function(kgdb_call_nmi_hook, NULL, 0);
+	local_irq_disable();
 }
 
 static int compute_signal(int tt)
@@ -387,16 +394,18 @@ int kgdb_arch_handle_exception(int vector, int signo, int err_code,
 	return -1;
 }
 
-const struct kgdb_arch arch_kgdb_ops = {
-#ifdef CONFIG_CPU_BIG_ENDIAN
-	.gdb_bpt_instr = { spec_op << 2, 0x00, 0x00, break_op },
-#else
-	.gdb_bpt_instr = { break_op, 0x00, 0x00, spec_op << 2 },
-#endif
-};
+struct kgdb_arch arch_kgdb_ops;
 
 int kgdb_arch_init(void)
 {
+	union mips_instruction insn = {
+		.r_format = {
+			.opcode = spec_op,
+			.func	= break_op,
+		}
+	};
+	memcpy(arch_kgdb_ops.gdb_bpt_instr, insn.byte, BREAK_INSTR_SIZE);
+
 	register_die_notifier(&kgdb_notifier);
 
 	return 0;

@@ -371,27 +371,25 @@ static inline void handle_regs_int_override(struct urb *urb)
 {
 	struct zd_usb *usb = urb->context;
 	struct zd_usb_interrupt *intr = &usb->intr;
-	unsigned long flags;
 
-	spin_lock_irqsave(&intr->lock, flags);
+	spin_lock(&intr->lock);
 	if (atomic_read(&intr->read_regs_enabled)) {
 		atomic_set(&intr->read_regs_enabled, 0);
 		intr->read_regs_int_overridden = 1;
 		complete(&intr->read_regs.completion);
 	}
-	spin_unlock_irqrestore(&intr->lock, flags);
+	spin_unlock(&intr->lock);
 }
 
 static inline void handle_regs_int(struct urb *urb)
 {
 	struct zd_usb *usb = urb->context;
 	struct zd_usb_interrupt *intr = &usb->intr;
-	unsigned long flags;
 	int len;
 	u16 int_num;
 
 	ZD_ASSERT(in_interrupt());
-	spin_lock_irqsave(&intr->lock, flags);
+	spin_lock(&intr->lock);
 
 	int_num = le16_to_cpu(*(__le16 *)(urb->transfer_buffer+2));
 	if (int_num == CR_INTERRUPT) {
@@ -427,7 +425,7 @@ static inline void handle_regs_int(struct urb *urb)
 	}
 
 out:
-	spin_unlock_irqrestore(&intr->lock, flags);
+	spin_unlock(&intr->lock);
 
 	/* CR_INTERRUPT might override read_reg too. */
 	if (int_num == CR_INTERRUPT && atomic_read(&intr->read_regs_enabled))
@@ -667,7 +665,6 @@ static void rx_urb_complete(struct urb *urb)
 	struct zd_usb_rx *rx;
 	const u8 *buffer;
 	unsigned int length;
-	unsigned long flags;
 
 	switch (urb->status) {
 	case 0:
@@ -696,14 +693,14 @@ static void rx_urb_complete(struct urb *urb)
 		/* If there is an old first fragment, we don't care. */
 		dev_dbg_f(urb_dev(urb), "*** first fragment ***\n");
 		ZD_ASSERT(length <= ARRAY_SIZE(rx->fragment));
-		spin_lock_irqsave(&rx->lock, flags);
+		spin_lock(&rx->lock);
 		memcpy(rx->fragment, buffer, length);
 		rx->fragment_length = length;
-		spin_unlock_irqrestore(&rx->lock, flags);
+		spin_unlock(&rx->lock);
 		goto resubmit;
 	}
 
-	spin_lock_irqsave(&rx->lock, flags);
+	spin_lock(&rx->lock);
 	if (rx->fragment_length > 0) {
 		/* We are on a second fragment, we believe */
 		ZD_ASSERT(length + rx->fragment_length <=
@@ -713,9 +710,9 @@ static void rx_urb_complete(struct urb *urb)
 		handle_rx_packet(usb, rx->fragment,
 			         rx->fragment_length + length);
 		rx->fragment_length = 0;
-		spin_unlock_irqrestore(&rx->lock, flags);
+		spin_unlock(&rx->lock);
 	} else {
-		spin_unlock_irqrestore(&rx->lock, flags);
+		spin_unlock(&rx->lock);
 		handle_rx_packet(usb, buffer, length);
 	}
 

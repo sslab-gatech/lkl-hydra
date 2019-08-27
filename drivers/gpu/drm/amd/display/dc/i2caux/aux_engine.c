@@ -24,7 +24,6 @@
  */
 
 #include "dm_services.h"
-#include "dm_event_log.h"
 
 /*
  * Pre-requisites: headers required by header of this unit
@@ -56,8 +55,6 @@ enum {
 
 #define FROM_ENGINE(ptr) \
 	container_of((ptr), struct aux_engine, base)
-#define DC_LOGGER \
-	engine->base.ctx->logger
 
 enum i2caux_engine_type dal_aux_engine_get_engine_type(
 	const struct engine *engine)
@@ -170,10 +167,6 @@ static void process_read_reply(
 			ctx->operation_succeeded = false;
 		}
 	break;
-	case AUX_TRANSACTION_REPLY_HPD_DISCON:
-		ctx->status = I2CAUX_TRANSACTION_STATUS_FAILED_HPD_DISCON;
-		ctx->operation_succeeded = false;
-	break;
 	default:
 		ctx->status = I2CAUX_TRANSACTION_STATUS_UNKNOWN;
 		ctx->operation_succeeded = false;
@@ -231,10 +224,6 @@ static void process_read_request(
 			 * The HW timeout is set to 550usec,
 			 * so we should not wait here */
 		}
-	break;
-	case AUX_CHANNEL_OPERATION_FAILED_HPD_DISCON:
-		ctx->status = I2CAUX_TRANSACTION_STATUS_FAILED_HPD_DISCON;
-		ctx->operation_succeeded = false;
 	break;
 	default:
 		ctx->status = I2CAUX_TRANSACTION_STATUS_UNKNOWN;
@@ -294,14 +283,6 @@ static bool read_command(
 			if (ctx.request.type == AUX_TRANSACTION_TYPE_I2C)
 				msleep(engine->delay);
 	} while (ctx.operation_succeeded && !ctx.transaction_complete);
-
-	if (request->payload.address_space ==
-		I2CAUX_TRANSACTION_ADDRESS_SPACE_DPCD) {
-		DC_LOG_I2C_AUX("READ: addr:0x%x  value:0x%x Result:%d",
-				request->payload.address,
-				request->payload.data[0],
-				ctx.operation_succeeded);
-	}
 
 	return ctx.operation_succeeded;
 }
@@ -390,10 +371,6 @@ static void process_write_reply(
 			ctx->operation_succeeded = false;
 		}
 	break;
-	case AUX_TRANSACTION_REPLY_HPD_DISCON:
-		ctx->status = I2CAUX_TRANSACTION_STATUS_FAILED_HPD_DISCON;
-		ctx->operation_succeeded = false;
-	break;
 	default:
 		ctx->status = I2CAUX_TRANSACTION_STATUS_UNKNOWN;
 		ctx->operation_succeeded = false;
@@ -445,10 +422,6 @@ static void process_write_request(
 			 * The HW timeout is set to 550usec,
 			 * so we should not wait here */
 		}
-	break;
-	case AUX_CHANNEL_OPERATION_FAILED_HPD_DISCON:
-		ctx->status = I2CAUX_TRANSACTION_STATUS_FAILED_HPD_DISCON;
-		ctx->operation_succeeded = false;
 	break;
 	default:
 		ctx->status = I2CAUX_TRANSACTION_STATUS_UNKNOWN;
@@ -510,14 +483,6 @@ static bool write_command(
 			if (ctx.request.type == AUX_TRANSACTION_TYPE_I2C)
 				msleep(engine->delay);
 	} while (ctx.operation_succeeded && !ctx.transaction_complete);
-
-	if (request->payload.address_space ==
-		I2CAUX_TRANSACTION_ADDRESS_SPACE_DPCD) {
-		DC_LOG_I2C_AUX("WRITE: addr:0x%x  value:0x%x Result:%d",
-				request->payload.address,
-				request->payload.data[0],
-				ctx.operation_succeeded);
-	}
 
 	return ctx.operation_succeeded;
 }

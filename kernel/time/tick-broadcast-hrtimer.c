@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Emulate a local clock event device via a pseudo clock device.
+ * linux/kernel/time/tick-broadcast-hrtimer.c
+ * This file emulates a local clock event device
+ * via a pseudo clock device.
  */
 #include <linux/cpu.h>
 #include <linux/err.h>
@@ -88,7 +90,7 @@ static struct clock_event_device ce_broadcast_hrtimer = {
 	.max_delta_ticks	= ULONG_MAX,
 	.mult			= 1,
 	.shift			= 0,
-	.cpumask		= cpu_possible_mask,
+	.cpumask		= cpu_all_mask,
 };
 
 static enum hrtimer_restart bc_handler(struct hrtimer *t)

@@ -343,9 +343,8 @@ static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 
 	pr->performance->state_count = pss->package.count;
 	pr->performance->states =
-	    kmalloc_array(pss->package.count,
-			  sizeof(struct acpi_processor_px),
-			  GFP_KERNEL);
+	    kmalloc(sizeof(struct acpi_processor_px) * pss->package.count,
+		    GFP_KERNEL);
 	if (!pr->performance->states) {
 		result = -ENOMEM;
 		goto end;
@@ -534,7 +533,7 @@ int acpi_processor_notify_smm(struct module *calling_module)
 
 EXPORT_SYMBOL(acpi_processor_notify_smm);
 
-int acpi_processor_get_psd(acpi_handle handle, struct acpi_psd_package *pdomain)
+static int acpi_processor_get_psd(struct acpi_processor	*pr)
 {
 	int result = 0;
 	acpi_status status = AE_OK;
@@ -542,8 +541,9 @@ int acpi_processor_get_psd(acpi_handle handle, struct acpi_psd_package *pdomain)
 	struct acpi_buffer format = {sizeof("NNNNN"), "NNNNN"};
 	struct acpi_buffer state = {0, NULL};
 	union acpi_object  *psd = NULL;
+	struct acpi_psd_package *pdomain;
 
-	status = acpi_evaluate_object(handle, "_PSD", NULL, &buffer);
+	status = acpi_evaluate_object(pr->handle, "_PSD", NULL, &buffer);
 	if (ACPI_FAILURE(status)) {
 		return -ENODEV;
 	}
@@ -560,6 +560,8 @@ int acpi_processor_get_psd(acpi_handle handle, struct acpi_psd_package *pdomain)
 		result = -EFAULT;
 		goto end;
 	}
+
+	pdomain = &(pr->performance->domain_info);
 
 	state.length = sizeof(struct acpi_psd_package);
 	state.pointer = pdomain;
@@ -595,7 +597,6 @@ end:
 	kfree(buffer.pointer);
 	return result;
 }
-EXPORT_SYMBOL(acpi_processor_get_psd);
 
 int acpi_processor_preregister_performance(
 		struct acpi_processor_performance __percpu *performance)
@@ -644,8 +645,7 @@ int acpi_processor_preregister_performance(
 
 		pr->performance = per_cpu_ptr(performance, i);
 		cpumask_set_cpu(i, pr->performance->shared_cpu_map);
-		pdomain = &(pr->performance->domain_info);
-		if (acpi_processor_get_psd(pr->handle, pdomain)) {
+		if (acpi_processor_get_psd(pr)) {
 			retval = -EINVAL;
 			continue;
 		}

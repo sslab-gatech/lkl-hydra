@@ -605,13 +605,30 @@ static long ppp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	if (cmd == PPPIOCDETACH) {
 		/*
-		 * PPPIOCDETACH is no longer supported as it was heavily broken,
-		 * and is only known to have been used by pppd older than
-		 * ppp-2.4.2 (released November 2003).
+		 * We have to be careful here... if the file descriptor
+		 * has been dup'd, we could have another process in the
+		 * middle of a poll using the same file *, so we had
+		 * better not free the interface data structures -
+		 * instead we fail the ioctl.  Even in this case, we
+		 * shut down the interface if we are the owner of it.
+		 * Actually, we should get rid of PPPIOCDETACH, userland
+		 * (i.e. pppd) could achieve the same effect by closing
+		 * this fd and reopening /dev/ppp.
 		 */
-		pr_warn_once("%s (%d) used obsolete PPPIOCDETACH ioctl\n",
-			     current->comm, current->pid);
 		err = -EINVAL;
+		if (pf->kind == INTERFACE) {
+			ppp = PF_TO_PPP(pf);
+			rtnl_lock();
+			if (file == ppp->owner)
+				unregister_netdevice(ppp->dev);
+			rtnl_unlock();
+		}
+		if (atomic_long_read(&file->f_count) < 2) {
+			ppp_release(NULL, file);
+			err = 0;
+		} else
+			pr_warn("PPPIOCDETACH file->f_count=%ld\n",
+				atomic_long_read(&file->f_count));
 		goto out;
 	}
 
@@ -1669,7 +1686,7 @@ ppp_push(struct ppp *ppp)
 
 #ifdef CONFIG_PPP_MULTILINK
 static bool mp_protocol_compress __read_mostly = true;
-module_param(mp_protocol_compress, bool, 0644);
+module_param(mp_protocol_compress, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(mp_protocol_compress,
 		 "compress protocol id in multilink fragments");
 
@@ -1965,46 +1982,6 @@ ppp_do_recv(struct ppp *ppp, struct sk_buff *skb, struct channel *pch)
 	ppp_recv_unlock(ppp);
 }
 
-/**
- * __ppp_decompress_proto - Decompress protocol field, slim version.
- * @skb: Socket buffer where protocol field should be decompressed. It must have
- *	 at least 1 byte of head room and 1 byte of linear data. First byte of
- *	 data must be a protocol field byte.
- *
- * Decompress protocol field in PPP header if it's compressed, e.g. when
- * Protocol-Field-Compression (PFC) was negotiated. No checks w.r.t. skb data
- * length are done in this function.
- */
-static void __ppp_decompress_proto(struct sk_buff *skb)
-{
-	if (skb->data[0] & 0x01)
-		*(u8 *)skb_push(skb, 1) = 0x00;
-}
-
-/**
- * ppp_decompress_proto - Check skb data room and decompress protocol field.
- * @skb: Socket buffer where protocol field should be decompressed. First byte
- *	 of data must be a protocol field byte.
- *
- * Decompress protocol field in PPP header if it's compressed, e.g. when
- * Protocol-Field-Compression (PFC) was negotiated. This function also makes
- * sure that skb data room is sufficient for Protocol field, before and after
- * decompression.
- *
- * Return: true - decompressed successfully, false - not enough room in skb.
- */
-static bool ppp_decompress_proto(struct sk_buff *skb)
-{
-	/* At least one byte should be present (if protocol is compressed) */
-	if (!pskb_may_pull(skb, 1))
-		return false;
-
-	__ppp_decompress_proto(skb);
-
-	/* Protocol field should occupy 2 bytes when not compressed */
-	return pskb_may_pull(skb, 2);
-}
-
 void
 ppp_input(struct ppp_channel *chan, struct sk_buff *skb)
 {
@@ -2017,7 +1994,7 @@ ppp_input(struct ppp_channel *chan, struct sk_buff *skb)
 	}
 
 	read_lock_bh(&pch->upl);
-	if (!ppp_decompress_proto(skb)) {
+	if (!pskb_may_pull(skb, 2)) {
 		kfree_skb(skb);
 		if (pch->ppp) {
 			++pch->ppp->dev->stats.rx_length_errors;
@@ -2114,9 +2091,6 @@ ppp_receive_nonmp_frame(struct ppp *ppp, struct sk_buff *skb)
 	if (ppp->flags & SC_MUST_COMP && ppp->rstate & SC_DC_FERROR)
 		goto err;
 
-	/* At this point the "Protocol" field MUST be decompressed, either in
-	 * ppp_input(), ppp_decompress_frame() or in ppp_receive_mp_frame().
-	 */
 	proto = PPP_PROTO(skb);
 	switch (proto) {
 	case PPP_VJC_COMP:
@@ -2288,9 +2262,6 @@ ppp_decompress_frame(struct ppp *ppp, struct sk_buff *skb)
 		skb_put(skb, len);
 		skb_pull(skb, 2);	/* pull off the A/C bytes */
 
-		/* Don't call __ppp_decompress_proto() here, but instead rely on
-		 * corresponding algo (mppe/bsd/deflate) to decompress it.
-		 */
 	} else {
 		/* Uncompressed frame - pass to decompressor so it
 		   can update its dictionary if necessary. */
@@ -2336,11 +2307,9 @@ ppp_receive_mp_frame(struct ppp *ppp, struct sk_buff *skb, struct channel *pch)
 
 	/*
 	 * Do protocol ID decompression on the first fragment of each packet.
-	 * We have to do that here, because ppp_receive_nonmp_frame() expects
-	 * decompressed protocol field.
 	 */
-	if (PPP_MP_CB(skb)->BEbits & B)
-		__ppp_decompress_proto(skb);
+	if ((PPP_MP_CB(skb)->BEbits & B) && (skb->data[0] & 1))
+		*(u8 *)skb_push(skb, 1) = 0;
 
 	/*
 	 * Expand sequence number to 32 bits, making it as close
@@ -2448,7 +2417,7 @@ ppp_mp_reconstruct(struct ppp *ppp)
 
 	if (ppp->mrru == 0)	/* do nothing until mrru is set */
 		return NULL;
-	head = __skb_peek(list);
+	head = list->next;
 	tail = NULL;
 	skb_queue_walk_safe(list, p, tmp) {
 	again:

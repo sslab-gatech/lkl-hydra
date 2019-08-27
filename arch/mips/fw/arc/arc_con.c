@@ -12,7 +12,6 @@
 #include <linux/init.h>
 #include <linux/console.h>
 #include <linux/fs.h>
-#include <asm/setup.h>
 #include <asm/sgialib.h>
 
 static void prom_console_write(struct console *co, const char *s,

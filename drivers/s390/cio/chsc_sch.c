@@ -16,6 +16,7 @@
 #include <linux/miscdevice.h>
 #include <linux/kernel_stat.h>
 
+#include <asm/compat.h>
 #include <asm/cio.h>
 #include <asm/chsc.h>
 #include <asm/isc.h>

@@ -15,7 +15,6 @@
 #include <linux/sched/mm.h>
 
 #include <asm/mmu_context.h>
-#include <asm/pgalloc.h>
 
 #if defined(CONFIG_PPC32)
 static inline void switch_mm_pgdir(struct task_struct *tsk,
@@ -58,10 +57,8 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		 * in switch_slb(), and/or the store of paca->mm_ctx_id in
 		 * copy_mm_to_paca().
 		 *
-		 * On the other side, the barrier is in mm/tlb-radix.c for
-		 * radix which orders earlier stores to clear the PTEs vs
-		 * the load of mm_cpumask. And pte_xchg which does the same
-		 * thing for hash.
+		 * On the read side the barrier is in pte_xchg(), which orders
+		 * the store to the PTE vs the load of mm_cpumask.
 		 *
 		 * This full barrier is needed by membarrier when switching
 		 * between processes after store to rq->curr, before user-space
@@ -98,12 +95,3 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	switch_mmu_context(prev, next, tsk);
 }
 
-#ifdef CONFIG_PPC32
-void arch_exit_mmap(struct mm_struct *mm)
-{
-	void *frag = pte_frag_get(&mm->context);
-
-	if (frag)
-		pte_frag_destroy(frag);
-}
-#endif

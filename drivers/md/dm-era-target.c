@@ -1635,8 +1635,7 @@ err:
 	DMEMIT("Error");
 }
 
-static int era_message(struct dm_target *ti, unsigned argc, char **argv,
-		       char *result, unsigned maxlen)
+static int era_message(struct dm_target *ti, unsigned argc, char **argv)
 {
 	struct era *era = ti->private;
 

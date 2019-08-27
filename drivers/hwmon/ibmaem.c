@@ -101,7 +101,7 @@ static struct platform_driver aem_driver = {
 struct aem_ipmi_data {
 	struct completion	read_complete;
 	struct ipmi_addr	address;
-	struct ipmi_user	*user;
+	ipmi_user_t		user;
 	int			interface;
 
 	struct kernel_ipmi_msg	tx_message;

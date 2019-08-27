@@ -18,11 +18,10 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/module.h>
 #include <linux/cache.h>
 #include <linux/slab.h>
-#include <linux/syscalls.h>
 #include <asm/machvec.h>
 
 #include "proto.h"
@@ -392,7 +391,7 @@ alloc_pci_controller(void)
 {
 	struct pci_controller *hose;
 
-	hose = memblock_alloc(sizeof(*hose), SMP_CACHE_BYTES);
+	hose = alloc_bootmem(sizeof(*hose));
 
 	*hose_tail = hose;
 	hose_tail = &hose->next;
@@ -403,15 +402,15 @@ alloc_pci_controller(void)
 struct resource * __init
 alloc_resource(void)
 {
-	return memblock_alloc(sizeof(struct resource), SMP_CACHE_BYTES);
+	return alloc_bootmem(sizeof(struct resource));
 }
 
 
 /* Provide information on locations of various I/O regions in physical
    memory.  Do this on a per-card basis so that we choose the right hose.  */
 
-SYSCALL_DEFINE3(pciconfig_iobase, long, which, unsigned long, bus,
-		unsigned long, dfn)
+asmlinkage long
+sys_pciconfig_iobase(long which, unsigned long bus, unsigned long dfn)
 {
 	struct pci_controller *hose;
 	struct pci_dev *dev;

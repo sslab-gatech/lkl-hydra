@@ -33,7 +33,7 @@ enum dmcu_state {
 };
 
 struct dmcu_version {
-	unsigned int date;
+	unsigned int day;
 	unsigned int month;
 	unsigned int year;
 	unsigned int interface_version;
@@ -55,7 +55,7 @@ struct dmcu_funcs {
 			const char *src,
 			unsigned int bytes);
 	void (*set_psr_enable)(struct dmcu *dmcu, bool enable, bool wait);
-	bool (*setup_psr)(struct dmcu *dmcu,
+	void (*setup_psr)(struct dmcu *dmcu,
 			struct dc_link *link,
 			struct psr_context *psr_context);
 	void (*get_psr_state)(struct dmcu *dmcu, uint32_t *psr_state);

@@ -1,6 +1,6 @@
 /*
  * vgaarb.c: Implements the VGA arbitration. For details refer to
- * Documentation/gpu/vgaarbiter.rst
+ * Documentation/vgaarbiter.txt
  *
  *
  * (C) Copyright 2005 Benjamin Herrenschmidt <benh@kernel.crashing.org>
@@ -676,7 +676,7 @@ static bool vga_arbiter_add_pci_device(struct pci_dev *pdev)
 	vga_arbiter_check_bridge_sharing(vgadev);
 
 	/* Add to the list */
-	list_add_tail(&vgadev->list, &vga_list);
+	list_add(&vgadev->list, &vga_list);
 	vga_count++;
 	vgaarb_info(&pdev->dev, "VGA device added: decodes=%s,owns=%s,locks=%s\n",
 		vga_iostate_to_str(vgadev->decodes),
@@ -1408,18 +1408,6 @@ static void __init vga_arb_select_default_device(void)
 	struct vga_device *vgadev;
 
 #if defined(CONFIG_X86) || defined(CONFIG_IA64)
-	u64 base = screen_info.lfb_base;
-	u64 size = screen_info.lfb_size;
-	u64 limit;
-	resource_size_t start, end;
-	unsigned long flags;
-	int i;
-
-	if (screen_info.capabilities & VIDEO_CAPABILITY_64BIT_BASE)
-		base |= (u64)screen_info.ext_lfb_base << 32;
-
-	limit = base + size;
-
 	list_for_each_entry(vgadev, &vga_list, list) {
 		struct device *dev = &vgadev->pdev->dev;
 		/*
@@ -1430,6 +1418,11 @@ static void __init vga_arb_select_default_device(void)
 		 * Select the device owning the boot framebuffer if there is
 		 * one.
 		 */
+		resource_size_t start, end, limit;
+		unsigned long flags;
+		int i;
+
+		limit = screen_info.lfb_base + screen_info.lfb_size;
 
 		/* Does firmware framebuffer belong to us? */
 		for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
@@ -1444,7 +1437,7 @@ static void __init vga_arb_select_default_device(void)
 			if (!start || !end)
 				continue;
 
-			if (base < start || limit >= end)
+			if (screen_info.lfb_base < start || limit >= end)
 				continue;
 
 			if (!vga_default_device())

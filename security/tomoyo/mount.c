@@ -6,7 +6,6 @@
  */
 
 #include <linux/slab.h>
-#include <uapi/linux/mount.h>
 #include "common.h"
 
 /* String table for special mount operations. */

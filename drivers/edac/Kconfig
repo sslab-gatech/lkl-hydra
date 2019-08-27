@@ -231,15 +231,10 @@ config EDAC_SBRIDGE
 
 config EDAC_SKX
 	tristate "Intel Skylake server Integrated MC"
-	depends on PCI && X86_64 && X86_MCE_INTEL && PCI_MMCONFIG && ACPI
-	depends on ACPI_NFIT || !ACPI_NFIT # if ACPI_NFIT=m, EDAC_SKX can't be y
-	select DMI
-	select ACPI_ADXL
+	depends on PCI && X86_64 && X86_MCE_INTEL && PCI_MMCONFIG
 	help
 	  Support for error detection and correction the Intel
-	  Skylake server Integrated Memory Controllers. If your
-	  system has non-volatile DIMMs you should also manually
-	  select CONFIG_ACPI_NFIT.
+	  Skylake server Integrated Memory Controllers.
 
 config EDAC_PND2
 	tristate "Intel Pondicherry2"
@@ -259,7 +254,7 @@ config EDAC_MPC85XX
 
 config EDAC_LAYERSCAPE
 	tristate "Freescale Layerscape DDR"
-	depends on ARCH_LAYERSCAPE || SOC_LS1021A
+	depends on ARCH_LAYERSCAPE
 	help
 	  Support for error detection and correction on Freescale memory
 	  controllers on Layerscape SoCs.
@@ -322,6 +317,14 @@ config EDAC_CPC925
 	  a companion chip to the PowerPC 970 family of
 	  processors.
 
+config EDAC_TILE
+	tristate "Tilera Memory Controller"
+	depends on TILE
+	default y
+	help
+	  Support for error detection and correction on the
+	  Tilera memory controller.
+
 config EDAC_HIGHBANK_MC
 	tristate "Highbank Memory Controller"
 	depends on ARCH_HIGHBANK
@@ -376,7 +379,7 @@ config EDAC_THUNDERX
 
 config EDAC_ALTERA
 	bool "Altera SOCFPGA ECC"
-	depends on EDAC=y && (ARCH_SOCFPGA || ARCH_STRATIX10)
+	depends on EDAC=y && ARCH_SOCFPGA
 	help
 	  Support for error detection and correction on the
 	  Altera SOCs. This must be selected for SDRAM ECC.
@@ -442,7 +445,7 @@ config EDAC_ALTERA_SDMMC
 
 config EDAC_SYNOPSYS
 	tristate "Synopsys DDR Memory Controller"
-	depends on ARCH_ZYNQ || ARCH_ZYNQMP
+	depends on ARCH_ZYNQ
 	help
 	  Support for error detection and correction on the Synopsys DDR
 	  memory controller.
@@ -460,19 +463,5 @@ config EDAC_TI
 	help
 	  Support for error detection and correction on the
           TI SoCs.
-
-config EDAC_QCOM
-	tristate "QCOM EDAC Controller"
-	depends on ARCH_QCOM && QCOM_LLCC
-	help
-	  Support for error detection and correction on the
-	  Qualcomm Technologies, Inc. SoCs.
-
-	  This driver reports Single Bit Errors (SBEs) and Double Bit Errors (DBEs).
-	  As of now, it supports error reporting for Last Level Cache Controller (LLCC)
-	  of Tag RAM and Data RAM.
-
-	  For debugging issues having to do with stability and overall system
-	  health, you should probably say 'Y' here.
 
 endif # EDAC

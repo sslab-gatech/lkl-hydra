@@ -43,84 +43,88 @@ EXPORT_SYMBOL(ioremap_bot);	/* aka VMALLOC_END */
 
 extern char etext[], _stext[], _sinittext[], _einittext[];
 
-__ref pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
+__ref pte_t *pte_alloc_one_kernel(struct mm_struct *mm, unsigned long address)
 {
-	if (!slab_is_available())
-		return memblock_alloc(PTE_FRAG_SIZE, PTE_FRAG_SIZE);
+	pte_t *pte;
 
-	return (pte_t *)pte_fragment_alloc(mm, 1);
+	if (slab_is_available()) {
+		pte = (pte_t *)__get_free_page(GFP_KERNEL|__GFP_ZERO);
+	} else {
+		pte = __va(memblock_alloc(PAGE_SIZE, PAGE_SIZE));
+		if (pte)
+			clear_page(pte);
+	}
+	return pte;
 }
 
-pgtable_t pte_alloc_one(struct mm_struct *mm)
+pgtable_t pte_alloc_one(struct mm_struct *mm, unsigned long address)
 {
-	return (pgtable_t)pte_fragment_alloc(mm, 0);
+	struct page *ptepage;
+
+	gfp_t flags = GFP_KERNEL | __GFP_ZERO | __GFP_ACCOUNT;
+
+	ptepage = alloc_pages(flags, 0);
+	if (!ptepage)
+		return NULL;
+	if (!pgtable_page_ctor(ptepage)) {
+		__free_page(ptepage);
+		return NULL;
+	}
+	return ptepage;
 }
 
 void __iomem *
 ioremap(phys_addr_t addr, unsigned long size)
 {
-	pgprot_t prot = pgprot_noncached(PAGE_KERNEL);
-
-	return __ioremap_caller(addr, size, prot, __builtin_return_address(0));
+	return __ioremap_caller(addr, size, _PAGE_NO_CACHE | _PAGE_GUARDED,
+				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap);
 
 void __iomem *
 ioremap_wc(phys_addr_t addr, unsigned long size)
 {
-	pgprot_t prot = pgprot_noncached_wc(PAGE_KERNEL);
-
-	return __ioremap_caller(addr, size, prot, __builtin_return_address(0));
+	return __ioremap_caller(addr, size, _PAGE_NO_CACHE,
+				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_wc);
 
 void __iomem *
-ioremap_wt(phys_addr_t addr, unsigned long size)
-{
-	pgprot_t prot = pgprot_cached_wthru(PAGE_KERNEL);
-
-	return __ioremap_caller(addr, size, prot, __builtin_return_address(0));
-}
-EXPORT_SYMBOL(ioremap_wt);
-
-void __iomem *
-ioremap_coherent(phys_addr_t addr, unsigned long size)
-{
-	pgprot_t prot = pgprot_cached(PAGE_KERNEL);
-
-	return __ioremap_caller(addr, size, prot, __builtin_return_address(0));
-}
-EXPORT_SYMBOL(ioremap_coherent);
-
-void __iomem *
 ioremap_prot(phys_addr_t addr, unsigned long size, unsigned long flags)
 {
-	pte_t pte = __pte(flags);
-
 	/* writeable implies dirty for kernel addresses */
-	if (pte_write(pte))
-		pte = pte_mkdirty(pte);
+	if ((flags & (_PAGE_RW | _PAGE_RO)) != _PAGE_RO)
+		flags |= _PAGE_DIRTY | _PAGE_HWWRITE;
 
 	/* we don't want to let _PAGE_USER and _PAGE_EXEC leak out */
-	pte = pte_exprotect(pte);
-	pte = pte_mkprivileged(pte);
+	flags &= ~(_PAGE_USER | _PAGE_EXEC);
+	flags |= _PAGE_PRIVILEGED;
 
-	return __ioremap_caller(addr, size, pte_pgprot(pte), __builtin_return_address(0));
+	return __ioremap_caller(addr, size, flags, __builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_prot);
 
 void __iomem *
 __ioremap(phys_addr_t addr, unsigned long size, unsigned long flags)
 {
-	return __ioremap_caller(addr, size, __pgprot(flags), __builtin_return_address(0));
+	return __ioremap_caller(addr, size, flags, __builtin_return_address(0));
 }
 
 void __iomem *
-__ioremap_caller(phys_addr_t addr, unsigned long size, pgprot_t prot, void *caller)
+__ioremap_caller(phys_addr_t addr, unsigned long size, unsigned long flags,
+		 void *caller)
 {
 	unsigned long v, i;
 	phys_addr_t p;
 	int err;
+
+	/* Make sure we have the base flags */
+	if ((flags & _PAGE_PRESENT) == 0)
+		flags |= pgprot_val(PAGE_KERNEL);
+
+	/* Non-cacheable page cannot be coherent */
+	if (flags & _PAGE_NO_CACHE)
+		flags &= ~_PAGE_COHERENT;
 
 	/*
 	 * Choose an address to map it to.
@@ -143,8 +147,8 @@ __ioremap_caller(phys_addr_t addr, unsigned long size, pgprot_t prot, void *call
 	 * Don't allow anybody to remap normal RAM that we're using.
 	 * mem_init() sets high_memory so only do the check after that.
 	 */
-	if (slab_is_available() && p <= virt_to_phys(high_memory - 1) &&
-	    page_is_ram(__phys_to_pfn(p))) {
+	if (slab_is_available() && (p < virt_to_phys(high_memory)) &&
+	    !(__allow_ioremap_reserved && memblock_is_region_reserved(p, size))) {
 		printk("__ioremap(): phys addr 0x%llx is RAM lr %ps\n",
 		       (unsigned long long)p, __builtin_return_address(0));
 		return NULL;
@@ -179,7 +183,7 @@ __ioremap_caller(phys_addr_t addr, unsigned long size, pgprot_t prot, void *call
 
 	err = 0;
 	for (i = 0; i < size && err == 0; i += PAGE_SIZE)
-		err = map_kernel_page(v + i, p + i, prot);
+		err = map_kernel_page(v+i, p+i, flags);
 	if (err) {
 		if (slab_is_available())
 			vunmap((void *)v);
@@ -205,7 +209,7 @@ void iounmap(volatile void __iomem *addr)
 }
 EXPORT_SYMBOL(iounmap);
 
-int map_kernel_page(unsigned long va, phys_addr_t pa, pgprot_t prot)
+int map_kernel_page(unsigned long va, phys_addr_t pa, int flags)
 {
 	pmd_t *pd;
 	pte_t *pg;
@@ -220,8 +224,10 @@ int map_kernel_page(unsigned long va, phys_addr_t pa, pgprot_t prot)
 		/* The PTE should never be already set nor present in the
 		 * hash table
 		 */
-		BUG_ON((pte_present(*pg) | pte_hashpte(*pg)) && pgprot_val(prot));
-		set_pte_at(&init_mm, va, pg, pfn_pte(pa >> PAGE_SHIFT, prot));
+		BUG_ON((pte_val(*pg) & (_PAGE_PRESENT | _PAGE_HASHPTE)) &&
+		       flags);
+		set_pte_at(&init_mm, va, pg, pfn_pte(pa >> PAGE_SHIFT,
+						     __pgprot(flags)));
 	}
 	smp_wmb();
 	return err;
@@ -232,7 +238,7 @@ int map_kernel_page(unsigned long va, phys_addr_t pa, pgprot_t prot)
  */
 static void __init __mapin_ram_chunk(unsigned long offset, unsigned long top)
 {
-	unsigned long v, s;
+	unsigned long v, s, f;
 	phys_addr_t p;
 	int ktext;
 
@@ -242,10 +248,11 @@ static void __init __mapin_ram_chunk(unsigned long offset, unsigned long top)
 	for (; s < top; s += PAGE_SIZE) {
 		ktext = ((char *)v >= _stext && (char *)v < etext) ||
 			((char *)v >= _sinittext && (char *)v < _einittext);
-		map_kernel_page(v, p, ktext ? PAGE_KERNEL_TEXT : PAGE_KERNEL);
-#ifdef CONFIG_PPC_BOOK3S_32
+		f = ktext ? pgprot_val(PAGE_KERNEL_TEXT) : pgprot_val(PAGE_KERNEL);
+		map_kernel_page(v, p, f);
+#ifdef CONFIG_PPC_STD_MMU_32
 		if (ktext)
-			hash_preload(&init_mm, v, false, 0x300);
+			hash_preload(&init_mm, v, 0, 0x300);
 #endif
 		v += PAGE_SIZE;
 		p += PAGE_SIZE;

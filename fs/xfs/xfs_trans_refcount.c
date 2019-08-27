@@ -1,7 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2016 Oracle.  All Rights Reserved.
+ *
  * Author: Darrick J. Wong <darrick.wong@oracle.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -16,7 +30,6 @@
 #include "xfs_refcount_item.h"
 #include "xfs_alloc.h"
 #include "xfs_refcount.h"
-#include "xfs_defer.h"
 
 /*
  * This routine is called to allocate a "refcount update done"
@@ -43,6 +56,7 @@ int
 xfs_trans_log_finish_refcount_update(
 	struct xfs_trans		*tp,
 	struct xfs_cud_log_item		*cudp,
+	struct xfs_defer_ops		*dop,
 	enum xfs_refcount_intent_type	type,
 	xfs_fsblock_t			startblock,
 	xfs_extlen_t			blockcount,
@@ -52,7 +66,7 @@ xfs_trans_log_finish_refcount_update(
 {
 	int				error;
 
-	error = xfs_refcount_finish_one(tp, type, startblock,
+	error = xfs_refcount_finish_one(tp, dop, type, startblock,
 			blockcount, new_fsb, new_len, pcur);
 
 	/*
@@ -63,7 +77,7 @@ xfs_trans_log_finish_refcount_update(
 	 * 2.) shuts down the filesystem
 	 */
 	tp->t_flags |= XFS_TRANS_DIRTY;
-	set_bit(XFS_LI_DIRTY, &cudp->cud_item.li_flags);
+	cudp->cud_item.li_desc->lid_flags |= XFS_LID_DIRTY;
 
 	return error;
 }
@@ -140,7 +154,7 @@ xfs_refcount_update_log_item(
 	refc = container_of(item, struct xfs_refcount_intent, ri_list);
 
 	tp->t_flags |= XFS_TRANS_DIRTY;
-	set_bit(XFS_LI_DIRTY, &cuip->cui_item.li_flags);
+	cuip->cui_item.li_desc->lid_flags |= XFS_LID_DIRTY;
 
 	/*
 	 * atomic_inc_return gives us the value after the increment;
@@ -169,6 +183,7 @@ xfs_refcount_update_create_done(
 STATIC int
 xfs_refcount_update_finish_item(
 	struct xfs_trans		*tp,
+	struct xfs_defer_ops		*dop,
 	struct list_head		*item,
 	void				*done_item,
 	void				**state)
@@ -179,7 +194,7 @@ xfs_refcount_update_finish_item(
 	int				error;
 
 	refc = container_of(item, struct xfs_refcount_intent, ri_list);
-	error = xfs_trans_log_finish_refcount_update(tp, done_item,
+	error = xfs_trans_log_finish_refcount_update(tp, done_item, dop,
 			refc->ri_type,
 			refc->ri_startblock,
 			refc->ri_blockcount,
@@ -228,7 +243,8 @@ xfs_refcount_update_cancel_item(
 	kmem_free(refc);
 }
 
-const struct xfs_defer_op_type xfs_refcount_update_defer_type = {
+static const struct xfs_defer_op_type xfs_refcount_update_defer_type = {
+	.type		= XFS_DEFER_OPS_TYPE_REFCOUNT,
 	.max_items	= XFS_CUI_MAX_FAST_EXTENTS,
 	.diff_items	= xfs_refcount_update_diff_items,
 	.create_intent	= xfs_refcount_update_create_intent,
@@ -239,3 +255,10 @@ const struct xfs_defer_op_type xfs_refcount_update_defer_type = {
 	.finish_cleanup = xfs_refcount_update_finish_cleanup,
 	.cancel_item	= xfs_refcount_update_cancel_item,
 };
+
+/* Register the deferred op type. */
+void
+xfs_refcount_update_init_defer_op(void)
+{
+	xfs_defer_init_op_type(&xfs_refcount_update_defer_type);
+}

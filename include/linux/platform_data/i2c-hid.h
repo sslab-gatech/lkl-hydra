@@ -12,13 +12,14 @@
 #ifndef __LINUX_I2C_HID_H
 #define __LINUX_I2C_HID_H
 
-#include <linux/regulator/consumer.h>
 #include <linux/types.h>
+
+struct regulator;
 
 /**
  * struct i2chid_platform_data - used by hid over i2c implementation.
  * @hid_descriptor_address: i2c register where the HID descriptor is stored.
- * @supplies: regulators for powering on the device.
+ * @supply: regulator for powering on the device.
  * @post_power_delay_ms: delay after powering on before device is usable.
  *
  * Note that it is the responsibility of the platform driver (or the acpi 5.0
@@ -34,7 +35,7 @@
  */
 struct i2c_hid_platform_data {
 	u16 hid_descriptor_address;
-	struct regulator_bulk_data supplies[2];
+	struct regulator *supply;
 	int post_power_delay_ms;
 };
 

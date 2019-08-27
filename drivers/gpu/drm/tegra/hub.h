@@ -38,19 +38,14 @@ to_tegra_shared_plane(struct drm_plane *plane)
 
 struct tegra_display_hub_soc {
 	unsigned int num_wgrps;
-	bool supports_dsc;
 };
 
 struct tegra_display_hub {
-	struct drm_private_obj base;
 	struct host1x_client client;
 	struct clk *clk_disp;
 	struct clk *clk_dsc;
 	struct clk *clk_hub;
 	struct reset_control *rst;
-
-	unsigned int num_heads;
-	struct clk **clk_heads;
 
 	const struct tegra_display_hub_soc *soc;
 	struct tegra_windowgroup *wgrps;
@@ -60,20 +55,6 @@ static inline struct tegra_display_hub *
 to_tegra_display_hub(struct host1x_client *client)
 {
 	return container_of(client, struct tegra_display_hub, client);
-}
-
-struct tegra_display_hub_state {
-	struct drm_private_state base;
-
-	struct tegra_dc *dc;
-	unsigned long rate;
-	struct clk *clk;
-};
-
-static inline struct tegra_display_hub_state *
-to_tegra_display_hub_state(struct drm_private_state *priv)
-{
-	return container_of(priv, struct tegra_display_hub_state, base);
 }
 
 struct tegra_dc;
@@ -87,8 +68,6 @@ struct drm_plane *tegra_shared_plane_create(struct drm_device *drm,
 					    unsigned int wgrp,
 					    unsigned int index);
 
-int tegra_display_hub_atomic_check(struct drm_device *drm,
-				   struct drm_atomic_state *state);
 void tegra_display_hub_atomic_commit(struct drm_device *drm,
 				     struct drm_atomic_state *state);
 

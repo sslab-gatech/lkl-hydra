@@ -9,12 +9,8 @@
  * paravirt and debugging variants are added.)
  */
 #undef CONFIG_PARAVIRT
-#undef CONFIG_PARAVIRT_XXL
 #undef CONFIG_PARAVIRT_SPINLOCKS
 #undef CONFIG_KASAN
-
-/* cpu_feature_enabled() cannot be used this early */
-#define USE_EARLY_PGTABLE_L5
 
 #include <linux/linkage.h>
 #include <linux/screen_info.h>
@@ -113,6 +109,6 @@ static inline void console_init(void)
 { }
 #endif
 
-void set_sev_encryption_mask(void);
+unsigned long get_sev_encryption_mask(void);
 
 #endif

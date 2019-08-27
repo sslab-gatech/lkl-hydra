@@ -17,12 +17,8 @@
 #include "orangefs-kernel.h"
 #include "orangefs-bufmap.h"
 
-static int wait_for_matching_downcall(struct orangefs_kernel_op_s *op,
-		long timeout,
-		bool interruptible)
-			__acquires(op->lock);
-static void orangefs_clean_up_interrupted_operation(struct orangefs_kernel_op_s *op)
-	__releases(op->lock);
+static int wait_for_matching_downcall(struct orangefs_kernel_op_s *, long, bool);
+static void orangefs_clean_up_interrupted_operation(struct orangefs_kernel_op_s *);
 
 /*
  * What we do in this function is to walk the list of operations that are
@@ -250,7 +246,6 @@ bool orangefs_cancel_op_in_progress(struct orangefs_kernel_op_s *op)
  */
 static void
 	orangefs_clean_up_interrupted_operation(struct orangefs_kernel_op_s *op)
-		__releases(op->lock)
 {
 	/*
 	 * handle interrupted cases depending on what state we were in when
@@ -318,9 +313,8 @@ static void
  * Returns with op->lock taken.
  */
 static int wait_for_matching_downcall(struct orangefs_kernel_op_s *op,
-		long timeout,
-		bool interruptible)
-			__acquires(op->lock)
+				      long timeout,
+				      bool interruptible)
 {
 	long n;
 

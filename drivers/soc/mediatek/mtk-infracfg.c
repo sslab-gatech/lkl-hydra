@@ -17,9 +17,6 @@
 #include <linux/soc/mediatek/infracfg.h>
 #include <asm/processor.h>
 
-#define MTK_POLL_DELAY_US   10
-#define MTK_POLL_TIMEOUT    (jiffies_to_usecs(HZ))
-
 #define INFRA_TOPAXI_PROTECTEN		0x0220
 #define INFRA_TOPAXI_PROTECTSTA1	0x0228
 #define INFRA_TOPAXI_PROTECTEN_SET	0x0260
@@ -40,6 +37,7 @@
 int mtk_infracfg_set_bus_protection(struct regmap *infracfg, u32 mask,
 		bool reg_update)
 {
+	unsigned long expired;
 	u32 val;
 	int ret;
 
@@ -49,11 +47,22 @@ int mtk_infracfg_set_bus_protection(struct regmap *infracfg, u32 mask,
 	else
 		regmap_write(infracfg, INFRA_TOPAXI_PROTECTEN_SET, mask);
 
-	ret = regmap_read_poll_timeout(infracfg, INFRA_TOPAXI_PROTECTSTA1,
-				       val, (val & mask) == mask,
-				       MTK_POLL_DELAY_US, MTK_POLL_TIMEOUT);
+	expired = jiffies + HZ;
 
-	return ret;
+	while (1) {
+		ret = regmap_read(infracfg, INFRA_TOPAXI_PROTECTSTA1, &val);
+		if (ret)
+			return ret;
+
+		if ((val & mask) == mask)
+			break;
+
+		cpu_relax();
+		if (time_after(jiffies, expired))
+			return -EIO;
+	}
+
+	return 0;
 }
 
 /**
@@ -71,17 +80,30 @@ int mtk_infracfg_set_bus_protection(struct regmap *infracfg, u32 mask,
 int mtk_infracfg_clear_bus_protection(struct regmap *infracfg, u32 mask,
 		bool reg_update)
 {
+	unsigned long expired;
 	int ret;
-	u32 val;
 
 	if (reg_update)
 		regmap_update_bits(infracfg, INFRA_TOPAXI_PROTECTEN, mask, 0);
 	else
 		regmap_write(infracfg, INFRA_TOPAXI_PROTECTEN_CLR, mask);
 
-	ret = regmap_read_poll_timeout(infracfg, INFRA_TOPAXI_PROTECTSTA1,
-				       val, !(val & mask),
-				       MTK_POLL_DELAY_US, MTK_POLL_TIMEOUT);
+	expired = jiffies + HZ;
 
-	return ret;
+	while (1) {
+		u32 val;
+
+		ret = regmap_read(infracfg, INFRA_TOPAXI_PROTECTSTA1, &val);
+		if (ret)
+			return ret;
+
+		if (!(val & mask))
+			break;
+
+		cpu_relax();
+		if (time_after(jiffies, expired))
+			return -EIO;
+	}
+
+	return 0;
 }

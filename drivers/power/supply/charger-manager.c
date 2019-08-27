@@ -363,7 +363,7 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 	int err = 0, i;
 	struct charger_desc *desc = cm->desc;
 
-	/* Ignore if it's redundant command */
+	/* Ignore if it's redundent command */
 	if (enable == cm->charger_enabled)
 		return 0;
 
@@ -1212,6 +1212,7 @@ static int charger_extcon_init(struct charger_manager *cm,
 	if (ret < 0) {
 		pr_info("Cannot register extcon_dev for %s(cable: %s)\n",
 			cable->extcon_name, cable->name);
+		ret = -EINVAL;
 	}
 
 	return ret;
@@ -1351,7 +1352,7 @@ static ssize_t charger_externally_control_store(struct device *dev,
 }
 
 /**
- * charger_manager_prepare_sysfs - Prepare sysfs entry for each charger
+ * charger_manager_register_sysfs - Register sysfs entry for each charger
  * @cm: the Charger Manager representing the battery.
  *
  * This function add sysfs entry for charger(regulator) to control charger from
@@ -1363,30 +1364,34 @@ static ssize_t charger_externally_control_store(struct device *dev,
  * externally_control, this charger isn't controlled from charger-manager and
  * always stay off state of regulator.
  */
-static int charger_manager_prepare_sysfs(struct charger_manager *cm)
+static int charger_manager_register_sysfs(struct charger_manager *cm)
 {
 	struct charger_desc *desc = cm->desc;
 	struct charger_regulator *charger;
 	int chargers_externally_control = 1;
-	char *name;
+	char buf[11];
+	char *str;
+	int ret;
 	int i;
 
 	/* Create sysfs entry to control charger(regulator) */
 	for (i = 0; i < desc->num_charger_regulators; i++) {
 		charger = &desc->charger_regulators[i];
 
-		name = devm_kasprintf(cm->dev, GFP_KERNEL, "charger.%d", i);
-		if (!name)
+		snprintf(buf, 10, "charger.%d", i);
+		str = devm_kzalloc(cm->dev,
+				sizeof(char) * (strlen(buf) + 1), GFP_KERNEL);
+		if (!str)
 			return -ENOMEM;
+
+		strcpy(str, buf);
 
 		charger->attrs[0] = &charger->attr_name.attr;
 		charger->attrs[1] = &charger->attr_state.attr;
 		charger->attrs[2] = &charger->attr_externally_control.attr;
 		charger->attrs[3] = NULL;
-
-		charger->attr_grp.name = name;
-		charger->attr_grp.attrs = charger->attrs;
-		desc->sysfs_groups[i] = &charger->attr_grp;
+		charger->attr_g.name = str;
+		charger->attr_g.attrs = charger->attrs;
 
 		sysfs_attr_init(&charger->attr_name.attr);
 		charger->attr_name.attr.name = "name";
@@ -1413,6 +1418,14 @@ static int charger_manager_prepare_sysfs(struct charger_manager *cm)
 
 		dev_info(cm->dev, "'%s' regulator's externally_control is %d\n",
 			 charger->regulator_name, charger->externally_control);
+
+		ret = sysfs_create_group(&cm->charger_psy->dev.kobj,
+					&charger->attr_g);
+		if (ret < 0) {
+			dev_err(cm->dev, "Cannot create sysfs entry of %s regulator\n",
+				charger->regulator_name);
+			return ret;
+		}
 	}
 
 	if (chargers_externally_control) {
@@ -1508,19 +1521,17 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 	/* chargers */
 	of_property_read_u32(np, "cm-num-chargers", &num_chgs);
 	if (num_chgs) {
-		int i;
-
 		/* Allocate empty bin at the tail of array */
-		desc->psy_charger_stat = devm_kcalloc(dev,
-						      num_chgs + 1,
-						      sizeof(char *),
-						      GFP_KERNEL);
-		if (!desc->psy_charger_stat)
+		desc->psy_charger_stat = devm_kzalloc(dev, sizeof(char *)
+						* (num_chgs + 1), GFP_KERNEL);
+		if (desc->psy_charger_stat) {
+			int i;
+			for (i = 0; i < num_chgs; i++)
+				of_property_read_string_index(np, "cm-chargers",
+						i, &desc->psy_charger_stat[i]);
+		} else {
 			return ERR_PTR(-ENOMEM);
-
-		for (i = 0; i < num_chgs; i++)
-			of_property_read_string_index(np, "cm-chargers",
-						      i, &desc->psy_charger_stat[i]);
+		}
 	}
 
 	of_property_read_string(np, "cm-fuel-gauge", &desc->psy_fuel_gauge);
@@ -1544,21 +1555,13 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 		struct charger_regulator *chg_regs;
 		struct device_node *child;
 
-		chg_regs = devm_kcalloc(dev,
-					desc->num_charger_regulators,
-					sizeof(*chg_regs),
+		chg_regs = devm_kzalloc(dev, sizeof(*chg_regs)
+					* desc->num_charger_regulators,
 					GFP_KERNEL);
 		if (!chg_regs)
 			return ERR_PTR(-ENOMEM);
 
 		desc->charger_regulators = chg_regs;
-
-		desc->sysfs_groups = devm_kcalloc(dev,
-					desc->num_charger_regulators + 1,
-					sizeof(*desc->sysfs_groups),
-					GFP_KERNEL);
-		if (!desc->sysfs_groups)
-			return ERR_PTR(-ENOMEM);
 
 		for_each_child_of_node(np, child) {
 			struct charger_cable *cables;
@@ -1570,10 +1573,9 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 			/* charger cables */
 			chg_regs->num_cables = of_get_child_count(child);
 			if (chg_regs->num_cables) {
-				cables = devm_kcalloc(dev,
-						      chg_regs->num_cables,
-						      sizeof(*cables),
-						      GFP_KERNEL);
+				cables = devm_kzalloc(dev, sizeof(*cables)
+						* chg_regs->num_cables,
+						GFP_KERNEL);
 				if (!cables) {
 					of_node_put(child);
 					return ERR_PTR(-ENOMEM);
@@ -1627,7 +1629,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	if (IS_ERR(desc)) {
 		dev_err(&pdev->dev, "No platform data (desc) found\n");
-		return PTR_ERR(desc);
+		return -ENODEV;
 	}
 
 	cm = devm_kzalloc(&pdev->dev, sizeof(*cm), GFP_KERNEL);
@@ -1681,6 +1683,10 @@ static int charger_manager_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	/* Counting index only */
+	while (desc->psy_charger_stat[i])
+		i++;
+
 	/* Check if charger's supplies are present at probe */
 	for (i = 0; desc->psy_charger_stat[i]; i++) {
 		struct power_supply *psy;
@@ -1694,9 +1700,8 @@ static int charger_manager_probe(struct platform_device *pdev)
 		power_supply_put(psy);
 	}
 
-	if (cm->desc->polling_mode != CM_POLL_DISABLE &&
-	    (desc->polling_interval_ms == 0 ||
-	     msecs_to_jiffies(desc->polling_interval_ms) <= CM_JIFFIES_SMALL)) {
+	if (desc->polling_interval_ms == 0 ||
+	    msecs_to_jiffies(desc->polling_interval_ms) <= CM_JIFFIES_SMALL) {
 		dev_err(&pdev->dev, "polling_interval_ms is too small\n");
 		return -EINVAL;
 	}
@@ -1719,11 +1724,10 @@ static int charger_manager_probe(struct platform_device *pdev)
 	cm->charger_psy_desc.name = cm->psy_name_buf;
 
 	/* Allocate for psy properties because they may vary */
-	cm->charger_psy_desc.properties =
-		devm_kcalloc(&pdev->dev,
-			     ARRAY_SIZE(default_charger_props) +
-				NUM_CHARGER_PSY_OPTIONAL,
-			     sizeof(enum power_supply_property), GFP_KERNEL);
+	cm->charger_psy_desc.properties = devm_kzalloc(&pdev->dev,
+				sizeof(enum power_supply_property)
+				* (ARRAY_SIZE(default_charger_props) +
+				NUM_CHARGER_PSY_OPTIONAL), GFP_KERNEL);
 	if (!cm->charger_psy_desc.properties)
 		return -ENOMEM;
 
@@ -1762,15 +1766,6 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&cm->fullbatt_vchk_work, fullbatt_vchk);
 
-	/* Register sysfs entry for charger(regulator) */
-	ret = charger_manager_prepare_sysfs(cm);
-	if (ret < 0) {
-		dev_err(&pdev->dev,
-			"Cannot prepare sysfs entry of regulators\n");
-		return ret;
-	}
-	psy_cfg.attr_grp = desc->sysfs_groups;
-
 	cm->charger_psy = power_supply_register(&pdev->dev,
 						&cm->charger_psy_desc,
 						&psy_cfg);
@@ -1787,6 +1782,14 @@ static int charger_manager_probe(struct platform_device *pdev)
 		goto err_reg_extcon;
 	}
 
+	/* Register sysfs entry for charger(regulator) */
+	ret = charger_manager_register_sysfs(cm);
+	if (ret < 0) {
+		dev_err(&pdev->dev,
+			"Cannot initialize sysfs entry of regulator\n");
+		goto err_reg_sysfs;
+	}
+
 	/* Add to the list */
 	mutex_lock(&cm_list_mtx);
 	list_add(&cm->entry, &cm_list);
@@ -1794,7 +1797,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	/*
 	 * Charger-manager is capable of waking up the systme from sleep
-	 * when event is happened through cm_notify_event()
+	 * when event is happend through cm_notify_event()
 	 */
 	device_init_wakeup(&pdev->dev, true);
 	device_set_wakeup_capable(&pdev->dev, false);
@@ -1810,6 +1813,14 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_reg_sysfs:
+	for (i = 0; i < desc->num_charger_regulators; i++) {
+		struct charger_regulator *charger;
+
+		charger = &desc->charger_regulators[i];
+		sysfs_remove_group(&cm->charger_psy->dev.kobj,
+				&charger->attr_g);
+	}
 err_reg_extcon:
 	for (i = 0; i < desc->num_charger_regulators; i++) {
 		struct charger_regulator *charger;
@@ -2006,7 +2017,7 @@ module_exit(charger_manager_cleanup);
  * cm_notify_event - charger driver notify Charger Manager of charger event
  * @psy: pointer to instance of charger's power_supply
  * @type: type of charger event
- * @msg: optional message passed to uevent_notify function
+ * @msg: optional message passed to uevent_notify fuction
  */
 void cm_notify_event(struct power_supply *psy, enum cm_event_types type,
 		     char *msg)

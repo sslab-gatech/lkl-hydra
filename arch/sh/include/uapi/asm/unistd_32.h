@@ -396,8 +396,6 @@
 #define __NR_preadv2		381
 #define __NR_pwritev2		382
 
-#ifdef __KERNEL__
-#define __NR_syscalls		383
-#endif
+#define NR_syscalls 383
 
 #endif /* __ASM_SH_UNISTD_32_H */

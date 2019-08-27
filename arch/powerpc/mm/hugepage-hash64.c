@@ -51,12 +51,6 @@ int __hash_page_thp(unsigned long ea, unsigned long access, unsigned long vsid,
 			new_pmd |= _PAGE_DIRTY;
 	} while (!pmd_xchg(pmdp, __pmd(old_pmd), __pmd(new_pmd)));
 
-	/*
-	 * Make sure this is thp or devmap entry
-	 */
-	if (!(old_pmd & (H_PAGE_THP_HUGE | _PAGE_DEVMAP)))
-		return 0;
-
 	rflags = htab_convert_pte_flags(new_pmd);
 
 #if 0
@@ -134,7 +128,7 @@ int __hash_page_thp(unsigned long ea, unsigned long access, unsigned long vsid,
 		new_pmd |= H_PAGE_HASHPTE;
 
 repeat:
-		hpte_group = (hash & htab_hash_mask) * HPTES_PER_GROUP;
+		hpte_group = ((hash & htab_hash_mask) * HPTES_PER_GROUP) & ~0x7UL;
 
 		/* Insert into the hash table, primary slot */
 		slot = mmu_hash_ops.hpte_insert(hpte_group, vpn, pa, rflags, 0,
@@ -143,15 +137,16 @@ repeat:
 		 * Primary is full, try the secondary
 		 */
 		if (unlikely(slot == -1)) {
-			hpte_group = (~hash & htab_hash_mask) * HPTES_PER_GROUP;
+			hpte_group = ((~hash & htab_hash_mask) *
+				      HPTES_PER_GROUP) & ~0x7UL;
 			slot = mmu_hash_ops.hpte_insert(hpte_group, vpn, pa,
 							rflags,
 							HPTE_V_SECONDARY,
 							psize, lpsize, ssize);
 			if (slot == -1) {
 				if (mftb() & 0x1)
-					hpte_group = (hash & htab_hash_mask) *
-							HPTES_PER_GROUP;
+					hpte_group = ((hash & htab_hash_mask) *
+						      HPTES_PER_GROUP) & ~0x7UL;
 
 				mmu_hash_ops.hpte_remove(hpte_group);
 				goto repeat;

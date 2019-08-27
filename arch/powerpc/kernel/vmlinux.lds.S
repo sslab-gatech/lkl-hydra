@@ -4,9 +4,6 @@
 #else
 #define PROVIDE32(x)	PROVIDE(x)
 #endif
-
-#define BSS_FIRST_SECTIONS *(.bss.prominit)
-
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/cache.h>
@@ -92,7 +89,7 @@ SECTIONS
 	 */
 	.text BLOCK(0) : AT(ADDR(.text) - LOAD_OFFSET) {
 #ifdef CONFIG_LD_HEAD_STUB_CATCH
-		KEEP(*(.linker_stub_catch));
+		*(.linker_stub_catch);
 		. = . ;
 #endif
 
@@ -101,10 +98,7 @@ SECTIONS
 		ALIGN_FUNCTION();
 #endif
 		/* careful! __ftr_alt_* sections need to be close to .text */
-		*(.text.hot TEXT_MAIN .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
-#ifdef CONFIG_PPC64
-		*(.tramp.ftrace.text);
-#endif
+		*(.text.hot .text .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
 		SCHED_TEXT
 		CPUIDLE_TEXT
 		LOCK_TEXT
@@ -140,44 +134,13 @@ SECTIONS
 
 #ifdef CONFIG_PPC64
 	. = ALIGN(8);
-	__stf_entry_barrier_fixup : AT(ADDR(__stf_entry_barrier_fixup) - LOAD_OFFSET) {
-		__start___stf_entry_barrier_fixup = .;
-		*(__stf_entry_barrier_fixup)
-		__stop___stf_entry_barrier_fixup = .;
-	}
-
-	. = ALIGN(8);
-	__stf_exit_barrier_fixup : AT(ADDR(__stf_exit_barrier_fixup) - LOAD_OFFSET) {
-		__start___stf_exit_barrier_fixup = .;
-		*(__stf_exit_barrier_fixup)
-		__stop___stf_exit_barrier_fixup = .;
-	}
-
-	. = ALIGN(8);
 	__rfi_flush_fixup : AT(ADDR(__rfi_flush_fixup) - LOAD_OFFSET) {
 		__start___rfi_flush_fixup = .;
 		*(__rfi_flush_fixup)
 		__stop___rfi_flush_fixup = .;
 	}
-#endif /* CONFIG_PPC64 */
-
-#ifdef CONFIG_PPC_BARRIER_NOSPEC
-	. = ALIGN(8);
-	__spec_barrier_fixup : AT(ADDR(__spec_barrier_fixup) - LOAD_OFFSET) {
-		__start___barrier_nospec_fixup = .;
-		*(__barrier_nospec_fixup)
-		__stop___barrier_nospec_fixup = .;
-	}
-#endif /* CONFIG_PPC_BARRIER_NOSPEC */
-
-#ifdef CONFIG_PPC_FSL_BOOK3E
-	. = ALIGN(8);
-	__spec_btb_flush_fixup : AT(ADDR(__spec_btb_flush_fixup) - LOAD_OFFSET) {
-		__start__btb_flush_fixup = .;
-		*(__btb_flush_fixup)
-		__stop__btb_flush_fixup = .;
-	}
 #endif
+
 	EXCEPTION_TABLE(0)
 
 	NOTES :kernel :notes
@@ -195,15 +158,7 @@ SECTIONS
  */
 	. = ALIGN(STRICT_ALIGN_SIZE);
 	__init_begin = .;
-	. = ALIGN(PAGE_SIZE);
-	.init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {
-		_sinittext = .;
-		INIT_TEXT
-		_einittext = .;
-#ifdef CONFIG_PPC64
-		*(.tramp.ftrace.init);
-#endif
-	} :kernel
+	INIT_TEXT_SECTION(PAGE_SIZE) :kernel
 
 	/* .exit.text is discarded at runtime, not link time,
 	 * to deal with references from __bug_table
@@ -214,6 +169,12 @@ SECTIONS
 
 	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {
 		INIT_DATA
+		__vtop_table_begin = .;
+		*(.vtop_fixup);
+		__vtop_table_end = .;
+		__ptov_table_begin = .;
+		*(.ptov_fixup);
+		__ptov_table_end = .;
 	}
 
 	.init.setup : AT(ADDR(.init.setup) - LOAD_OFFSET) {
@@ -228,29 +189,31 @@ SECTIONS
 		CON_INITCALL
 	}
 
+	SECURITY_INIT
+
 	. = ALIGN(8);
 	__ftr_fixup : AT(ADDR(__ftr_fixup) - LOAD_OFFSET) {
 		__start___ftr_fixup = .;
-		KEEP(*(__ftr_fixup))
+		*(__ftr_fixup)
 		__stop___ftr_fixup = .;
 	}
 	. = ALIGN(8);
 	__mmu_ftr_fixup : AT(ADDR(__mmu_ftr_fixup) - LOAD_OFFSET) {
 		__start___mmu_ftr_fixup = .;
-		KEEP(*(__mmu_ftr_fixup))
+		*(__mmu_ftr_fixup)
 		__stop___mmu_ftr_fixup = .;
 	}
 	. = ALIGN(8);
 	__lwsync_fixup : AT(ADDR(__lwsync_fixup) - LOAD_OFFSET) {
 		__start___lwsync_fixup = .;
-		KEEP(*(__lwsync_fixup))
+		*(__lwsync_fixup)
 		__stop___lwsync_fixup = .;
 	}
 #ifdef CONFIG_PPC64
 	. = ALIGN(8);
 	__fw_ftr_fixup : AT(ADDR(__fw_ftr_fixup) - LOAD_OFFSET) {
 		__start___fw_ftr_fixup = .;
-		KEEP(*(__fw_ftr_fixup))
+		*(__fw_ftr_fixup)
 		__stop___fw_ftr_fixup = .;
 	}
 #endif
@@ -263,7 +226,7 @@ SECTIONS
 	. = ALIGN(8);
 	.machine.desc : AT(ADDR(.machine.desc) - LOAD_OFFSET) {
 		__machine_desc_start = . ;
-		KEEP(*(.machine.desc))
+		*(.machine.desc)
 		__machine_desc_end = . ;
 	}
 #ifdef CONFIG_RELOCATABLE
@@ -310,12 +273,8 @@ SECTIONS
 #ifdef CONFIG_PPC32
 	.data : AT(ADDR(.data) - LOAD_OFFSET) {
 		DATA_DATA
-#ifdef CONFIG_UBSAN
-		*(.data..Lubsan_data*)
-		*(.data..Lubsan_type*)
-#endif
 		*(.data.rel*)
-		*(SDATA_MAIN)
+		*(.sdata)
 		*(.sdata2)
 		*(.got.plt) *(.got)
 		*(.plt)
@@ -330,7 +289,7 @@ SECTIONS
 
 	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
 		__start_opd = .;
-		KEEP(*(.opd))
+		*(.opd)
 		__end_opd = .;
 	}
 

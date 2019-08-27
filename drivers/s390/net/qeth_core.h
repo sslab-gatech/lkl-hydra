@@ -22,12 +22,10 @@
 #include <linux/hashtable.h>
 #include <linux/ip.h>
 #include <linux/refcount.h>
-#include <linux/workqueue.h>
 
 #include <net/ipv6.h>
 #include <net/if_inet6.h>
 #include <net/addrconf.h>
-#include <net/tcp.h>
 
 #include <asm/debug.h>
 #include <asm/qdio.h>
@@ -88,18 +86,6 @@ struct qeth_dbf_info {
 #define SENSE_RESETTING_EVENT_BYTE 1
 #define SENSE_RESETTING_EVENT_FLAG 0x80
 
-static inline u32 qeth_get_device_id(struct ccw_device *cdev)
-{
-	struct ccw_dev_id dev_id;
-	u32 id;
-
-	ccw_device_get_id(cdev, &dev_id);
-	id = dev_id.devno;
-	id |= (u32) (dev_id.ssid << 16);
-
-	return id;
-}
-
 /*
  * Common IO related definitions
  */
@@ -110,8 +96,7 @@ static inline u32 qeth_get_device_id(struct ccw_device *cdev)
 #define CARD_RDEV_ID(card) dev_name(&card->read.ccwdev->dev)
 #define CARD_WDEV_ID(card) dev_name(&card->write.ccwdev->dev)
 #define CARD_DDEV_ID(card) dev_name(&card->data.ccwdev->dev)
-#define CCW_DEVID(cdev)		(qeth_get_device_id(cdev))
-#define CARD_DEVID(card)	(CCW_DEVID(CARD_RDEV(card)))
+#define CHANNEL_ID(channel) dev_name(&channel->ccwdev->dev)
 
 /**
  * card stuff
@@ -119,7 +104,6 @@ static inline u32 qeth_get_device_id(struct ccw_device *cdev)
 struct qeth_perf_stats {
 	unsigned int bufs_rec;
 	unsigned int bufs_sent;
-	unsigned int buf_elements_sent;
 
 	unsigned int skbs_sent_pack;
 	unsigned int bufs_sent_pack;
@@ -153,6 +137,7 @@ struct qeth_perf_stats {
 	unsigned int large_send_bytes;
 	unsigned int large_send_cnt;
 	unsigned int sg_skbs_sent;
+	unsigned int sg_frags_sent;
 	/* initial values when measuring starts */
 	unsigned long initial_rx_packets;
 	unsigned long initial_tx_packets;
@@ -163,7 +148,6 @@ struct qeth_perf_stats {
 	unsigned int tx_csum;
 	unsigned int tx_lin;
 	unsigned int tx_linfail;
-	unsigned int rx_csum;
 };
 
 /* Routing stuff */
@@ -249,9 +233,9 @@ static inline int qeth_is_ipa_enabled(struct qeth_ipa_info *ipa,
 #define QETH_IDX_FUNC_LEVEL_OSD		 0x0101
 #define QETH_IDX_FUNC_LEVEL_IQD		 0x4108
 
+#define QETH_REAL_CARD		1
+#define QETH_VLAN_CARD		2
 #define QETH_BUFSIZE		4096
-#define CCW_CMD_WRITE		0x01
-#define CCW_CMD_READ		0x02
 
 /**
  * some more defs
@@ -315,7 +299,7 @@ struct qeth_hdr_layer3 {
 	__u16 frame_offset;
 	union {
 		/* TX: */
-		struct in6_addr ipv6_addr;
+		u8 ipv6_addr[16];
 		struct ipv4 {
 			u8 res[12];
 			u32 addr;
@@ -404,9 +388,8 @@ enum qeth_layer2_frame_flags {
 enum qeth_header_ids {
 	QETH_HEADER_TYPE_LAYER3 = 0x01,
 	QETH_HEADER_TYPE_LAYER2 = 0x02,
-	QETH_HEADER_TYPE_L3_TSO	= 0x03,
+	QETH_HEADER_TYPE_TSO	= 0x03,
 	QETH_HEADER_TYPE_OSN    = 0x04,
-	QETH_HEADER_TYPE_L2_TSO	= 0x06,
 };
 /* flags for qeth_hdr.ext_flags */
 #define QETH_HDR_EXT_VLAN_FRAME       0x01
@@ -483,6 +466,7 @@ struct qeth_qdio_out_buffer {
 	struct sk_buff_head skb_list;
 	int is_header[QDIO_MAX_ELEMENTS_PER_BUFFER];
 
+	struct qaob *aob;
 	struct qeth_qdio_out_q *q;
 	struct qeth_qdio_out_buffer *next_pending;
 };
@@ -572,9 +556,16 @@ enum qeth_prot_versions {
 	QETH_PROT_IPV6 = 0x0006,
 };
 
+enum qeth_ip_types {
+	QETH_IP_TYPE_NORMAL,
+	QETH_IP_TYPE_VIPA,
+	QETH_IP_TYPE_RXIP,
+};
+
 enum qeth_cmd_buffer_state {
 	BUF_STATE_FREE,
 	BUF_STATE_LOCKED,
+	BUF_STATE_PROCESSED,
 };
 
 enum qeth_cq {
@@ -597,8 +588,7 @@ struct qeth_cmd_buffer {
 	struct qeth_channel *channel;
 	unsigned char *data;
 	int rc;
-	void (*callback)(struct qeth_card *card, struct qeth_channel *channel,
-			 struct qeth_cmd_buffer *iob);
+	void (*callback) (struct qeth_channel *, struct qeth_cmd_buffer *);
 };
 
 static inline struct qeth_ipa_cmd *__ipa_cmd(struct qeth_cmd_buffer *iob)
@@ -611,7 +601,7 @@ static inline struct qeth_ipa_cmd *__ipa_cmd(struct qeth_cmd_buffer *iob)
  */
 struct qeth_channel {
 	enum qeth_channel_states state;
-	struct ccw1 *ccw;
+	struct ccw1 ccw;
 	spinlock_t iob_lock;
 	wait_queue_head_t wait_q;
 	struct ccw_device *ccwdev;
@@ -619,6 +609,7 @@ struct qeth_channel {
 	struct qeth_cmd_buffer iob[QETH_CMD_BUFFER_NO];
 	atomic_t irq_pending;
 	int io_buf_no;
+	int buf_no;
 };
 
 /**
@@ -655,6 +646,7 @@ struct qeth_reply {
 	atomic_t received;
 	int rc;
 	void *param;
+	struct qeth_card *card;
 	refcount_t refcnt;
 };
 
@@ -666,6 +658,7 @@ struct qeth_card_blkt {
 
 #define QETH_BROADCAST_WITH_ECHO    0x01
 #define QETH_BROADCAST_WITHOUT_ECHO 0x02
+#define QETH_LAYER2_MAC_READ	    0x01
 #define QETH_LAYER2_MAC_REGISTERED  0x02
 struct qeth_card_info {
 	unsigned short unit_addr2;
@@ -675,8 +668,12 @@ struct qeth_card_info {
 	char mcl_level[QETH_MCL_LENGTH + 1];
 	int guestlan;
 	int mac_bits;
+	int portno;
 	enum qeth_card_types type;
 	enum qeth_link_types link_type;
+	int is_multicast_different;
+	int initial_mtu;
+	int max_mtu;
 	int broadcast_capable;
 	int unique_id;
 	bool layer_enforced;
@@ -684,12 +681,6 @@ struct qeth_card_info {
 	enum qeth_ipa_promisc_modes promisc_mode;
 	__u32 diagass_support;
 	__u32 hwtrap;
-};
-
-enum qeth_discipline_id {
-	QETH_DISCIPLINE_UNDETERMINED = -1,
-	QETH_DISCIPLINE_LAYER3 = 0,
-	QETH_DISCIPLINE_LAYER2 = 1,
 };
 
 struct qeth_card_options {
@@ -701,7 +692,7 @@ struct qeth_card_options {
 	struct qeth_sbp_info sbp; /* SETBRIDGEPORT options */
 	struct qeth_vnicc_info vnicc; /* VNICC options */
 	int fake_broadcast;
-	enum qeth_discipline_id layer;
+	int layer2;
 	int performance_stats;
 	int rx_sg_cb;
 	enum qeth_ipa_isolation_modes isolation;
@@ -710,9 +701,6 @@ struct qeth_card_options {
 	enum qeth_cq cq;
 	char hsuid[9];
 };
-
-#define	IS_LAYER2(card)	((card)->options.layer == QETH_DISCIPLINE_LAYER2)
-#define	IS_LAYER3(card)	((card)->options.layer == QETH_DISCIPLINE_LAYER3)
 
 /*
  * thread bits for qeth_card thread masks
@@ -726,8 +714,17 @@ struct qeth_osn_info {
 	int (*data_cb)(struct sk_buff *skb);
 };
 
+enum qeth_discipline_id {
+	QETH_DISCIPLINE_UNDETERMINED = -1,
+	QETH_DISCIPLINE_LAYER3 = 0,
+	QETH_DISCIPLINE_LAYER2 = 1,
+};
+
 struct qeth_discipline {
 	const struct device_type *devtype;
+	void (*start_poll)(struct ccw_device *, int, unsigned long);
+	qdio_handler_t *input_handler;
+	qdio_handler_t *output_handler;
 	int (*process_rx_buffer)(struct qeth_card *card, int budget, int *done);
 	int (*recover)(void *ptr);
 	int (*setup) (struct ccwgroup_device *);
@@ -775,7 +772,9 @@ struct qeth_switch_info {
 #define QETH_NAPI_WEIGHT NAPI_POLL_WEIGHT
 
 struct qeth_card {
+	struct list_head list;
 	enum qeth_card_states state;
+	int lan_online;
 	spinlock_t lock;
 	struct ccwgroup_device *gdev;
 	struct qeth_channel read;
@@ -790,11 +789,10 @@ struct qeth_card {
 	struct qeth_seqno seqno;
 	struct qeth_card_options options;
 
-	struct workqueue_struct *event_wq;
 	wait_queue_head_t wait_q;
+	spinlock_t vlanlock;
 	spinlock_t mclock;
 	unsigned long active_vlans[BITS_TO_LONGS(VLAN_N_VID)];
-	struct mutex vid_list_mutex;		/* vid_list */
 	struct list_head vid_list;
 	DECLARE_HASHTABLE(mac_htable, 4);
 	DECLARE_HASHTABLE(ip_htable, 4);
@@ -827,6 +825,11 @@ struct qeth_card {
 	struct work_struct close_dev_work;
 };
 
+struct qeth_card_list_struct {
+	struct list_head list;
+	rwlock_t rwlock;
+};
+
 struct qeth_trap_id {
 	__u16 lparnr;
 	char vmname[8];
@@ -837,22 +840,6 @@ struct qeth_trap_id {
 
 /*some helper functions*/
 #define QETH_CARD_IFNAME(card) (((card)->dev)? (card)->dev->name : "")
-
-static inline bool qeth_netdev_is_registered(struct net_device *dev)
-{
-	return dev->netdev_ops != NULL;
-}
-
-static inline void qeth_scrub_qdio_buffer(struct qdio_buffer *buf,
-					  unsigned int elements)
-{
-	unsigned int i;
-
-	for (i = 0; i < elements; i++)
-		memset(&buf->element[i], 0, sizeof(struct qdio_buffer_element));
-	buf->element[14].sflags = 0;
-	buf->element[15].sflags = 0;
-}
 
 /**
  * qeth_get_elements_for_range() -	find number of SBALEs to cover range.
@@ -890,27 +877,6 @@ static inline int qeth_get_ip_version(struct sk_buff *skb)
 	}
 }
 
-static inline void qeth_rx_csum(struct qeth_card *card, struct sk_buff *skb,
-				u8 flags)
-{
-	if ((card->dev->features & NETIF_F_RXCSUM) &&
-	    (flags & QETH_HDR_EXT_CSUM_TRANSP_REQ)) {
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
-		if (card->options.performance_stats)
-			card->perf_stats.rx_csum++;
-	} else {
-		skb->ip_summed = CHECKSUM_NONE;
-	}
-}
-
-static inline void qeth_tx_csum(struct sk_buff *skb, u8 *flags, int ipv)
-{
-	*flags |= QETH_HDR_EXT_CSUM_TRANSP_REQ;
-	if ((ipv == 4 && ip_hdr(skb)->protocol == IPPROTO_UDP) ||
-	    (ipv == 6 && ipv6_hdr(skb)->nexthdr == IPPROTO_UDP))
-		*flags |= QETH_HDR_EXT_UDP;
-}
-
 static inline void qeth_put_buffer_pool_entry(struct qeth_card *card,
 		struct qeth_buffer_pool_entry *entry)
 {
@@ -923,40 +889,6 @@ static inline int qeth_is_diagass_supported(struct qeth_card *card,
 	return card->info.diagass_support & (__u32)cmd;
 }
 
-int qeth_send_simple_setassparms_prot(struct qeth_card *card,
-				      enum qeth_ipa_funcs ipa_func,
-				      u16 cmd_code, long data,
-				      enum qeth_prot_versions prot);
-/* IPv4 variant */
-static inline int qeth_send_simple_setassparms(struct qeth_card *card,
-					       enum qeth_ipa_funcs ipa_func,
-					       u16 cmd_code, long data)
-{
-	return qeth_send_simple_setassparms_prot(card, ipa_func, cmd_code,
-						 data, QETH_PROT_IPV4);
-}
-
-static inline int qeth_send_simple_setassparms_v6(struct qeth_card *card,
-						  enum qeth_ipa_funcs ipa_func,
-						  u16 cmd_code, long data)
-{
-	return qeth_send_simple_setassparms_prot(card, ipa_func, cmd_code,
-						 data, QETH_PROT_IPV6);
-}
-
-int qeth_get_priority_queue(struct qeth_card *card, struct sk_buff *skb,
-			    int ipv);
-static inline struct qeth_qdio_out_q *qeth_get_tx_queue(struct qeth_card *card,
-							struct sk_buff *skb,
-							int ipv, int cast_type)
-{
-	if (IS_IQD(card) && cast_type != RTN_UNICAST)
-		return card->qdio.out_qs[card->qdio.no_out_queues - 1];
-	if (!card->qdio.do_prio_queueing)
-		return card->qdio.out_qs[card->qdio.default_out_queue];
-	return card->qdio.out_qs[qeth_get_priority_queue(card, skb, ipv)];
-}
-
 extern struct qeth_discipline qeth_l2_discipline;
 extern struct qeth_discipline qeth_l3_discipline;
 extern const struct attribute_group *qeth_generic_attr_groups[];
@@ -964,6 +896,7 @@ extern const struct attribute_group *qeth_osn_attr_groups[];
 extern const struct attribute_group qeth_device_attr_group;
 extern const struct attribute_group qeth_device_blkt_group;
 extern const struct device_type qeth_generic_devtype;
+extern struct workqueue_struct *qeth_wq;
 
 int qeth_card_hw_is_reachable(struct qeth_card *);
 const char *qeth_get_cardname_short(struct qeth_card *);
@@ -972,11 +905,10 @@ int qeth_core_load_discipline(struct qeth_card *, enum qeth_discipline_id);
 void qeth_core_free_discipline(struct qeth_card *);
 
 /* exports for qeth discipline device drivers */
+extern struct qeth_card_list_struct qeth_core_card_list;
 extern struct kmem_cache *qeth_core_header_cache;
 extern struct qeth_dbf_info qeth_dbf[QETH_DBF_INFOS];
 
-struct net_device *qeth_clone_netdev(struct net_device *orig);
-struct qeth_card *qeth_get_card_by_busid(char *bus_id);
 void qeth_set_recovery_task(struct qeth_card *);
 void qeth_clear_recovery_task(struct qeth_card *);
 void qeth_set_allowed_threads(struct qeth_card *, unsigned long , int);
@@ -985,7 +917,7 @@ int qeth_wait_for_threads(struct qeth_card *, unsigned long);
 int qeth_do_run_thread(struct qeth_card *, unsigned long);
 void qeth_clear_thread_start_bit(struct qeth_card *, unsigned long);
 void qeth_clear_thread_running_bit(struct qeth_card *, unsigned long);
-int qeth_core_hardsetup_card(struct qeth_card *card, bool *carrier_ok);
+int qeth_core_hardsetup_card(struct qeth_card *);
 void qeth_print_status_message(struct qeth_card *);
 int qeth_init_qdio_queues(struct qeth_card *);
 int qeth_send_ipa_cmd(struct qeth_card *, struct qeth_cmd_buffer *,
@@ -994,11 +926,18 @@ int qeth_send_ipa_cmd(struct qeth_card *, struct qeth_cmd_buffer *,
 		  void *);
 struct qeth_cmd_buffer *qeth_get_ipacmd_buffer(struct qeth_card *,
 			enum qeth_ipa_cmds, enum qeth_prot_versions);
+int qeth_query_setadapterparms(struct qeth_card *);
 struct sk_buff *qeth_core_get_next_skb(struct qeth_card *,
 		struct qeth_qdio_buffer *, struct qdio_buffer_element **, int *,
 		struct qeth_hdr **);
 void qeth_schedule_recovery(struct qeth_card *);
+void qeth_qdio_start_poll(struct ccw_device *, int, unsigned long);
 int qeth_poll(struct napi_struct *napi, int budget);
+void qeth_qdio_input_handler(struct ccw_device *,
+		unsigned int, unsigned int, int,
+		int, unsigned long);
+void qeth_qdio_output_handler(struct ccw_device *, unsigned int,
+			int, int, int, unsigned long);
 void qeth_clear_ipacmd_list(struct qeth_card *);
 int qeth_qdio_clear_card(struct qeth_card *, int);
 void qeth_clear_working_pool_list(struct qeth_card *);
@@ -1006,19 +945,30 @@ void qeth_clear_cmd_buffers(struct qeth_channel *);
 void qeth_clear_qdio_buffers(struct qeth_card *);
 void qeth_setadp_promisc_mode(struct qeth_card *);
 struct net_device_stats *qeth_get_stats(struct net_device *);
+int qeth_change_mtu(struct net_device *, int);
 int qeth_setadpparms_change_macaddr(struct qeth_card *);
 void qeth_tx_timeout(struct net_device *);
 void qeth_prepare_control_data(struct qeth_card *, int,
 				struct qeth_cmd_buffer *);
 void qeth_release_buffer(struct qeth_channel *, struct qeth_cmd_buffer *);
-void qeth_prepare_ipa_cmd(struct qeth_card *card, struct qeth_cmd_buffer *iob);
+void qeth_prepare_ipa_cmd(struct qeth_card *, struct qeth_cmd_buffer *, char);
 struct qeth_cmd_buffer *qeth_wait_for_buffer(struct qeth_channel *);
 int qeth_query_switch_attributes(struct qeth_card *card,
 				  struct qeth_switch_info *sw_info);
 int qeth_send_control_data(struct qeth_card *, int, struct qeth_cmd_buffer *,
 	int (*reply_cb)(struct qeth_card *, struct qeth_reply*, unsigned long),
 	void *reply_param);
-unsigned int qeth_count_elements(struct sk_buff *skb, unsigned int data_offset);
+int qeth_bridgeport_query_ports(struct qeth_card *card,
+	enum qeth_sbp_roles *role, enum qeth_sbp_states *state);
+int qeth_bridgeport_setrole(struct qeth_card *card, enum qeth_sbp_roles role);
+int qeth_bridgeport_an_set(struct qeth_card *card, int enable);
+int qeth_get_priority_queue(struct qeth_card *, struct sk_buff *, int, int);
+int qeth_get_elements_no(struct qeth_card *card, struct sk_buff *skb,
+			 int extra_elems, int data_offset);
+int qeth_get_elements_for_frags(struct sk_buff *);
+int qeth_do_send_packet_fast(struct qeth_qdio_out_q *queue, struct sk_buff *skb,
+			     struct qeth_hdr *hdr, unsigned int offset,
+			     unsigned int hd_len);
 int qeth_do_send_packet(struct qeth_card *card, struct qeth_qdio_out_q *queue,
 			struct sk_buff *skb, struct qeth_hdr *hdr,
 			unsigned int offset, unsigned int hd_len,
@@ -1033,27 +983,32 @@ void qeth_dbf_longtext(debug_info_t *id, int level, char *text, ...);
 int qeth_core_ethtool_get_link_ksettings(struct net_device *netdev,
 					 struct ethtool_link_ksettings *cmd);
 int qeth_set_access_ctrl_online(struct qeth_card *card, int fallback);
+int qeth_hdr_chk_and_bounce(struct sk_buff *, struct qeth_hdr **, int);
 int qeth_configure_cq(struct qeth_card *, enum qeth_cq);
 int qeth_hw_trap(struct qeth_card *, enum qeth_diags_trap_action);
+int qeth_query_ipassists(struct qeth_card *, enum qeth_prot_versions prot);
 void qeth_trace_features(struct qeth_card *);
 void qeth_close_dev(struct qeth_card *);
+int qeth_send_simple_setassparms(struct qeth_card *, enum qeth_ipa_funcs,
+				 __u16, long);
+int qeth_send_setassparms(struct qeth_card *, struct qeth_cmd_buffer *, __u16,
+			  long,
+			  int (*reply_cb)(struct qeth_card *,
+					  struct qeth_reply *, unsigned long),
+			  void *);
 int qeth_setassparms_cb(struct qeth_card *, struct qeth_reply *, unsigned long);
 struct qeth_cmd_buffer *qeth_get_setassparms_cmd(struct qeth_card *,
 						 enum qeth_ipa_funcs,
 						 __u16, __u16,
 						 enum qeth_prot_versions);
 int qeth_set_features(struct net_device *, netdev_features_t);
-void qeth_enable_hw_features(struct net_device *dev);
+void qeth_recover_features(struct net_device *dev);
 netdev_features_t qeth_fix_features(struct net_device *, netdev_features_t);
 netdev_features_t qeth_features_check(struct sk_buff *skb,
 				      struct net_device *dev,
 				      netdev_features_t features);
 int qeth_vm_request_mac(struct qeth_card *card);
-int qeth_xmit(struct qeth_card *card, struct sk_buff *skb,
-	      struct qeth_qdio_out_q *queue, int ipv, int cast_type,
-	      void (*fill_header)(struct qeth_card *card, struct qeth_hdr *hdr,
-				  struct sk_buff *skb, int ipv, int cast_type,
-				  unsigned int data_len));
+int qeth_push_hdr(struct sk_buff *skb, struct qeth_hdr **hdr, unsigned int len);
 
 /* exports for OSN */
 int qeth_osn_assist(struct net_device *, void *, int);

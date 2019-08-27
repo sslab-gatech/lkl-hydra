@@ -11,11 +11,12 @@
 #include <linux/swap.h>
 #include <linux/init.h>
 #include <linux/gfp.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/proc_fs.h>
 #include <linux/pagemap.h>
 #include <linux/percpu.h>
 #include <linux/io.h>
+#include <linux/memblock.h>
 #include <linux/dma-mapping.h>
 #include <linux/export.h>
 #include <asm/mmu_context.h>
@@ -127,7 +128,7 @@ static pmd_t * __init one_md_table_init(pud_t *pud)
 	if (pud_none(*pud)) {
 		pmd_t *pmd;
 
-		pmd = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+		pmd = alloc_bootmem_pages(PAGE_SIZE);
 		pud_populate(&init_mm, pud, pmd);
 		BUG_ON(pmd != pmd_offset(pud, 0));
 	}
@@ -140,7 +141,7 @@ static pte_t * __init one_page_table_init(pmd_t *pmd)
 	if (pmd_none(*pmd)) {
 		pte_t *pte;
 
-		pte = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+		pte = alloc_bootmem_pages(PAGE_SIZE);
 		pmd_populate_kernel(&init_mm, pmd, pte);
 		BUG_ON(pte != pte_offset_kernel(pmd, 0));
 	}
@@ -210,15 +211,59 @@ void __init allocate_pgdat(unsigned int nid)
 
 	NODE_DATA(nid) = __va(phys);
 	memset(NODE_DATA(nid), 0, sizeof(struct pglist_data));
+
+	NODE_DATA(nid)->bdata = &bootmem_node_data[nid];
 #endif
 
 	NODE_DATA(nid)->node_start_pfn = start_pfn;
 	NODE_DATA(nid)->node_spanned_pages = end_pfn - start_pfn;
 }
 
+static void __init bootmem_init_one_node(unsigned int nid)
+{
+	unsigned long total_pages, paddr;
+	unsigned long end_pfn;
+	struct pglist_data *p;
+
+	p = NODE_DATA(nid);
+
+	/* Nothing to do.. */
+	if (!p->node_spanned_pages)
+		return;
+
+	end_pfn = pgdat_end_pfn(p);
+
+	total_pages = bootmem_bootmap_pages(p->node_spanned_pages);
+
+	paddr = memblock_alloc(total_pages << PAGE_SHIFT, PAGE_SIZE);
+	if (!paddr)
+		panic("Can't allocate bootmap for nid[%d]\n", nid);
+
+	init_bootmem_node(p, paddr >> PAGE_SHIFT, p->node_start_pfn, end_pfn);
+
+	free_bootmem_with_active_regions(nid, end_pfn);
+
+	/*
+	 * XXX Handle initial reservations for the system memory node
+	 * only for the moment, we'll refactor this later for handling
+	 * reservations in other nodes.
+	 */
+	if (nid == 0) {
+		struct memblock_region *reg;
+
+		/* Reserve the sections we're already using. */
+		for_each_memblock(reserved, reg) {
+			reserve_bootmem(reg->base, reg->size, BOOTMEM_DEFAULT);
+		}
+	}
+
+	sparse_memory_present_with_active_regions(nid);
+}
+
 static void __init do_init_bootmem(void)
 {
 	struct memblock_region *reg;
+	int i;
 
 	/* Add active regions with valid PFNs. */
 	for_each_memblock(memory, reg) {
@@ -234,12 +279,9 @@ static void __init do_init_bootmem(void)
 
 	plat_mem_setup();
 
-	for_each_memblock(memory, reg) {
-		int nid = memblock_get_region_node(reg);
+	for_each_online_node(i)
+		bootmem_init_one_node(i);
 
-		memory_present(nid, memblock_region_memory_base_pfn(reg),
-			memblock_region_memory_end_pfn(reg));
-	}
 	sparse_init();
 }
 
@@ -280,6 +322,7 @@ void __init paging_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES];
 	unsigned long vaddr, end;
+	int nid;
 
 	sh_mv.mv_mem_init();
 
@@ -334,8 +377,30 @@ void __init paging_init(void)
 	kmap_coherent_init();
 
 	memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
-	max_zone_pfns[ZONE_NORMAL] = max_low_pfn;
+
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+		unsigned long low, start_pfn;
+
+		start_pfn = pgdat->bdata->node_min_pfn;
+		low = pgdat->bdata->node_low_pfn;
+
+		if (max_zone_pfns[ZONE_NORMAL] < low)
+			max_zone_pfns[ZONE_NORMAL] = low;
+
+		printk("Node %u: start_pfn = 0x%lx, low = 0x%lx\n",
+		       nid, start_pfn, low);
+	}
+
 	free_area_init_nodes(max_zone_pfns);
+}
+
+/*
+ * Early initialization for any I/O MMUs we might have.
+ */
+static void __init iommu_init(void)
+{
+	no_iommu_init();
 }
 
 unsigned int mem_init_done = 0;
@@ -344,12 +409,14 @@ void __init mem_init(void)
 {
 	pg_data_t *pgdat;
 
+	iommu_init();
+
 	high_memory = NULL;
 	for_each_online_pgdat(pgdat)
 		high_memory = max_t(void *, high_memory,
 				    __va(pgdat_end_pfn(pgdat) << PAGE_SHIFT));
 
-	memblock_free_all();
+	free_all_bootmem();
 
 	/* Set this up early, so we can take care of the zero page */
 	cpu_cache_init();
@@ -443,7 +510,7 @@ EXPORT_SYMBOL_GPL(memory_add_physaddr_to_nid);
 #endif
 
 #ifdef CONFIG_MEMORY_HOTREMOVE
-int arch_remove_memory(int nid, u64 start, u64 size, struct vmem_altmap *altmap)
+int arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 {
 	unsigned long start_pfn = PFN_DOWN(start);
 	unsigned long nr_pages = size >> PAGE_SHIFT;

@@ -25,7 +25,6 @@ struct regmap_debugfs_node {
 	struct list_head link;
 };
 
-static unsigned int dummy_index;
 static struct dentry *regmap_debugfs_root;
 static LIST_HEAD(regmap_debugfs_early_list);
 static DEFINE_MUTEX(regmap_debugfs_early_lock);
@@ -41,7 +40,6 @@ static ssize_t regmap_name_read_file(struct file *file,
 				     loff_t *ppos)
 {
 	struct regmap *map = file->private_data;
-	const char *name = "nodev";
 	int ret;
 	char *buf;
 
@@ -49,10 +47,7 @@ static ssize_t regmap_name_read_file(struct file *file,
 	if (!buf)
 		return -ENOMEM;
 
-	if (map->dev && map->dev->driver)
-		name = map->dev->driver->name;
-
-	ret = snprintf(buf, PAGE_SIZE, "%s\n", name);
+	ret = snprintf(buf, PAGE_SIZE, "%s\n", map->dev->driver->name);
 	if (ret < 0) {
 		kfree(buf);
 		return ret;
@@ -435,7 +430,17 @@ static int regmap_access_show(struct seq_file *s, void *ignored)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(regmap_access);
+static int access_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, regmap_access_show, inode->i_private);
+}
+
+static const struct file_operations regmap_access_fops = {
+	.open		= access_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static ssize_t regmap_cache_only_write_file(struct file *file,
 					    const char __user *user_buf,
@@ -564,20 +569,9 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 		name = devname;
 	}
 
-	if (!strcmp(name, "dummy")) {
-		map->debugfs_name = kasprintf(GFP_KERNEL, "dummy%d",
-						dummy_index);
-		name = map->debugfs_name;
-		dummy_index++;
-	}
-
 	map->debugfs = debugfs_create_dir(name, regmap_debugfs_root);
 	if (!map->debugfs) {
-		dev_warn(map->dev,
-			 "Failed to create %s debugfs directory\n", name);
-
-		kfree(map->debugfs_name);
-		map->debugfs_name = NULL;
+		dev_warn(map->dev, "Failed to create debugfs directory\n");
 		return;
 	}
 

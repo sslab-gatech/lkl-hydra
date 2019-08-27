@@ -1,7 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2011 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  *
  ******************************************************************************/
 #ifndef __RTL8188E_HAL_H__
@@ -10,8 +18,8 @@
 
 /* include HAL Related header after HAL Related compiling flags */
 #include "rtl8188e_spec.h"
-#include "hal8188e_phy_reg.h"
-#include "hal8188e_phy_cfg.h"
+#include "Hal8188EPhyReg.h"
+#include "Hal8188EPhyCfg.h"
 #include "rtl8188e_dm.h"
 #include "rtl8188e_recv.h"
 #include "rtl8188e_xmit.h"
@@ -328,8 +336,6 @@ struct hal_data_8188e {
 	u8	UsbRxAggPageCount;	/*  8192C DMA page count */
 	u8	UsbRxAggPageTimeout;
 };
-
-void Hal_GetChnlGroup88E(u8 chnl, u8 *group);
 
 /*  rtl8188e_hal_init.c */
 void _8051Reset88E(struct adapter *padapter);

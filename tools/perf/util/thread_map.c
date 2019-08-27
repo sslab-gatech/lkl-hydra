@@ -32,7 +32,6 @@ static void thread_map__reset(struct thread_map *map, int start, int nr)
 	size_t size = (nr - start) * sizeof(map->map[0]);
 
 	memset(&map->map[start], 0, size);
-	map->err_thread = -1;
 }
 
 static struct thread_map *thread_map__realloc(struct thread_map *map, int nr)
@@ -324,7 +323,7 @@ out_free_threads:
 }
 
 struct thread_map *thread_map__new_str(const char *pid, const char *tid,
-				       uid_t uid, bool all_threads)
+				       uid_t uid, bool per_thread)
 {
 	if (pid)
 		return thread_map__new_by_pid_str(pid);
@@ -332,7 +331,7 @@ struct thread_map *thread_map__new_str(const char *pid, const char *tid,
 	if (!tid && uid != UINT_MAX)
 		return thread_map__new_by_uid(uid);
 
-	if (all_threads)
+	if (per_thread)
 		return thread_map__new_all_cpus();
 
 	return thread_map__new_by_tid_str(tid);

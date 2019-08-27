@@ -299,3 +299,4 @@ int ax25_ds_frame_in(ax25_cb *ax25, struct sk_buff *skb, int type)
 
 	return queued;
 }
+

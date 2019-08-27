@@ -38,6 +38,5 @@ int test_futex(void)
 
 int main(void)
 {
-	test_harness_set_timeout(300);
 	return test_harness(test_futex, "futex_bench");
 }

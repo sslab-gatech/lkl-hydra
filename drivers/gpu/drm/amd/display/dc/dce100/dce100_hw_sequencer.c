@@ -69,7 +69,7 @@ static const struct dce100_hw_seq_reg_offsets reg_offsets[] = {
  ******************************************************************************/
 /***************************PIPE_CONTROL***********************************/
 
-bool dce100_enable_display_power_gating(
+static bool dce100_enable_display_power_gating(
 	struct dc *dc,
 	uint8_t controller_id,
 	struct dc_bios *dcb,
@@ -105,29 +105,40 @@ bool dce100_enable_display_power_gating(
 		return false;
 }
 
-void dce100_prepare_bandwidth(
-		struct dc *dc,
-		struct dc_state *context)
+static void dce100_pplib_apply_display_requirements(
+	struct dc *dc,
+	struct dc_state *context)
 {
-	dce110_set_safe_displaymarks(&context->res_ctx, dc->res_pool);
+	struct dm_pp_display_configuration *pp_display_cfg = &context->pp_display_cfg;
 
-	dc->res_pool->clk_mgr->funcs->update_clocks(
-			dc->res_pool->clk_mgr,
-			context,
-			false);
+	pp_display_cfg->avail_mclk_switch_time_us =
+						dce110_get_min_vblank_time_us(context);
+	/*pp_display_cfg->min_memory_clock_khz = context->bw.dce.yclk_khz
+		/ MEMORY_TYPE_MULTIPLIER;*/
+
+	dce110_fill_display_configs(context, pp_display_cfg);
+
+	if (memcmp(&dc->prev_display_config, pp_display_cfg, sizeof(
+			struct dm_pp_display_configuration)) !=  0)
+		dm_pp_apply_display_requirements(dc->ctx, pp_display_cfg);
+
+	dc->prev_display_config = *pp_display_cfg;
 }
 
-void dce100_optimize_bandwidth(
+void dce100_set_bandwidth(
 		struct dc *dc,
-		struct dc_state *context)
+		struct dc_state *context,
+		bool decrease_allowed)
 {
-	dce110_set_safe_displaymarks(&context->res_ctx, dc->res_pool);
-
-	dc->res_pool->clk_mgr->funcs->update_clocks(
-			dc->res_pool->clk_mgr,
-			context,
-			true);
+	if (decrease_allowed || context->bw.dce.dispclk_khz > dc->current_state->bw.dce.dispclk_khz) {
+		dc->res_pool->display_clock->funcs->set_clock(
+				dc->res_pool->display_clock,
+				context->bw.dce.dispclk_khz * 115 / 100);
+		dc->current_state->bw.dce.dispclk_khz = context->bw.dce.dispclk_khz;
+	}
+	dce100_pplib_apply_display_requirements(dc, context);
 }
+
 
 /**************************************************************************/
 
@@ -136,7 +147,8 @@ void dce100_hw_sequencer_construct(struct dc *dc)
 	dce110_hw_sequencer_construct(dc);
 
 	dc->hwss.enable_display_power_gating = dce100_enable_display_power_gating;
-	dc->hwss.prepare_bandwidth = dce100_prepare_bandwidth;
-	dc->hwss.optimize_bandwidth = dce100_optimize_bandwidth;
+	dc->hwss.set_bandwidth = dce100_set_bandwidth;
+	dc->hwss.pplib_apply_display_requirements =
+			dce100_pplib_apply_display_requirements;
 }
 

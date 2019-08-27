@@ -243,8 +243,6 @@
 #define IMX6Q_GPR4_IPU_RD_CACHE_CTL		BIT(0)
 
 #define IMX6Q_GPR5_L2_CLK_STOP			BIT(8)
-#define IMX6Q_GPR5_SATA_SW_PD			BIT(10)
-#define IMX6Q_GPR5_SATA_SW_RST			BIT(11)
 
 #define IMX6Q_GPR6_IPU1_ID00_WR_QOS_MASK	(0xf << 0)
 #define IMX6Q_GPR6_IPU1_ID01_WR_QOS_MASK	(0xf << 4)
@@ -440,7 +438,6 @@
 #define IMX6SX_GPR5_DISP_MUX_DCIC1_MASK			(0x1 << 1)
 
 #define IMX6SX_GPR12_PCIE_TEST_POWERDOWN		BIT(30)
-#define IMX6SX_GPR12_PCIE_PM_TURN_OFF			BIT(16)
 #define IMX6SX_GPR12_PCIE_RX_EQ_MASK			(0x7 << 0)
 #define IMX6SX_GPR12_PCIE_RX_EQ_2			(0x2 << 0)
 
@@ -457,8 +454,5 @@
 #define IMX6UL_GPR1_SAI_MCLK_MASK		(0x7 << 19)
 #define MCLK_DIR(x) (x == 1 ? IMX6UL_GPR1_SAI1_MCLK_DIR : x == 2 ? \
 		     IMX6UL_GPR1_SAI2_MCLK_DIR : IMX6UL_GPR1_SAI3_MCLK_DIR)
-
-/* For imx6sll iomux gpr register field define */
-#define IMX6SLL_GPR5_AFCG_X_BYPASS_MASK		(0x1f << 11)
 
 #endif /* __LINUX_IMX6Q_IOMUXC_GPR_H */

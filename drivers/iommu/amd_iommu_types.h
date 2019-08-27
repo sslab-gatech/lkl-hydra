@@ -133,7 +133,6 @@
 #define EVENT_TYPE_CMD_HARD_ERR	0x6
 #define EVENT_TYPE_IOTLB_INV_TO	0x7
 #define EVENT_TYPE_INV_DEV_REQ	0x8
-#define EVENT_TYPE_INV_PPR_REQ	0x9
 #define EVENT_DEVID_MASK	0xffff
 #define EVENT_DEVID_SHIFT	0
 #define EVENT_DOMID_MASK	0xffff
@@ -161,7 +160,6 @@
 #define CONTROL_GAM_EN          0x19ULL
 #define CONTROL_GALOG_EN        0x1CULL
 #define CONTROL_GAINT_EN        0x1DULL
-#define CONTROL_XT_EN           0x32ULL
 
 #define CTRL_INV_TO_MASK	(7 << CONTROL_INV_TIMEOUT)
 #define CTRL_INV_TO_NONE	0
@@ -269,7 +267,6 @@
 #define PAGE_MODE_4_LEVEL 0x04
 #define PAGE_MODE_5_LEVEL 0x05
 #define PAGE_MODE_6_LEVEL 0x06
-#define PAGE_MODE_7_LEVEL 0x07
 
 #define PM_LEVEL_SHIFT(x)	(12 + ((x) * 9))
 #define PM_LEVEL_SIZE(x)	(((x) < 6) ? \
@@ -380,11 +377,9 @@
 #define IOMMU_CAP_EFR     27
 
 /* IOMMU Feature Reporting Field (for IVHD type 10h */
-#define IOMMU_FEAT_XTSUP_SHIFT	0
 #define IOMMU_FEAT_GASUP_SHIFT	6
 
 /* IOMMU Extended Feature Register (EFR) */
-#define IOMMU_EFR_XTSUP_SHIFT	2
 #define IOMMU_EFR_GASUP_SHIFT	7
 
 #define MAX_DOMAIN_ID 65536
@@ -413,7 +408,7 @@ extern bool amd_iommu_iotlb_sup;
 #define IRQ_TABLE_ALIGNMENT	128
 
 struct irq_remap_table {
-	raw_spinlock_t lock;
+	spinlock_t lock;
 	unsigned min_index;
 	u32 *table;
 };
@@ -440,6 +435,7 @@ extern struct kmem_cache *amd_iommu_irq_cache;
 #define APERTURE_MAX_RANGES	32	/* allows 4GB of DMA address space */
 #define APERTURE_RANGE_INDEX(a)	((a) >> APERTURE_RANGE_SHIFT)
 #define APERTURE_PAGE_INDEX(a)	(((a) >> 21) & 0x3fULL)
+
 
 /*
  * This struct is used to pass information about
@@ -494,7 +490,7 @@ struct amd_iommu {
 	int index;
 
 	/* locks the accesses to the hardware */
-	raw_spinlock_t lock;
+	spinlock_t lock;
 
 	/* Pointer to PCI device of this IOMMU */
 	struct pci_dev *dev;
@@ -597,11 +593,6 @@ struct amd_iommu {
 
 	u32 flags;
 	volatile u64 __aligned(8) cmd_sem;
-
-#ifdef CONFIG_AMD_IOMMU_DEBUGFS
-	/* DebugFS Info */
-	struct dentry *debugfs;
-#endif
 };
 
 static inline struct amd_iommu *dev_to_amd_iommu(struct device *dev)
@@ -636,7 +627,7 @@ struct devid_map {
  */
 struct iommu_dev_data {
 	struct list_head list;		  /* For domain->dev_list */
-	struct llist_node dev_data_list;  /* For global dev_data_list */
+	struct list_head dev_data_list;	  /* For global dev_data_list */
 	struct protection_domain *domain; /* Domain the device is bound to */
 	u16 devid;			  /* PCI Device ID */
 	u16 alias;			  /* Alias Device ID */
@@ -818,9 +809,6 @@ union irte {
 	} fields;
 };
 
-#define APICID_TO_IRTE_DEST_LO(x)    (x & 0xffffff)
-#define APICID_TO_IRTE_DEST_HI(x)    ((x >> 24) & 0xff)
-
 union irte_ga_lo {
 	u64 val;
 
@@ -834,8 +822,8 @@ union irte_ga_lo {
 		    dm		: 1,
 		    /* ------ */
 		    guest_mode	: 1,
-		    destination	: 24,
-		    ga_tag	: 32;
+		    destination	: 8,
+		    rsvd	: 48;
 	} fields_remap;
 
 	/* For guest vAPIC */
@@ -848,7 +836,8 @@ union irte_ga_lo {
 		    is_run	: 1,
 		    /* ------ */
 		    guest_mode	: 1,
-		    destination	: 24,
+		    destination	: 8,
+		    rsvd2	: 16,
 		    ga_tag	: 32;
 	} fields_vapic;
 };
@@ -859,8 +848,7 @@ union irte_ga_hi {
 		u64 vector	: 8,
 		    rsvd_1	: 4,
 		    ga_root_ptr	: 40,
-		    rsvd_2	: 4,
-		    destination : 8;
+		    rsvd_2	: 12;
 	} fields;
 };
 

@@ -159,7 +159,7 @@ static int cx25821_alsa_dma_init(struct cx25821_audio_dev *chip, int nr_pages)
 	memset(buf->vaddr, 0, nr_pages << PAGE_SHIFT);
 	buf->nr_pages = nr_pages;
 
-	buf->sglist = vzalloc(array_size(sizeof(*buf->sglist), buf->nr_pages));
+	buf->sglist = vzalloc(buf->nr_pages * sizeof(*buf->sglist));
 	if (NULL == buf->sglist)
 		goto vzalloc_err;
 
@@ -674,7 +674,7 @@ static int snd_cx25821_pcm(struct cx25821_audio_dev *chip, int device,
 	}
 	pcm->private_data = chip;
 	pcm->info_flags = 0;
-	strscpy(pcm->name, name, sizeof(pcm->name));
+	strcpy(pcm->name, name);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_cx25821_pcm_ops);
 
 	return 0;
@@ -725,7 +725,7 @@ static int cx25821_audio_initdev(struct cx25821_dev *dev)
 		return err;
 	}
 
-	strscpy(card->driver, "cx25821", sizeof(card->driver));
+	strcpy(card->driver, "cx25821");
 
 	/* Card "creation" */
 	chip = card->private_data;
@@ -754,10 +754,10 @@ static int cx25821_audio_initdev(struct cx25821_dev *dev)
 		goto error;
 	}
 
-	strscpy(card->shortname, "cx25821", sizeof(card->shortname));
+	strcpy(card->shortname, "cx25821");
 	sprintf(card->longname, "%s at 0x%lx irq %d", chip->dev->name,
 		chip->iobase, chip->irq);
-	strscpy(card->mixername, "CX25821", sizeof(card->mixername));
+	strcpy(card->mixername, "CX25821");
 
 	pr_info("%s/%i: ALSA support for cx25821 boards\n", card->driver,
 		devno);

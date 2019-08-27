@@ -614,7 +614,7 @@ static ssize_t qib_diagpkt_write(struct file *fp,
 	}
 
 	if (copy_from_user(tmpbuf,
-			   u64_to_user_ptr(dp.data),
+			   (const void __user *) (unsigned long) dp.data,
 			   dp.len)) {
 		ret = -EFAULT;
 		goto bail;

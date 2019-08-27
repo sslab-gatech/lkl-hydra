@@ -12,8 +12,6 @@
 #ifndef _KIRKWOOD_AUDIO_H
 #define _KIRKWOOD_AUDIO_H
 
-#define DRV_NAME	"mvebu-audio"
-
 #define KIRKWOOD_RECORD_WIN			0
 #define KIRKWOOD_PLAYBACK_WIN			1
 #define KIRKWOOD_MAX_AUDIO_WIN			2
@@ -145,6 +143,6 @@ struct kirkwood_dma_data {
 	int burst;
 };
 
-extern const struct snd_soc_component_driver kirkwood_soc_component;
+extern const struct snd_soc_platform_driver kirkwood_soc_platform;
 
 #endif

@@ -18,8 +18,6 @@
 #include <linux/idr.h>
 #include "most/core.h"
 
-#define CHRDEV_REGION_SIZE 50
-
 static struct cdev_component {
 	dev_t devno;
 	struct ida minor_id;
@@ -53,7 +51,7 @@ static inline bool ch_has_mbo(struct comp_channel *c)
 	return channel_has_mbo(c->iface, c->channel_id, &comp.cc) > 0;
 }
 
-static inline struct mbo *ch_get_mbo(struct comp_channel *c, struct mbo **mbo)
+static inline bool ch_get_mbo(struct comp_channel *c, struct mbo **mbo)
 {
 	if (!kfifo_peek(&c->fifo, mbo)) {
 		*mbo = most_get_mbo(c->iface, c->channel_id, &comp.cc);
@@ -244,7 +242,7 @@ static ssize_t
 comp_read(struct file *filp, char __user *buf, size_t count, loff_t *offset)
 {
 	size_t to_copy, not_copied, copied;
-	struct mbo *mbo = NULL;
+	struct mbo *mbo;
 	struct comp_channel *c = filp->private_data;
 
 	mutex_lock(&c->io_mutex);
@@ -292,15 +290,13 @@ static __poll_t comp_poll(struct file *filp, poll_table *wait)
 
 	poll_wait(filp, &c->wq, wait);
 
-	mutex_lock(&c->io_mutex);
 	if (c->cfg->direction == MOST_CH_RX) {
-		if (!c->dev || !kfifo_is_empty(&c->fifo))
+		if (!kfifo_is_empty(&c->fifo))
 			mask |= EPOLLIN | EPOLLRDNORM;
 	} else {
-		if (!c->dev || !kfifo_is_empty(&c->fifo) || ch_has_mbo(c))
+		if (!kfifo_is_empty(&c->fifo) || ch_has_mbo(c))
 			mask |= EPOLLOUT | EPOLLWRNORM;
 	}
-	mutex_unlock(&c->io_mutex);
 	return mask;
 }
 
@@ -447,7 +443,7 @@ static int comp_probe(struct most_interface *iface, int channel_id,
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c) {
 		retval = -ENOMEM;
-		goto err_remove_ida;
+		goto error_alloc_channel;
 	}
 
 	c->devno = MKDEV(comp.major, current_minor);
@@ -463,7 +459,7 @@ static int comp_probe(struct most_interface *iface, int channel_id,
 	retval = kfifo_alloc(&c->fifo, cfg->num_buffers, GFP_KERNEL);
 	if (retval) {
 		pr_info("failed to alloc channel kfifo");
-		goto err_del_cdev_and_free_channel;
+		goto error_alloc_kfifo;
 	}
 	init_waitqueue_head(&c->wq);
 	mutex_init(&c->io_mutex);
@@ -475,18 +471,18 @@ static int comp_probe(struct most_interface *iface, int channel_id,
 	if (IS_ERR(c->dev)) {
 		retval = PTR_ERR(c->dev);
 		pr_info("failed to create new device node %s\n", name);
-		goto err_free_kfifo_and_del_list;
+		goto error_create_device;
 	}
 	kobject_uevent(&c->dev->kobj, KOBJ_ADD);
 	return 0;
 
-err_free_kfifo_and_del_list:
+error_create_device:
 	kfifo_free(&c->fifo);
 	list_del(&c->list);
-err_del_cdev_and_free_channel:
+error_alloc_kfifo:
 	cdev_del(&c->cdev);
 	kfree(c);
-err_remove_ida:
+error_alloc_channel:
 	ida_simple_remove(&comp.minor_id, current_minor);
 	return retval;
 }
@@ -517,7 +513,7 @@ static int __init mod_init(void)
 	spin_lock_init(&ch_list_lock);
 	ida_init(&comp.minor_id);
 
-	err = alloc_chrdev_region(&comp.devno, 0, CHRDEV_REGION_SIZE, "cdev");
+	err = alloc_chrdev_region(&comp.devno, 0, 50, "cdev");
 	if (err < 0)
 		goto dest_ida;
 	comp.major = MAJOR(comp.devno);
@@ -527,7 +523,7 @@ static int __init mod_init(void)
 	return 0;
 
 free_cdev:
-	unregister_chrdev_region(comp.devno, CHRDEV_REGION_SIZE);
+	unregister_chrdev_region(comp.devno, 1);
 dest_ida:
 	ida_destroy(&comp.minor_id);
 	class_destroy(comp.class);

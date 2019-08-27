@@ -776,6 +776,11 @@ static void *alloc_ring(struct device *dev, size_t nelem, size_t hwsize,
 		*(void **)swringp = swring;
 	}
 
+	/*
+	 * Zero out the hardware ring and return its address as our function
+	 * value.
+	 */
+	memset(hwring, 0, hwlen);
 	return hwring;
 }
 

@@ -3,7 +3,6 @@
  * Copyright(c) 2005 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -13,6 +12,10 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  * The full GNU General Public License is included in this distribution in the
  * file called LICENSE.
@@ -363,8 +366,7 @@ static int iwl_hwrate_to_plcp_idx(u32 rate_n_flags)
 			idx += 1;
 		if ((idx >= IWL_FIRST_HT_RATE) && (idx <= IWL_LAST_HT_RATE))
 			return idx;
-	} else if (rate_n_flags & RATE_MCS_VHT_MSK ||
-		   rate_n_flags & RATE_MCS_HE_MSK) {
+	} else if (rate_n_flags & RATE_MCS_VHT_MSK) {
 		idx = rate_n_flags & RATE_VHT_MCS_RATE_CODE_MSK;
 		idx += IWL_RATE_MCS_0_INDEX;
 
@@ -372,9 +374,6 @@ static int iwl_hwrate_to_plcp_idx(u32 rate_n_flags)
 		if (idx >= IWL_RATE_9M_INDEX)
 			idx++;
 		if ((idx >= IWL_FIRST_VHT_RATE) && (idx <= IWL_LAST_VHT_RATE))
-			return idx;
-		if ((rate_n_flags & RATE_MCS_HE_MSK) &&
-		    (idx <= IWL_LAST_HE_RATE))
 			return idx;
 	} else {
 		/* legacy rate format, search for match in table */
@@ -520,8 +519,6 @@ static const char *rs_pretty_lq_type(enum iwl_table_type type)
 		[LQ_HT_MIMO2] = "HT MIMO",
 		[LQ_VHT_SISO] = "VHT SISO",
 		[LQ_VHT_MIMO2] = "VHT MIMO",
-		[LQ_HE_SISO] = "HE SISO",
-		[LQ_HE_MIMO2] = "HE MIMO",
 	};
 
 	if (type < LQ_NONE || type >= LQ_MAX)
@@ -654,10 +651,9 @@ static void rs_tl_turn_on_agg(struct iwl_mvm *mvm, struct iwl_mvm_sta *mvmsta,
 	}
 
 	tid_data = &mvmsta->tid_data[tid];
-	if (mvmsta->sta_state >= IEEE80211_STA_AUTHORIZED &&
-	    tid_data->state == IWL_AGG_OFF &&
+	if ((tid_data->state == IWL_AGG_OFF) &&
 	    (lq_sta->tx_agg_tid_en & BIT(tid)) &&
-	    tid_data->tx_count_last >= IWL_MVM_RS_AGG_START_THRESHOLD) {
+	    (tid_data->tx_count_last >= IWL_MVM_RS_AGG_START_THRESHOLD)) {
 		IWL_DEBUG_RATE(mvm, "try to aggregate tid %d\n", tid);
 		if (rs_tl_turn_on_agg_for_tid(mvm, lq_sta, tid, sta) == 0)
 			tid_data->state = IWL_AGG_QUEUED;
@@ -906,8 +902,7 @@ static int rs_rate_from_ucode_rate(const u32 ucode_rate,
 
 	/* Legacy */
 	if (!(ucode_rate & RATE_MCS_HT_MSK) &&
-	    !(ucode_rate & RATE_MCS_VHT_MSK) &&
-	    !(ucode_rate & RATE_MCS_HE_MSK)) {
+	    !(ucode_rate & RATE_MCS_VHT_MSK)) {
 		if (num_of_ant == 1) {
 			if (band == NL80211_BAND_5GHZ)
 				rate->type = LQ_LEGACY_A;
@@ -918,7 +913,7 @@ static int rs_rate_from_ucode_rate(const u32 ucode_rate,
 		return 0;
 	}
 
-	/* HT, VHT or HE */
+	/* HT or VHT */
 	if (ucode_rate & RATE_MCS_SGI_MSK)
 		rate->sgi = true;
 	if (ucode_rate & RATE_MCS_LDPC_MSK)
@@ -960,24 +955,10 @@ static int rs_rate_from_ucode_rate(const u32 ucode_rate,
 		} else {
 			WARN_ON_ONCE(1);
 		}
-	} else if (ucode_rate & RATE_MCS_HE_MSK) {
-		nss = ((ucode_rate & RATE_VHT_MCS_NSS_MSK) >>
-		      RATE_VHT_MCS_NSS_POS) + 1;
-
-		if (nss == 1) {
-			rate->type = LQ_HE_SISO;
-			WARN_ONCE(!rate->stbc && !rate->bfer && num_of_ant != 1,
-				  "stbc %d bfer %d", rate->stbc, rate->bfer);
-		} else if (nss == 2) {
-			rate->type = LQ_HE_MIMO2;
-			WARN_ON_ONCE(num_of_ant != 2);
-		} else {
-			WARN_ON_ONCE(1);
-		}
 	}
 
 	WARN_ON_ONCE(rate->bw == RATE_MCS_CHAN_WIDTH_80 &&
-		     !is_he(rate) && !is_vht(rate));
+		     !is_vht(rate));
 
 	return 0;
 }
@@ -1239,11 +1220,7 @@ void iwl_mvm_rs_tx_status(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 	    !(info->flags & IEEE80211_TX_STAT_AMPDU))
 		return;
 
-	if (rs_rate_from_ucode_rate(tx_resp_hwrate, info->band,
-				    &tx_resp_rate)) {
-		WARN_ON_ONCE(1);
-		return;
-	}
+	rs_rate_from_ucode_rate(tx_resp_hwrate, info->band, &tx_resp_rate);
 
 #ifdef CONFIG_MAC80211_DEBUGFS
 	/* Disable last tx check if we are debugging with fixed rate but
@@ -1280,7 +1257,7 @@ void iwl_mvm_rs_tx_status(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 		       (unsigned long)(lq_sta->last_tx +
 				       (IWL_MVM_RS_IDLE_TIMEOUT * HZ)))) {
 		IWL_DEBUG_RATE(mvm, "Tx idle for too long. reinit rs\n");
-		iwl_mvm_rs_rate_init(mvm, sta, info->band, true);
+		iwl_mvm_rs_rate_init(mvm, sta, info->band, false);
 		return;
 	}
 	lq_sta->last_tx = jiffies;
@@ -1294,10 +1271,7 @@ void iwl_mvm_rs_tx_status(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 	 */
 	table = &lq_sta->lq;
 	lq_hwrate = le32_to_cpu(table->rs_table[0]);
-	if (rs_rate_from_ucode_rate(lq_hwrate, info->band, &lq_rate)) {
-		WARN_ON_ONCE(1);
-		return;
-	}
+	rs_rate_from_ucode_rate(lq_hwrate, info->band, &lq_rate);
 
 	/* Here we actually compare this rate to the latest LQ command */
 	if (lq_color != LQ_FLAG_COLOR_GET(table->flags)) {
@@ -1399,12 +1373,8 @@ void iwl_mvm_rs_tx_status(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 		/* Collect data for each rate used during failed TX attempts */
 		for (i = 0; i <= retries; ++i) {
 			lq_hwrate = le32_to_cpu(table->rs_table[i]);
-			if (rs_rate_from_ucode_rate(lq_hwrate, info->band,
-						    &lq_rate)) {
-				WARN_ON_ONCE(1);
-				return;
-			}
-
+			rs_rate_from_ucode_rate(lq_hwrate, info->band,
+						&lq_rate);
 			/*
 			 * Only collect stats if retried rate is in the same RS
 			 * table as active/search.
@@ -1745,18 +1715,12 @@ static void rs_set_amsdu_len(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 {
 	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
 
-	/*
-	 * In case TLC offload is not active amsdu_enabled is either 0xFFFF
-	 * or 0, since there is no per-TID alg.
-	 */
 	if ((!is_vht(&tbl->rate) && !is_ht(&tbl->rate)) ||
 	    tbl->rate.index < IWL_RATE_MCS_5_INDEX ||
 	    scale_action == RS_ACTION_DOWNSCALE)
-		mvmsta->amsdu_enabled = 0;
+		mvmsta->tlc_amsdu = false;
 	else
-		mvmsta->amsdu_enabled = 0xFFFF;
-
-	mvmsta->max_amsdu_len = sta->max_amsdu_len;
+		mvmsta->tlc_amsdu = true;
 }
 
 /*
@@ -2720,9 +2684,9 @@ static void rs_get_initial_rate(struct iwl_mvm *mvm,
 				struct ieee80211_sta *sta,
 				struct iwl_lq_sta *lq_sta,
 				enum nl80211_band band,
-				struct rs_rate *rate)
+				struct rs_rate *rate,
+				bool init)
 {
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
 	int i, nentries;
 	unsigned long active_rate;
 	s8 best_rssi = S8_MIN;
@@ -2784,8 +2748,7 @@ static void rs_get_initial_rate(struct iwl_mvm *mvm,
 		 * bandwidth rate, and after authorization, when the phy context
 		 * is already up-to-date, re-init rs with the correct bw.
 		 */
-		u32 bw = mvmsta->sta_state < IEEE80211_STA_AUTHORIZED ?
-				RATE_MCS_CHAN_WIDTH_20 : rs_bw_from_sta_bw(sta);
+		u32 bw = init ? RATE_MCS_CHAN_WIDTH_20 : rs_bw_from_sta_bw(sta);
 
 		switch (bw) {
 		case RATE_MCS_CHAN_WIDTH_40:
@@ -2870,7 +2833,8 @@ void rs_update_last_rssi(struct iwl_mvm *mvm,
 static void rs_initialize_lq(struct iwl_mvm *mvm,
 			     struct ieee80211_sta *sta,
 			     struct iwl_lq_sta *lq_sta,
-			     enum nl80211_band band, bool update)
+			     enum nl80211_band band,
+			     bool init)
 {
 	struct iwl_scale_tbl_info *tbl;
 	struct rs_rate *rate;
@@ -2887,7 +2851,7 @@ static void rs_initialize_lq(struct iwl_mvm *mvm,
 	tbl = &(lq_sta->lq_info[active_tbl]);
 	rate = &tbl->rate;
 
-	rs_get_initial_rate(mvm, sta, lq_sta, band, rate);
+	rs_get_initial_rate(mvm, sta, lq_sta, band, rate, init);
 	rs_init_optimal_rate(mvm, sta, lq_sta);
 
 	WARN_ONCE(rate->ant != ANT_A && rate->ant != ANT_B,
@@ -2900,7 +2864,7 @@ static void rs_initialize_lq(struct iwl_mvm *mvm,
 	rs_set_expected_tpt_table(lq_sta, tbl);
 	rs_fill_lq_cmd(mvm, sta, lq_sta, rate);
 	/* TODO restore station should remember the lq cmd */
-	iwl_mvm_send_lq_cmd(mvm, &lq_sta->lq, !update);
+	iwl_mvm_send_lq_cmd(mvm, &lq_sta->lq, init);
 }
 
 static void rs_drv_get_rate(void *mvm_r, struct ieee80211_sta *sta,
@@ -3153,7 +3117,7 @@ void iwl_mvm_update_frame_stats(struct iwl_mvm *mvm, u32 rate, bool agg)
  * Called after adding a new station to initialize rate scaling
  */
 static void rs_drv_rate_init(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
-			     enum nl80211_band band, bool update)
+			     enum nl80211_band band, bool init)
 {
 	int i, j;
 	struct ieee80211_hw *hw = mvm->hw;
@@ -3170,8 +3134,7 @@ static void rs_drv_rate_init(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 	sband = hw->wiphy->bands[band];
 
 	lq_sta->lq.sta_id = mvmsta->sta_id;
-	mvmsta->amsdu_enabled = 0;
-	mvmsta->max_amsdu_len = sta->max_amsdu_len;
+	mvmsta->tlc_amsdu = false;
 
 	for (j = 0; j < LQ_SIZE; j++)
 		rs_rate_scale_clear_tbl_windows(mvm, &lq_sta->lq_info[j]);
@@ -3224,7 +3187,7 @@ static void rs_drv_rate_init(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 
 	/* These values will be overridden later */
 	lq_sta->lq.single_stream_ant_msk =
-		iwl_mvm_bt_coex_get_single_ant_msk(mvm, iwl_mvm_get_valid_tx_ant(mvm));
+		first_antenna(iwl_mvm_get_valid_tx_ant(mvm));
 	lq_sta->lq.dual_stream_ant_msk = ANT_AB;
 
 	/* as default allow aggregation for all tids */
@@ -3233,7 +3196,7 @@ static void rs_drv_rate_init(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 #ifdef CONFIG_IWLWIFI_DEBUGFS
 	iwl_mvm_reset_frame_stats(mvm);
 #endif
-	rs_initialize_lq(mvm, sta, lq_sta, band, update);
+	rs_initialize_lq(mvm, sta, lq_sta, band, init);
 }
 
 static void rs_drv_rate_update(void *mvm_r,
@@ -3253,7 +3216,7 @@ static void rs_drv_rate_update(void *mvm_r,
 	for (tid = 0; tid < IWL_MAX_TID_COUNT; tid++)
 		ieee80211_stop_tx_ba_session(sta, tid);
 
-	iwl_mvm_rs_rate_init(mvm, sta, sband->band, true);
+	iwl_mvm_rs_rate_init(mvm, sta, sband->band, false);
 }
 
 #ifdef CONFIG_MAC80211_DEBUGFS
@@ -3271,10 +3234,7 @@ static void rs_build_rates_table_from_fixed(struct iwl_mvm *mvm,
 	for (i = 0; i < num_rates; i++)
 		lq_cmd->rs_table[i] = ucode_rate_le32;
 
-	if (rs_rate_from_ucode_rate(ucode_rate, band, &rate)) {
-		WARN_ON_ONCE(1);
-		return;
-	}
+	rs_rate_from_ucode_rate(ucode_rate, band, &rate);
 
 	if (is_mimo(&rate))
 		lq_cmd->mimo_delim = num_rates - 1;
@@ -3590,8 +3550,7 @@ static void rs_fill_lq_cmd(struct iwl_mvm *mvm,
 	mvmsta = iwl_mvm_sta_from_mac80211(sta);
 	mvmvif = iwl_mvm_vif_from_mac80211(mvmsta->vif);
 
-	if (!fw_has_capa(&mvm->fw->ucode_capa, IWL_UCODE_TLV_CAPA_COEX_SCHEMA_2) &&
-	    num_of_ant(initial_rate->ant) == 1)
+	if (num_of_ant(initial_rate->ant) == 1)
 		lq_cmd->single_stream_ant_msk = initial_rate->ant;
 
 	lq_cmd->agg_frame_cnt_limit = mvmsta->max_agg_bufsize;
@@ -3640,8 +3599,7 @@ int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
 	u8 ant = (rate & RATE_MCS_ANT_ABC_MSK) >> RATE_MCS_ANT_POS;
 
 	if (!(rate & RATE_MCS_HT_MSK) &&
-	    !(rate & RATE_MCS_VHT_MSK) &&
-	    !(rate & RATE_MCS_HE_MSK)) {
+	    !(rate & RATE_MCS_VHT_MSK)) {
 		int index = iwl_hwrate_to_plcp_idx(rate);
 
 		return scnprintf(buf, bufsz, "Legacy | ANT: %s Rate: %s Mbps\n",
@@ -3660,11 +3618,6 @@ int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
 		mcs = rate & RATE_HT_MCS_INDEX_MSK;
 		nss = ((rate & RATE_HT_MCS_NSS_MSK)
 		       >> RATE_HT_MCS_NSS_POS) + 1;
-	} else if (rate & RATE_MCS_HE_MSK) {
-		type = "HE";
-		mcs = rate & RATE_VHT_MCS_RATE_CODE_MSK;
-		nss = ((rate & RATE_VHT_MCS_NSS_MSK)
-		       >> RATE_VHT_MCS_NSS_POS) + 1;
 	} else {
 		type = "Unknown"; /* shouldn't happen */
 	}
@@ -3791,7 +3744,7 @@ static ssize_t rs_sta_dbgfs_scale_table_read(struct file *file,
 				(rate->sgi) ? "SGI" : "NGI",
 				(rate->ldpc) ? "LDPC" : "BCC",
 				(lq_sta->is_agg) ? "AGG on" : "",
-				(mvmsta->amsdu_enabled) ? "AMSDU on" : "");
+				(mvmsta->tlc_amsdu) ? "AMSDU on" : "");
 	}
 	desc += scnprintf(buff + desc, bufsz - desc, "last tx rate=0x%X\n",
 			lq_sta->last_rate_n_flags);
@@ -3926,8 +3879,6 @@ static ssize_t rs_sta_dbgfs_drv_tx_stats_read(struct file *file,
 		[IWL_RATE_MCS_7_INDEX] = "MCS7",
 		[IWL_RATE_MCS_8_INDEX] = "MCS8",
 		[IWL_RATE_MCS_9_INDEX] = "MCS9",
-		[IWL_RATE_MCS_10_INDEX] = "MCS10",
-		[IWL_RATE_MCS_11_INDEX] = "MCS11",
 	};
 
 	char *buff, *pos, *endpos;
@@ -4059,18 +4010,18 @@ static void rs_drv_add_sta_debugfs(void *mvm, void *priv_sta,
 	if (!mvmsta->vif)
 		return;
 
-	debugfs_create_file("rate_scale_table", 0600, dir,
+	debugfs_create_file("rate_scale_table", S_IRUSR | S_IWUSR, dir,
 			    lq_sta, &rs_sta_dbgfs_scale_table_ops);
-	debugfs_create_file("rate_stats_table", 0400, dir,
+	debugfs_create_file("rate_stats_table", S_IRUSR, dir,
 			    lq_sta, &rs_sta_dbgfs_stats_table_ops);
-	debugfs_create_file("drv_tx_stats", 0600, dir,
+	debugfs_create_file("drv_tx_stats", S_IRUSR | S_IWUSR, dir,
 			    lq_sta, &rs_sta_dbgfs_drv_tx_stats_ops);
-	debugfs_create_u8("tx_agg_tid_enable", 0600, dir,
+	debugfs_create_u8("tx_agg_tid_enable", S_IRUSR | S_IWUSR, dir,
 			  &lq_sta->tx_agg_tid_en);
-	debugfs_create_u8("reduced_tpc", 0600, dir,
+	debugfs_create_u8("reduced_tpc", S_IRUSR | S_IWUSR, dir,
 			  &lq_sta->pers.dbg_fixed_txp_reduction);
 
-	MVM_DEBUGFS_ADD_FILE_RS(ss_force, dir, 0600);
+	MVM_DEBUGFS_ADD_FILE_RS(ss_force, dir, S_IRUSR | S_IWUSR);
 	return;
 err:
 	IWL_ERR((struct iwl_mvm *)mvm, "Can't create debugfs entity\n");
@@ -4111,12 +4062,12 @@ static const struct rate_control_ops rs_mvm_ops_drv = {
 };
 
 void iwl_mvm_rs_rate_init(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
-			  enum nl80211_band band, bool update)
+			  enum nl80211_band band, bool init)
 {
 	if (iwl_mvm_has_tlc_offload(mvm))
-		rs_fw_rate_init(mvm, sta, band, update);
+		rs_fw_rate_init(mvm, sta, band);
 	else
-		rs_drv_rate_init(mvm, sta, band, update);
+		rs_drv_rate_init(mvm, sta, band, init);
 }
 
 int iwl_mvm_rate_control_register(void)

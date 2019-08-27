@@ -10,7 +10,6 @@
 #define __PERF_NAMESPACES_H
 
 #include <sys/types.h>
-#include <linux/stddef.h>
 #include <linux/perf_event.h>
 #include <linux/refcount.h>
 #include <linux/types.h>
@@ -38,7 +37,6 @@ struct nsinfo {
 struct nscookie {
 	int			oldns;
 	int			newns;
-	char			*oldcwd;
 };
 
 int nsinfo__init(struct nsinfo *nsi);

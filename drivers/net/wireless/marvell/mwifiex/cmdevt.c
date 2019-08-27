@@ -25,6 +25,7 @@
 #include "main.h"
 #include "wmm.h"
 #include "11n.h"
+#include "11ac.h"
 
 static void mwifiex_cancel_pending_ioctl(struct mwifiex_adapter *adapter);
 
@@ -372,7 +373,7 @@ static int mwifiex_dnld_sleep_confirm_cmd(struct mwifiex_adapter *adapter)
 		adapter->ps_state = PS_STATE_SLEEP_CFM;
 
 	if (!le16_to_cpu(sleep_cfm_buf->resp_ctrl) &&
-	    (test_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags) &&
+	    (adapter->is_hs_configured &&
 	     !adapter->sleep_period.period)) {
 		adapter->pm_wakeup_card_req = true;
 		mwifiex_hs_activated_event(mwifiex_get_priv
@@ -564,26 +565,25 @@ int mwifiex_send_cmd(struct mwifiex_private *priv, u16 cmd_no,
 		return -1;
 	}
 
-	if (test_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags)) {
+	if (adapter->is_suspended) {
 		mwifiex_dbg(adapter, ERROR,
 			    "PREP_CMD: device in suspended state\n");
 		return -1;
 	}
 
-	if (test_bit(MWIFIEX_IS_HS_ENABLING, &adapter->work_flags) &&
-	    cmd_no != HostCmd_CMD_802_11_HS_CFG_ENH) {
+	if (adapter->hs_enabling && cmd_no != HostCmd_CMD_802_11_HS_CFG_ENH) {
 		mwifiex_dbg(adapter, ERROR,
 			    "PREP_CMD: host entering sleep state\n");
 		return -1;
 	}
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags)) {
+	if (adapter->surprise_removed) {
 		mwifiex_dbg(adapter, ERROR,
 			    "PREP_CMD: card is removed\n");
 		return -1;
 	}
 
-	if (test_bit(MWIFIEX_IS_CMD_TIMEDOUT, &adapter->work_flags)) {
+	if (adapter->is_cmd_timedout) {
 		mwifiex_dbg(adapter, ERROR,
 			    "PREP_CMD: FW is in bad state\n");
 		return -1;
@@ -790,8 +790,7 @@ int mwifiex_exec_next_cmd(struct mwifiex_adapter *adapter)
 	if (priv && (host_cmd->command !=
 	     cpu_to_le16(HostCmd_CMD_802_11_HS_CFG_ENH))) {
 		if (adapter->hs_activated) {
-			clear_bit(MWIFIEX_IS_HS_CONFIGURED,
-				  &adapter->work_flags);
+			adapter->is_hs_configured = false;
 			mwifiex_hs_activated_event(priv, false);
 		}
 	}
@@ -827,7 +826,7 @@ int mwifiex_process_cmdresp(struct mwifiex_adapter *adapter)
 		return -1;
 	}
 
-	clear_bit(MWIFIEX_IS_CMD_TIMEDOUT, &adapter->work_flags);
+	adapter->is_cmd_timedout = 0;
 
 	resp = (struct host_cmd_ds_command *) adapter->curr_cmd->resp_skb->data;
 	if (adapter->curr_cmd->cmd_flag & CMD_F_HOSTCMD) {
@@ -929,7 +928,7 @@ mwifiex_cmd_timeout_func(struct timer_list *t)
 	struct mwifiex_adapter *adapter = from_timer(adapter, t, cmd_timer);
 	struct cmd_ctrl_node *cmd_node;
 
-	set_bit(MWIFIEX_IS_CMD_TIMEDOUT, &adapter->work_flags);
+	adapter->is_cmd_timedout = 1;
 	if (!adapter->curr_cmd) {
 		mwifiex_dbg(adapter, ERROR,
 			    "cmd: empty curr_cmd\n");
@@ -955,8 +954,7 @@ mwifiex_cmd_timeout_func(struct timer_list *t)
 
 		mwifiex_dbg(adapter, MSG,
 			    "is_cmd_timedout = %d\n",
-			    test_bit(MWIFIEX_IS_CMD_TIMEDOUT,
-				     &adapter->work_flags));
+			    adapter->is_cmd_timedout);
 		mwifiex_dbg(adapter, MSG,
 			    "num_tx_timeout = %d\n",
 			    adapter->dbg.num_tx_timeout);
@@ -1138,8 +1136,7 @@ void
 mwifiex_hs_activated_event(struct mwifiex_private *priv, u8 activated)
 {
 	if (activated) {
-		if (test_bit(MWIFIEX_IS_HS_CONFIGURED,
-			     &priv->adapter->work_flags)) {
+		if (priv->adapter->is_hs_configured) {
 			priv->adapter->hs_activated = true;
 			mwifiex_update_rxreor_flags(priv->adapter,
 						    RXREOR_FORCE_NO_DROP);
@@ -1190,11 +1187,11 @@ int mwifiex_ret_802_11_hs_cfg(struct mwifiex_private *priv,
 			    phs_cfg->params.hs_config.gap);
 	}
 	if (conditions != HS_CFG_CANCEL) {
-		set_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags);
+		adapter->is_hs_configured = true;
 		if (adapter->iface_type == MWIFIEX_USB)
 			mwifiex_hs_activated_event(priv, true);
 	} else {
-		clear_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags);
+		adapter->is_hs_configured = false;
 		if (adapter->hs_activated)
 			mwifiex_hs_activated_event(priv, false);
 	}
@@ -1216,8 +1213,8 @@ mwifiex_process_hs_config(struct mwifiex_adapter *adapter)
 
 	adapter->if_ops.wakeup(adapter);
 	adapter->hs_activated = false;
-	clear_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags);
-	clear_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
+	adapter->is_hs_configured = false;
+	adapter->is_suspended = false;
 	mwifiex_hs_activated_event(mwifiex_get_priv(adapter,
 						    MWIFIEX_BSS_ROLE_ANY),
 				   false);
@@ -1277,7 +1274,7 @@ mwifiex_process_sleep_confirm_resp(struct mwifiex_adapter *adapter,
 		return;
 	}
 	adapter->pm_wakeup_card_req = true;
-	if (test_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags))
+	if (adapter->is_hs_configured)
 		mwifiex_hs_activated_event(mwifiex_get_priv
 						(adapter, MWIFIEX_BSS_ROLE_ANY),
 					   true);
@@ -1532,8 +1529,7 @@ int mwifiex_ret_get_hw_spec(struct mwifiex_private *priv,
 
 	adapter->fw_release_number = le32_to_cpu(hw_spec->fw_release_number);
 	adapter->fw_api_ver = (adapter->fw_release_number >> 16) & 0xff;
-	adapter->number_of_antenna =
-			le16_to_cpu(hw_spec->number_of_antenna) & 0xf;
+	adapter->number_of_antenna = le16_to_cpu(hw_spec->number_of_antenna);
 
 	if (le32_to_cpu(hw_spec->dot_11ac_dev_cap)) {
 		adapter->is_hw_11ac_capable = true;

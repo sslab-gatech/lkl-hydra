@@ -54,13 +54,12 @@
 #include <net/netfilter/nf_conntrack_expect.h>
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <linux/netfilter/nf_conntrack_snmp.h>
-#include "nf_nat_snmp_basic.asn1.h"
+#include "nf_nat_snmp_basic-asn1.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("James Morris <jmorris@intercode.com.au>");
 MODULE_DESCRIPTION("Basic SNMP Application Layer Gateway");
 MODULE_ALIAS("ip_nat_snmp_basic");
-MODULE_ALIAS_NFCT_HELPER("snmp_trap");
 
 #define SNMP_PORT 161
 #define SNMP_TRAP_PORT 162
@@ -105,8 +104,6 @@ static void fast_csum(struct snmp_ctx *ctx, unsigned char offset)
 int snmp_version(void *context, size_t hdrlen, unsigned char tag,
 		 const void *data, size_t datalen)
 {
-	if (datalen != 1)
-		return -EINVAL;
 	if (*(unsigned char *)data > 1)
 		return -ENOTSUPP;
 	return 1;
@@ -116,11 +113,8 @@ int snmp_helper(void *context, size_t hdrlen, unsigned char tag,
 		const void *data, size_t datalen)
 {
 	struct snmp_ctx *ctx = (struct snmp_ctx *)context;
-	__be32 *pdata;
+	__be32 *pdata = (__be32 *)data;
 
-	if (datalen != 4)
-		return -EINVAL;
-	pdata = (__be32 *)data;
 	if (*pdata == ctx->from) {
 		pr_debug("%s: %pI4 to %pI4\n", __func__,
 			 (void *)&ctx->from, (void *)&ctx->to);

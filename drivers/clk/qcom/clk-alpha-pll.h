@@ -1,5 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2015, 2018, The Linux Foundation. All rights reserved. */
+/*
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
+ *
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 #ifndef __QCOM_CLK_ALPHA_PLL_H__
 #define __QCOM_CLK_ALPHA_PLL_H__
@@ -12,7 +22,6 @@ enum {
 	CLK_ALPHA_PLL_TYPE_DEFAULT,
 	CLK_ALPHA_PLL_TYPE_HUAYRA,
 	CLK_ALPHA_PLL_TYPE_BRAMMO,
-	CLK_ALPHA_PLL_TYPE_FABIA,
 	CLK_ALPHA_PLL_TYPE_MAX,
 };
 
@@ -27,8 +36,6 @@ enum {
 	PLL_OFF_TEST_CTL,
 	PLL_OFF_TEST_CTL_U,
 	PLL_OFF_STATUS,
-	PLL_OFF_OPMODE,
-	PLL_OFF_FRAC,
 	PLL_OFF_MAX_REGS
 };
 
@@ -66,10 +73,6 @@ struct clk_alpha_pll {
  * @offset: base address of registers
  * @regs: alpha pll register map (see @clk_alpha_pll_regs)
  * @width: width of post-divider
- * @post_div_shift: shift to differentiate between odd & even post-divider
- * @post_div_table: table with PLL odd and even post-divider settings
- * @num_post_div: Number of PLL post-divider settings
- *
  * @clkr: regmap clock handle
  */
 struct clk_alpha_pll_postdiv {
@@ -78,9 +81,6 @@ struct clk_alpha_pll_postdiv {
 	const u8 *regs;
 
 	struct clk_regmap clkr;
-	int post_div_shift;
-	const struct clk_div_table *post_div_table;
-	size_t num_post_div;
 };
 
 struct alpha_pll_config {
@@ -109,13 +109,7 @@ extern const struct clk_ops clk_alpha_pll_postdiv_ops;
 extern const struct clk_ops clk_alpha_pll_huayra_ops;
 extern const struct clk_ops clk_alpha_pll_postdiv_ro_ops;
 
-extern const struct clk_ops clk_alpha_pll_fabia_ops;
-extern const struct clk_ops clk_alpha_pll_fixed_fabia_ops;
-extern const struct clk_ops clk_alpha_pll_postdiv_fabia_ops;
-
 void clk_alpha_pll_configure(struct clk_alpha_pll *pll, struct regmap *regmap,
 			     const struct alpha_pll_config *config);
-void clk_fabia_pll_configure(struct clk_alpha_pll *pll, struct regmap *regmap,
-				const struct alpha_pll_config *config);
 
 #endif

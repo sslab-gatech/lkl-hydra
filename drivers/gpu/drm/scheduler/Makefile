@@ -20,6 +20,7 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 #
 #
-gpu-sched-y := sched_main.o sched_fence.o sched_entity.o
+ccflags-y := -Iinclude/drm
+gpu-sched-y := gpu_scheduler.o sched_fence.o
 
 obj-$(CONFIG_DRM_SCHED) += gpu-sched.o

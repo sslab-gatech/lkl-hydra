@@ -230,8 +230,7 @@ static irqreturn_t wm8350_charger_handler(int irq, void *data)
 	case WM8350_IRQ_EXT_USB_FB:
 	case WM8350_IRQ_EXT_WALL_FB:
 		wm8350_charger_config(wm8350, policy);
-		/* Fall through */
-	case WM8350_IRQ_EXT_BAT_FB:
+	case WM8350_IRQ_EXT_BAT_FB:   /* Fall through */
 		power_supply_changed(power->battery);
 		power_supply_changed(power->usb);
 		power_supply_changed(power->ac);

@@ -135,9 +135,7 @@ EXPORT_SYMBOL_GPL(vop_unregister_driver);
 
 static void vop_release_dev(struct device *d)
 {
-	struct vop_device *dev = dev_to_vop(d);
-
-	kfree(dev);
+	put_device(d);
 }
 
 struct vop_device *
@@ -176,7 +174,7 @@ vop_register_device(struct device *pdev, int id,
 		goto free_vdev;
 	return vdev;
 free_vdev:
-	put_device(&vdev->dev);
+	kfree(vdev);
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(vop_register_device);

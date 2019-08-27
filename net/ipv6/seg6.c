@@ -17,7 +17,6 @@
 #include <linux/net.h>
 #include <linux/in6.h>
 #include <linux/slab.h>
-#include <linux/rhashtable.h>
 
 #include <net/ipv6.h>
 #include <net/protocol.h>
@@ -221,10 +220,13 @@ static int seg6_genl_get_tunsrc(struct sk_buff *skb, struct genl_info *info)
 	rcu_read_unlock();
 
 	genlmsg_end(msg, hdr);
-	return genlmsg_reply(msg, info);
+	genlmsg_reply(msg, info);
+
+	return 0;
 
 nla_put_failure:
 	rcu_read_unlock();
+	genlmsg_cancel(msg, hdr);
 free_msg:
 	nlmsg_free(msg);
 	return -ENOMEM;

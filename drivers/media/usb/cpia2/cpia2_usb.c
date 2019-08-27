@@ -663,8 +663,7 @@ static int submit_urbs(struct camera_data *cam)
 		if (cam->sbuf[i].data)
 			continue;
 		cam->sbuf[i].data =
-		    kmalloc_array(FRAME_SIZE_PER_DESC, FRAMES_PER_DESC,
-				  GFP_KERNEL);
+		    kmalloc(FRAMES_PER_DESC * FRAME_SIZE_PER_DESC, GFP_KERNEL);
 		if (!cam->sbuf[i].data) {
 			while (--i >= 0) {
 				kfree(cam->sbuf[i].data);
@@ -910,6 +909,9 @@ static void cpia2_usb_disconnect(struct usb_interface *intf)
 		cam->curbuff->length = 0;
 		wake_up_interruptible(&cam->wq_stream);
 	}
+
+	DBG("Releasing interface\n");
+	usb_driver_release_interface(&cpia2_driver, intf);
 
 	LOG("CPiA2 camera disconnected.\n");
 }

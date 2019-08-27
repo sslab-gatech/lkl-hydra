@@ -32,8 +32,7 @@
 
 #include "dce/dce_12_0_offset.h"
 #include "dce/dce_12_0_sh_mask.h"
-#include "soc15_hw_ip.h"
-#include "vega10_ip_offset.h"
+#include "soc15ip.h"
 
 #include "ivsrcid/ivsrcid_vislands30.h"
 

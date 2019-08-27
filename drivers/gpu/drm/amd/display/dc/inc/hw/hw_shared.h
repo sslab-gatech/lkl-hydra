@@ -53,12 +53,6 @@ struct curve_points {
 	uint32_t custom_float_slope;
 };
 
-struct curve_points3 {
-	struct curve_points red;
-	struct curve_points green;
-	struct curve_points blue;
-};
-
 struct pwl_result_data {
 	struct fixed31_32 red;
 	struct fixed31_32 green;
@@ -77,17 +71,9 @@ struct pwl_result_data {
 	uint32_t delta_blue_reg;
 };
 
-/* arr_curve_points - regamma regions/segments specification
- * arr_points - beginning and end point specified separately (only one on DCE)
- * corner_points - beginning and end point for all 3 colors (DCN)
- * rgb_resulted - final curve
- */
 struct pwl_params {
 	struct gamma_curve arr_curve_points[34];
-	union {
-		struct curve_points arr_points[2];
-		struct curve_points3 corner_points[2];
-	};
+	struct curve_points arr_points[2];
 	struct pwl_result_data rgb_resulted[256 + 3];
 	uint32_t hw_points_num;
 };
@@ -150,8 +136,13 @@ struct out_csc_color_matrix {
 enum opp_regamma {
 	OPP_REGAMMA_BYPASS = 0,
 	OPP_REGAMMA_SRGB,
-	OPP_REGAMMA_XVYCC,
+	OPP_REGAMMA_3_6,
 	OPP_REGAMMA_USER
+};
+
+struct csc_transform {
+	uint16_t matrix[12];
+	bool enable_adjustment;
 };
 
 struct dc_bias_and_scale {
@@ -200,9 +191,4 @@ enum controller_dp_test_pattern {
 	CONTROLLER_DP_TEST_PATTERN_COLORSQUARES_CEA
 };
 
-enum dc_lut_mode {
-	LUT_BYPASS,
-	LUT_RAM_A,
-	LUT_RAM_B
-};
 #endif /* __DAL_HW_SHARED_H__ */

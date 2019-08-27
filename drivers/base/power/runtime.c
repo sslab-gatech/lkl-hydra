@@ -8,8 +8,6 @@
  */
 
 #include <linux/sched/mm.h>
-#include <linux/ktime.h>
-#include <linux/hrtimer.h>
 #include <linux/export.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeirq.h>
@@ -95,7 +93,7 @@ static void __update_runtime_status(struct device *dev, enum rpm_status status)
 static void pm_runtime_deactivate_timer(struct device *dev)
 {
 	if (dev->power.timer_expires > 0) {
-		hrtimer_try_to_cancel(&dev->power.suspend_timer);
+		del_timer(&dev->power.suspend_timer);
 		dev->power.timer_expires = 0;
 	}
 }
@@ -121,16 +119,17 @@ static void pm_runtime_cancel_pending(struct device *dev)
  * Compute the autosuspend-delay expiration time based on the device's
  * power.last_busy time.  If the delay has already expired or is disabled
  * (negative) or the power.use_autosuspend flag isn't set, return 0.
- * Otherwise return the expiration time in nanoseconds (adjusted to be nonzero).
+ * Otherwise return the expiration time in jiffies (adjusted to be nonzero).
  *
  * This function may be called either with or without dev->power.lock held.
  * Either way it can be racy, since power.last_busy may be updated at any time.
  */
-u64 pm_runtime_autosuspend_expiration(struct device *dev)
+unsigned long pm_runtime_autosuspend_expiration(struct device *dev)
 {
 	int autosuspend_delay;
-	u64 last_busy, expires = 0;
-	u64 now = ktime_get_mono_fast_ns();
+	long elapsed;
+	unsigned long last_busy;
+	unsigned long expires = 0;
 
 	if (!dev->power.use_autosuspend)
 		goto out;
@@ -140,9 +139,19 @@ u64 pm_runtime_autosuspend_expiration(struct device *dev)
 		goto out;
 
 	last_busy = READ_ONCE(dev->power.last_busy);
+	elapsed = jiffies - last_busy;
+	if (elapsed < 0)
+		goto out;	/* jiffies has wrapped around. */
 
-	expires = last_busy + (u64)autosuspend_delay * NSEC_PER_MSEC;
-	if (expires <= now)
+	/*
+	 * If the autosuspend_delay is >= 1 second, align the timer by rounding
+	 * up to the nearest second.
+	 */
+	expires = last_busy + msecs_to_jiffies(autosuspend_delay);
+	if (autosuspend_delay >= 1000)
+		expires = round_jiffies(expires);
+	expires += !expires;
+	if (elapsed >= expires - last_busy)
 		expires = 0;	/* Already expired. */
 
  out:
@@ -506,7 +515,7 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 	/* If the autosuspend_delay time hasn't expired yet, reschedule. */
 	if ((rpmflags & RPM_AUTO)
 	    && dev->power.runtime_status != RPM_SUSPENDING) {
-		u64 expires = pm_runtime_autosuspend_expiration(dev);
+		unsigned long expires = pm_runtime_autosuspend_expiration(dev);
 
 		if (expires != 0) {
 			/* Pending requests need to be canceled. */
@@ -519,20 +528,10 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 			 * expire; pm_suspend_timer_fn() will take care of the
 			 * rest.
 			 */
-			if (!(dev->power.timer_expires &&
-					dev->power.timer_expires <= expires)) {
-				/*
-				 * We add a slack of 25% to gather wakeups
-				 * without sacrificing the granularity.
-				 */
-				u64 slack = (u64)READ_ONCE(dev->power.autosuspend_delay) *
-						    (NSEC_PER_MSEC >> 2);
-
+			if (!(dev->power.timer_expires && time_before_eq(
+			    dev->power.timer_expires, expires))) {
 				dev->power.timer_expires = expires;
-				hrtimer_start_range_ns(&dev->power.suspend_timer,
-						ns_to_ktime(expires),
-						slack,
-						HRTIMER_MODE_ABS);
+				mod_timer(&dev->power.suspend_timer, expires);
 			}
 			dev->power.timer_autosuspends = 1;
 			goto out;
@@ -896,28 +895,23 @@ static void pm_runtime_work(struct work_struct *work)
  *
  * Check if the time is right and queue a suspend request.
  */
-static enum hrtimer_restart  pm_suspend_timer_fn(struct hrtimer *timer)
+static void pm_suspend_timer_fn(struct timer_list *t)
 {
-	struct device *dev = container_of(timer, struct device, power.suspend_timer);
+	struct device *dev = from_timer(dev, t, power.suspend_timer);
 	unsigned long flags;
-	u64 expires;
+	unsigned long expires;
 
 	spin_lock_irqsave(&dev->power.lock, flags);
 
 	expires = dev->power.timer_expires;
-	/*
-	 * If 'expires' is after the current time, we've been called
-	 * too early.
-	 */
-	if (expires > 0 && expires < ktime_get_mono_fast_ns()) {
+	/* If 'expire' is after 'jiffies' we've been called too early. */
+	if (expires > 0 && !time_after(expires, jiffies)) {
 		dev->power.timer_expires = 0;
 		rpm_suspend(dev, dev->power.timer_autosuspends ?
 		    (RPM_ASYNC | RPM_AUTO) : RPM_ASYNC);
 	}
 
 	spin_unlock_irqrestore(&dev->power.lock, flags);
-
-	return HRTIMER_NORESTART;
 }
 
 /**
@@ -928,7 +922,6 @@ static enum hrtimer_restart  pm_suspend_timer_fn(struct hrtimer *timer)
 int pm_schedule_suspend(struct device *dev, unsigned int delay)
 {
 	unsigned long flags;
-	u64 expires;
 	int retval;
 
 	spin_lock_irqsave(&dev->power.lock, flags);
@@ -945,10 +938,10 @@ int pm_schedule_suspend(struct device *dev, unsigned int delay)
 	/* Other scheduled or pending requests need to be canceled. */
 	pm_runtime_cancel_pending(dev);
 
-	expires = ktime_get_mono_fast_ns() + (u64)delay * NSEC_PER_MSEC;
-	dev->power.timer_expires = expires;
+	dev->power.timer_expires = jiffies + msecs_to_jiffies(delay);
+	dev->power.timer_expires += !dev->power.timer_expires;
 	dev->power.timer_autosuspends = 0;
-	hrtimer_start(&dev->power.suspend_timer, expires, HRTIMER_MODE_ABS);
+	mod_timer(&dev->power.suspend_timer, dev->power.timer_expires);
 
  out:
 	spin_unlock_irqrestore(&dev->power.lock, flags);
@@ -1498,8 +1491,7 @@ void pm_runtime_init(struct device *dev)
 	INIT_WORK(&dev->power.work, pm_runtime_work);
 
 	dev->power.timer_expires = 0;
-	hrtimer_init(&dev->power.suspend_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	dev->power.suspend_timer.function = pm_suspend_timer_fn;
+	timer_setup(&dev->power.suspend_timer, pm_suspend_timer_fn, 0);
 
 	init_waitqueue_head(&dev->power.wait_queue);
 }
@@ -1615,8 +1607,6 @@ void pm_runtime_new_link(struct device *dev)
 
 void pm_runtime_drop_link(struct device *dev)
 {
-	rpm_put_suppliers(dev);
-
 	spin_lock_irq(&dev->power.lock);
 	WARN_ON(dev->power.links_count == 0);
 	dev->power.links_count--;

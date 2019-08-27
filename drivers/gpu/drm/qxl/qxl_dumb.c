@@ -38,7 +38,6 @@ int qxl_mode_dumb_create(struct drm_file *file_priv,
 	int r;
 	struct qxl_surface surf;
 	uint32_t pitch, format;
-
 	pitch = args->width * ((args->bpp + 1) / 8);
 	args->size = pitch * args->height;
 	args->size = ALIGN(args->size, PAGE_SIZE);
@@ -53,7 +52,7 @@ int qxl_mode_dumb_create(struct drm_file *file_priv,
 	default:
 		return -EINVAL;
 	}
-
+	  
 	surf.width = args->width;
 	surf.height = args->height;
 	surf.stride = pitch;
@@ -83,6 +82,6 @@ int qxl_mode_dumb_mmap(struct drm_file *file_priv,
 		return -ENOENT;
 	qobj = gem_to_qxl_bo(gobj);
 	*offset_p = qxl_bo_mmap_offset(qobj);
-	drm_gem_object_put_unlocked(gobj);
+	drm_gem_object_unreference_unlocked(gobj);
 	return 0;
 }

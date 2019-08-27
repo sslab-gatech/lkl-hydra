@@ -10,8 +10,6 @@ Required properties:
     * And, optionally, one of the vendor specific compatible:
       + allwinner,sun4i-a10-mali
       + allwinner,sun7i-a20-mali
-      + allwinner,sun8i-h3-mali
-      + allwinner,sun50i-a64-mali
       + allwinner,sun50i-h5-mali
       + amlogic,meson-gxbb-mali
       + amlogic,meson-gxl-mali
@@ -45,7 +43,7 @@ Optional properties:
 
   - memory-region:
     Memory region to allocate from, as defined in
-    Documentation/devicetree/bindings/reserved-memory/reserved-memory.txt
+    Documentation/devicetree/bindi/reserved-memory/reserved-memory.txt
 
   - mali-supply:
     Phandle to regulator for the Mali device, as defined in
@@ -71,10 +69,6 @@ to specify one more vendor-specific compatible, among:
       * resets: phandle to the reset line for the GPU
 
   - allwinner,sun7i-a20-mali
-    Required properties:
-      * resets: phandle to the reset line for the GPU
-
-  - allwinner,sun50i-a64-mali
     Required properties:
       * resets: phandle to the reset line for the GPU
 

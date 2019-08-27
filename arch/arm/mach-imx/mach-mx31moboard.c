@@ -152,8 +152,14 @@ static const struct imxi2c_platform_data moboard_i2c1_data __initconst = {
 	.bitrate = 100000,
 };
 
+static int moboard_spi1_cs[] = {
+	MXC_SPI_CS(0),
+	MXC_SPI_CS(2),
+};
+
 static const struct spi_imx_master moboard_spi1_pdata __initconst = {
-	.num_chipselect	= 3,
+	.chipselect	= moboard_spi1_cs,
+	.num_chipselect	= ARRAY_SIZE(moboard_spi1_cs),
 };
 
 static struct regulator_consumer_supply sdhc_consumers[] = {
@@ -290,14 +296,19 @@ static struct spi_board_info moboard_spi_board_info[] __initdata = {
 		/* irq number is run-time assigned */
 		.max_speed_hz = 300000,
 		.bus_num = 1,
-		.chip_select = 0,
+		.chip_select = 1,
 		.platform_data = &moboard_pmic,
 		.mode = SPI_CS_HIGH,
 	},
 };
 
+static int moboard_spi2_cs[] = {
+	MXC_SPI_CS(0), MXC_SPI_CS(1),
+};
+
 static const struct spi_imx_master moboard_spi2_pdata __initconst = {
-	.num_chipselect	= 2,
+	.chipselect	= moboard_spi2_cs,
+	.num_chipselect	= ARRAY_SIZE(moboard_spi2_cs),
 };
 
 #define SDHC1_CD IOMUX_TO_GPIO(MX31_PIN_ATA_CS0)

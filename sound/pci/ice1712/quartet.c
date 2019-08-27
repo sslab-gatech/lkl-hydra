@@ -26,7 +26,6 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/string.h>
 #include <sound/core.h>
 #include <sound/tlv.h>
 #include <sound/info.h>
@@ -786,9 +785,10 @@ DECLARE_TLV_DB_SCALE(qtet_master_db_scale, -6350, 50, 1);
 static struct snd_kcontrol *ctl_find(struct snd_card *card,
 				     const char *name)
 {
-	struct snd_ctl_elem_id sid = {0};
-
-	strlcpy(sid.name, name, sizeof(sid.name));
+	struct snd_ctl_elem_id sid;
+	memset(&sid, 0, sizeof(sid));
+	/* FIXME: strcpy is bad. */
+	strcpy(sid.name, name);
 	sid.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 	return snd_ctl_find_id(card, &sid);
 }

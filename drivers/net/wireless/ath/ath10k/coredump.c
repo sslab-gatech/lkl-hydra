@@ -701,271 +701,9 @@ static const struct ath10k_mem_region qca988x_hw20_mem_regions[] = {
 	},
 };
 
-static const struct ath10k_mem_region qca99x0_hw20_mem_regions[] = {
-	{
-		.type = ATH10K_MEM_REGION_TYPE_DRAM,
-		.start = 0x400000,
-		.len = 0x60000,
-		.name = "DRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_REG,
-		.start = 0x98000,
-		.len = 0x50000,
-		.name = "IRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOSRAM,
-		.start = 0xC0000,
-		.len = 0x40000,
-		.name = "SRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x30000,
-		.len = 0x7000,
-		.name = "APB REG 1",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x3f000,
-		.len = 0x3000,
-		.name = "APB REG 2",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x43000,
-		.len = 0x3000,
-		.name = "WIFI REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x4A000,
-		.len = 0x5000,
-		.name = "CE REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x80000,
-		.len = 0x6000,
-		.name = "SOC REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-};
-
-static const struct ath10k_mem_region qca9984_hw10_mem_regions[] = {
-	{
-		.type = ATH10K_MEM_REGION_TYPE_DRAM,
-		.start = 0x400000,
-		.len = 0x80000,
-		.name = "DRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_REG,
-		.start = 0x98000,
-		.len = 0x50000,
-		.name = "IRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOSRAM,
-		.start = 0xC0000,
-		.len = 0x40000,
-		.name = "SRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x30000,
-		.len = 0x7000,
-		.name = "APB REG 1",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x3f000,
-		.len = 0x3000,
-		.name = "APB REG 2",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x43000,
-		.len = 0x3000,
-		.name = "WIFI REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x4A000,
-		.len = 0x5000,
-		.name = "CE REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x80000,
-		.len = 0x6000,
-		.name = "SOC REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-};
-
-static const struct ath10k_mem_section ipq4019_soc_reg_range[] = {
-	{0x080000, 0x080004},
-	{0x080020, 0x080024},
-	{0x080028, 0x080050},
-	{0x0800d4, 0x0800ec},
-	{0x08010c, 0x080118},
-	{0x080284, 0x080290},
-	{0x0802a8, 0x0802b8},
-	{0x0802dc, 0x08030c},
-	{0x082000, 0x083fff}
-};
-
-static const struct ath10k_mem_region qca4019_hw10_mem_regions[] = {
-	{
-		.type = ATH10K_MEM_REGION_TYPE_DRAM,
-		.start = 0x400000,
-		.len = 0x68000,
-		.name = "DRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_REG,
-		.start = 0xC0000,
-		.len = 0x40000,
-		.name = "SRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_REG,
-		.start = 0x98000,
-		.len = 0x50000,
-		.name = "IRAM",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x30000,
-		.len = 0x7000,
-		.name = "APB REG 1",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x3f000,
-		.len = 0x3000,
-		.name = "APB REG 2",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x43000,
-		.len = 0x3000,
-		.name = "WIFI REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_IOREG,
-		.start = 0x4A000,
-		.len = 0x5000,
-		.name = "CE REG",
-		.section_table = {
-			.sections = NULL,
-			.size = 0,
-		},
-	},
-	{
-		.type = ATH10K_MEM_REGION_TYPE_REG,
-		.start = 0x080000,
-		.len = 0x083fff - 0x080000,
-		.name = "REG_TOTAL",
-		.section_table = {
-			.sections = ipq4019_soc_reg_range,
-			.size = ARRAY_SIZE(ipq4019_soc_reg_range),
-		},
-	},
-};
-
 static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	{
 		.hw_id = QCA6174_HW_1_0_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw10_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw10_mem_regions),
@@ -973,7 +711,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA6174_HW_1_1_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw10_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw10_mem_regions),
@@ -981,7 +718,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA6174_HW_1_3_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw10_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw10_mem_regions),
@@ -989,7 +725,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA6174_HW_2_1_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw21_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw21_mem_regions),
@@ -997,7 +732,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA6174_HW_3_0_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw30_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw30_mem_regions),
@@ -1005,7 +739,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA6174_HW_3_2_VERSION,
-		.hw_rev = ATH10K_HW_QCA6174,
 		.region_table = {
 			.regions = qca6174_hw30_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw30_mem_regions),
@@ -1013,7 +746,6 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA9377_HW_1_1_DEV_VERSION,
-		.hw_rev = ATH10K_HW_QCA9377,
 		.region_table = {
 			.regions = qca6174_hw30_mem_regions,
 			.size = ARRAY_SIZE(qca6174_hw30_mem_regions),
@@ -1021,42 +753,9 @@ static const struct ath10k_hw_mem_layout hw_mem_layouts[] = {
 	},
 	{
 		.hw_id = QCA988X_HW_2_0_VERSION,
-		.hw_rev = ATH10K_HW_QCA988X,
 		.region_table = {
 			.regions = qca988x_hw20_mem_regions,
 			.size = ARRAY_SIZE(qca988x_hw20_mem_regions),
-		},
-	},
-	{
-		.hw_id = QCA9984_HW_1_0_DEV_VERSION,
-		.hw_rev = ATH10K_HW_QCA9984,
-		.region_table = {
-			.regions = qca9984_hw10_mem_regions,
-			.size = ARRAY_SIZE(qca9984_hw10_mem_regions),
-		},
-	},
-	{
-		.hw_id = QCA9888_HW_2_0_DEV_VERSION,
-		.hw_rev = ATH10K_HW_QCA9888,
-		.region_table = {
-			.regions = qca9984_hw10_mem_regions,
-			.size = ARRAY_SIZE(qca9984_hw10_mem_regions),
-		},
-	},
-	{
-		.hw_id = QCA99X0_HW_2_0_DEV_VERSION,
-		.hw_rev = ATH10K_HW_QCA99X0,
-		.region_table = {
-			.regions = qca99x0_hw20_mem_regions,
-			.size = ARRAY_SIZE(qca99x0_hw20_mem_regions),
-		},
-	},
-	{
-		.hw_id = QCA4019_HW_1_0_DEV_VERSION,
-		.hw_rev = ATH10K_HW_QCA4019,
-		.region_table = {
-			.regions = qca4019_hw10_mem_regions,
-			.size = ARRAY_SIZE(qca4019_hw10_mem_regions),
 		},
 	},
 };
@@ -1100,8 +799,7 @@ const struct ath10k_hw_mem_layout *ath10k_coredump_get_mem_layout(struct ath10k 
 		return NULL;
 
 	for (i = 0; i < ARRAY_SIZE(hw_mem_layouts); i++) {
-		if (ar->target_version == hw_mem_layouts[i].hw_id &&
-		    ar->hw_rev == hw_mem_layouts[i].hw_rev)
+		if (ar->target_version == hw_mem_layouts[i].hw_id)
 			return &hw_mem_layouts[i];
 	}
 

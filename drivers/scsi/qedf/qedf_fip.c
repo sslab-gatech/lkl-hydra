@@ -1,6 +1,6 @@
 /*
  *  QLogic FCoE Offload Driver
- *  Copyright (c) 2016-2018 Cavium Inc.
+ *  Copyright (c) 2016-2017 Cavium Inc.
  *
  *  This software is available under the terms of the GNU General Public License
  *  (GPL) Version 2, available from the file COPYING in the main directory of
@@ -23,7 +23,6 @@ void qedf_fcoe_send_vlan_req(struct qedf_ctx *qedf)
 	struct fip_vlan *vlan;
 #define MY_FIP_ALL_FCF_MACS        ((__u8[6]) { 1, 0x10, 0x18, 1, 0, 2 })
 	static u8 my_fcoe_all_fcfs[ETH_ALEN] = MY_FIP_ALL_FCF_MACS;
-	unsigned long flags = 0;
 
 	skb = dev_alloc_skb(sizeof(struct fip_vlan));
 	if (!skb)
@@ -66,9 +65,7 @@ void qedf_fcoe_send_vlan_req(struct qedf_ctx *qedf)
 		kfree_skb(skb);
 		return;
 	}
-
-	set_bit(QED_LL2_XMIT_FLAGS_FIP_DISCOVERY, &flags);
-	qed_ops->ll2->start_xmit(qedf->cdev, skb, flags);
+	qed_ops->ll2->start_xmit(qedf->cdev, skb);
 }
 
 static void qedf_fcoe_process_vlan_resp(struct qedf_ctx *qedf,
@@ -137,12 +134,12 @@ void qedf_fip_send(struct fcoe_ctlr *fip, struct sk_buff *skb)
 
 	QEDF_INFO(&(qedf->dbg_ctx), QEDF_LOG_LL2, "FIP frame send: "
 	    "dest=%pM op=%x sub=%x vlan=%04x.", eth_hdr->h_dest, op, sub,
-	    vlan_tci);
+	    ntohs(vlan_tci));
 	if (qedf_dump_frames)
 		print_hex_dump(KERN_WARNING, "fip ", DUMP_PREFIX_OFFSET, 16, 1,
 		    skb->data, skb->len, false);
 
-	qed_ops->ll2->start_xmit(qedf->cdev, skb, 0);
+	qed_ops->ll2->start_xmit(qedf->cdev, skb);
 }
 
 /* Process incoming FIP frames. */
@@ -184,7 +181,6 @@ void qedf_fip_recv(struct qedf_ctx *qedf, struct sk_buff *skb)
 			QEDF_INFO(&(qedf->dbg_ctx), QEDF_LOG_DISC,
 			    "Dropping CVL since FCF has not been selected "
 			    "yet.");
-			kfree_skb(skb);
 			return;
 		}
 

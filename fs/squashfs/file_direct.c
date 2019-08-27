@@ -21,11 +21,10 @@
 #include "page_actor.h"
 
 static int squashfs_read_cache(struct page *target_page, u64 block, int bsize,
-	int pages, struct page **page, int bytes);
+	int pages, struct page **page);
 
 /* Read separately compressed datablock directly into page cache */
-int squashfs_readpage_block(struct page *target_page, u64 block, int bsize,
-	int expected)
+int squashfs_readpage_block(struct page *target_page, u64 block, int bsize)
 
 {
 	struct inode *inode = target_page->mapping->host;
@@ -84,7 +83,7 @@ int squashfs_readpage_block(struct page *target_page, u64 block, int bsize,
 		 * using an intermediate buffer.
 		 */
 		res = squashfs_read_cache(target_page, block, bsize, pages,
-							page, expected);
+								page);
 		if (res < 0)
 			goto mark_errored;
 
@@ -95,11 +94,6 @@ int squashfs_readpage_block(struct page *target_page, u64 block, int bsize,
 	res = squashfs_read_data(inode->i_sb, block, bsize, NULL, actor);
 	if (res < 0)
 		goto mark_errored;
-
-	if (res != expected) {
-		res = -EIO;
-		goto mark_errored;
-	}
 
 	/* Last page may have trailing bytes not filled */
 	bytes = res % PAGE_SIZE;
@@ -144,12 +138,13 @@ out:
 
 
 static int squashfs_read_cache(struct page *target_page, u64 block, int bsize,
-	int pages, struct page **page, int bytes)
+	int pages, struct page **page)
 {
 	struct inode *i = target_page->mapping->host;
 	struct squashfs_cache_entry *buffer = squashfs_get_datablock(i->i_sb,
 						 block, bsize);
-	int res = buffer->error, n, offset = 0;
+	int bytes = buffer->length, res = buffer->error, n, offset = 0;
+	void *pageaddr;
 
 	if (res) {
 		ERROR("Unable to read page, block %llx, size %x\n", block,
@@ -164,7 +159,12 @@ static int squashfs_read_cache(struct page *target_page, u64 block, int bsize,
 		if (page[n] == NULL)
 			continue;
 
-		squashfs_fill_page(page[n], buffer, offset, avail);
+		pageaddr = kmap_atomic(page[n]);
+		squashfs_copy_data(pageaddr, buffer, offset, avail);
+		memset(pageaddr + avail, 0, PAGE_SIZE - avail);
+		kunmap_atomic(pageaddr);
+		flush_dcache_page(page[n]);
+		SetPageUptodate(page[n]);
 		unlock_page(page[n]);
 		if (page[n] != target_page)
 			put_page(page[n]);

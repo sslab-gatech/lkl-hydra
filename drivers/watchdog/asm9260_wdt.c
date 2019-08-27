@@ -278,7 +278,7 @@ static int asm9260_wdt_probe(struct platform_device *pdev)
 	struct watchdog_device *wdd;
 	struct resource *res;
 	int ret;
-	static const char * const mode_name[] = { "hw", "sw", "debug", };
+	const char * const mode_name[] = { "hw", "sw", "debug", };
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(struct asm9260_wdt_priv),
 			    GFP_KERNEL);
@@ -292,13 +292,13 @@ static int asm9260_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->iobase))
 		return PTR_ERR(priv->iobase);
 
-	priv->rst = devm_reset_control_get_exclusive(&pdev->dev, "wdt_rst");
-	if (IS_ERR(priv->rst))
-		return PTR_ERR(priv->rst);
-
 	ret = asm9260_wdt_get_dt_clks(priv);
 	if (ret)
 		return ret;
+
+	priv->rst = devm_reset_control_get_exclusive(&pdev->dev, "wdt_rst");
+	if (IS_ERR(priv->rst))
+		return PTR_ERR(priv->rst);
 
 	wdd = &priv->wdd;
 	wdd->info = &asm9260_wdt_ident;

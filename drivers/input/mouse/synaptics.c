@@ -84,7 +84,7 @@ static int synaptics_mode_cmd(struct psmouse *psmouse, u8 mode)
 	u8 param[1];
 	int error;
 
-	error = ps2_sliced_command(&psmouse->ps2dev, mode);
+	error = psmouse_sliced_command(psmouse, mode);
 	if (error)
 		return error;
 
@@ -99,7 +99,9 @@ static int synaptics_mode_cmd(struct psmouse *psmouse, u8 mode)
 int synaptics_detect(struct psmouse *psmouse, bool set_properties)
 {
 	struct ps2dev *ps2dev = &psmouse->ps2dev;
-	u8 param[4] = { 0 };
+	u8 param[4];
+
+	param[0] = 0;
 
 	ps2_command(ps2dev, param, PSMOUSE_CMD_SETRES);
 	ps2_command(ps2dev, param, PSMOUSE_CMD_SETRES);
@@ -170,17 +172,7 @@ static const char * const smbus_pnp_ids[] = {
 	"LEN0048", /* X1 Carbon 3 */
 	"LEN0046", /* X250 */
 	"LEN004a", /* W541 */
-	"LEN005b", /* P50 */
-	"LEN005e", /* T560 */
-	"LEN0071", /* T480 */
-	"LEN0072", /* X1 Carbon Gen 5 (2017) - Elan/ALPS trackpoint */
-	"LEN0073", /* X1 Carbon G5 (Elantech) */
-	"LEN0092", /* X1 Carbon 6 */
-	"LEN0096", /* X280 */
-	"LEN0097", /* X280 -> ALPS trackpoint */
 	"LEN200f", /* T450s */
-	"SYN3052", /* HP EliteBook 840 G4 */
-	"SYN3221", /* HP 15-ay000 */
 	NULL
 };
 
@@ -197,7 +189,7 @@ static int synaptics_send_cmd(struct psmouse *psmouse, u8 cmd, u8 *param)
 {
 	int error;
 
-	error = ps2_sliced_command(&psmouse->ps2dev, cmd);
+	error = psmouse_sliced_command(psmouse, cmd);
 	if (error)
 		return error;
 
@@ -554,7 +546,7 @@ static int synaptics_set_advanced_gesture_mode(struct psmouse *psmouse)
 	static u8 param = 0xc8;
 	int error;
 
-	error = ps2_sliced_command(&psmouse->ps2dev, SYN_QUE_MODEL);
+	error = psmouse_sliced_command(psmouse, SYN_QUE_MODEL);
 	if (error)
 		return error;
 
@@ -621,7 +613,7 @@ static int synaptics_pt_write(struct serio *serio, u8 c)
 	u8 rate_param = SYN_PS_CLIENT_CMD; /* indicates that we want pass-through port */
 	int error;
 
-	error = ps2_sliced_command(&parent->ps2dev, c);
+	error = psmouse_sliced_command(parent, c);
 	if (error)
 		return error;
 
@@ -1235,39 +1227,32 @@ static void set_abs_position_params(struct input_dev *dev,
 	input_abs_set_res(dev, y_code, info->y_res);
 }
 
-static int set_input_params(struct psmouse *psmouse,
-			    struct synaptics_data *priv)
+static void set_input_params(struct psmouse *psmouse,
+			     struct synaptics_data *priv)
 {
 	struct input_dev *dev = psmouse->dev;
 	struct synaptics_device_info *info = &priv->info;
 	int i;
-	int error;
-
-	/* Reset default psmouse capabilities */
-	__clear_bit(EV_REL, dev->evbit);
-	bitmap_zero(dev->relbit, REL_CNT);
-	bitmap_zero(dev->keybit, KEY_CNT);
 
 	/* Things that apply to both modes */
 	__set_bit(INPUT_PROP_POINTER, dev->propbit);
+	__set_bit(EV_KEY, dev->evbit);
+	__set_bit(BTN_LEFT, dev->keybit);
+	__set_bit(BTN_RIGHT, dev->keybit);
 
-	input_set_capability(dev, EV_KEY, BTN_LEFT);
-
-	/* Clickpads report only left button */
-	if (!SYN_CAP_CLICKPAD(info->ext_cap_0c)) {
-		input_set_capability(dev, EV_KEY, BTN_RIGHT);
-		if (SYN_CAP_MIDDLE_BUTTON(info->capabilities))
-			input_set_capability(dev, EV_KEY, BTN_MIDDLE);
-	}
+	if (SYN_CAP_MIDDLE_BUTTON(info->capabilities))
+		__set_bit(BTN_MIDDLE, dev->keybit);
 
 	if (!priv->absolute_mode) {
 		/* Relative mode */
-		input_set_capability(dev, EV_REL, REL_X);
-		input_set_capability(dev, EV_REL, REL_Y);
-		return 0;
+		__set_bit(EV_REL, dev->evbit);
+		__set_bit(REL_X, dev->relbit);
+		__set_bit(REL_Y, dev->relbit);
+		return;
 	}
 
 	/* Absolute mode */
+	__set_bit(EV_ABS, dev->evbit);
 	set_abs_position_params(dev, &priv->info, ABS_X, ABS_Y);
 	input_set_abs_params(dev, ABS_PRESSURE, 0, 255, 0, 0);
 
@@ -1279,15 +1264,11 @@ static int set_input_params(struct psmouse *psmouse,
 					ABS_MT_POSITION_X, ABS_MT_POSITION_Y);
 		/* Image sensors can report per-contact pressure */
 		input_set_abs_params(dev, ABS_MT_PRESSURE, 0, 255, 0, 0);
-
-		error = input_mt_init_slots(dev, 2,
-					    INPUT_MT_POINTER | INPUT_MT_TRACK);
-		if (error)
-			return error;
+		input_mt_init_slots(dev, 2, INPUT_MT_POINTER | INPUT_MT_TRACK);
 
 		/* Image sensors can signal 4 and 5 finger clicks */
-		input_set_capability(dev, EV_KEY, BTN_TOOL_QUADTAP);
-		input_set_capability(dev, EV_KEY, BTN_TOOL_QUINTTAP);
+		__set_bit(BTN_TOOL_QUADTAP, dev->keybit);
+		__set_bit(BTN_TOOL_QUINTTAP, dev->keybit);
 	} else if (SYN_CAP_ADV_GESTURE(info->ext_cap_0c)) {
 		set_abs_position_params(dev, info,
 					ABS_MT_POSITION_X, ABS_MT_POSITION_Y);
@@ -1295,13 +1276,10 @@ static int set_input_params(struct psmouse *psmouse,
 		 * Profile sensor in CR-48 tracks contacts reasonably well,
 		 * other non-image sensors with AGM use semi-mt.
 		 */
-		error = input_mt_init_slots(dev, 2,
-					    INPUT_MT_POINTER |
-					     (cr48_profile_sensor ?
-					      INPUT_MT_TRACK :
-					      INPUT_MT_SEMI_MT));
-		if (error)
-			return error;
+		input_mt_init_slots(dev, 2,
+				    INPUT_MT_POINTER |
+				    (cr48_profile_sensor ?
+					INPUT_MT_TRACK : INPUT_MT_SEMI_MT));
 
 		/*
 		 * For semi-mt devices we send ABS_X/Y ourselves instead of
@@ -1317,32 +1295,37 @@ static int set_input_params(struct psmouse *psmouse,
 	if (SYN_CAP_PALMDETECT(info->capabilities))
 		input_set_abs_params(dev, ABS_TOOL_WIDTH, 0, 15, 0, 0);
 
-	input_set_capability(dev, EV_KEY, BTN_TOUCH);
-	input_set_capability(dev, EV_KEY, BTN_TOOL_FINGER);
+	__set_bit(BTN_TOUCH, dev->keybit);
+	__set_bit(BTN_TOOL_FINGER, dev->keybit);
 
 	if (synaptics_has_multifinger(priv)) {
-		input_set_capability(dev, EV_KEY, BTN_TOOL_DOUBLETAP);
-		input_set_capability(dev, EV_KEY, BTN_TOOL_TRIPLETAP);
+		__set_bit(BTN_TOOL_DOUBLETAP, dev->keybit);
+		__set_bit(BTN_TOOL_TRIPLETAP, dev->keybit);
 	}
 
 	if (SYN_CAP_FOUR_BUTTON(info->capabilities) ||
 	    SYN_CAP_MIDDLE_BUTTON(info->capabilities)) {
-		input_set_capability(dev, EV_KEY, BTN_FORWARD);
-		input_set_capability(dev, EV_KEY, BTN_BACK);
+		__set_bit(BTN_FORWARD, dev->keybit);
+		__set_bit(BTN_BACK, dev->keybit);
 	}
 
 	if (!SYN_CAP_EXT_BUTTONS_STICK(info->ext_cap_10))
 		for (i = 0; i < SYN_CAP_MULTI_BUTTON_NO(info->ext_cap); i++)
-			input_set_capability(dev, EV_KEY, BTN_0 + i);
+			__set_bit(BTN_0 + i, dev->keybit);
+
+	__clear_bit(EV_REL, dev->evbit);
+	__clear_bit(REL_X, dev->relbit);
+	__clear_bit(REL_Y, dev->relbit);
 
 	if (SYN_CAP_CLICKPAD(info->ext_cap_0c)) {
 		__set_bit(INPUT_PROP_BUTTONPAD, dev->propbit);
 		if (psmouse_matches_pnp_id(psmouse, topbuttonpad_pnp_ids) &&
 		    !SYN_CAP_EXT_BUTTONS_STICK(info->ext_cap_10))
 			__set_bit(INPUT_PROP_TOPBUTTONPAD, dev->propbit);
+		/* Clickpads report only left button */
+		__clear_bit(BTN_RIGHT, dev->keybit);
+		__clear_bit(BTN_MIDDLE, dev->keybit);
 	}
-
-	return 0;
 }
 
 static ssize_t synaptics_show_disable_gesture(struct psmouse *psmouse,
@@ -1580,12 +1563,7 @@ static int synaptics_init_ps2(struct psmouse *psmouse,
 		     info->capabilities, info->ext_cap, info->ext_cap_0c,
 		     info->ext_cap_10, info->board_id, info->firmware_id);
 
-	err = set_input_params(psmouse, priv);
-	if (err) {
-		psmouse_err(psmouse,
-			    "failed to set up capabilities: %d\n", err);
-		goto init_fail;
-	}
+	set_input_params(psmouse, priv);
 
 	/*
 	 * Encode touchpad model so that it can be used to set
@@ -1756,7 +1734,7 @@ static int synaptics_create_intertouch(struct psmouse *psmouse,
 	};
 
 	return psmouse_smbus_init(psmouse, &intertouch_board,
-				  &pdata, sizeof(pdata), true,
+				  &pdata, sizeof(pdata),
 				  leave_breadcrumbs);
 }
 

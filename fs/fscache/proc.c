@@ -26,14 +26,14 @@ int __init fscache_proc_init(void)
 		goto error_dir;
 
 #ifdef CONFIG_FSCACHE_STATS
-	if (!proc_create_single("fs/fscache/stats", S_IFREG | 0444, NULL,
-			fscache_stats_show))
+	if (!proc_create("fs/fscache/stats", S_IFREG | 0444, NULL,
+			 &fscache_stats_fops))
 		goto error_stats;
 #endif
 
 #ifdef CONFIG_FSCACHE_HISTOGRAM
-	if (!proc_create_seq("fs/fscache/histogram", S_IFREG | 0444, NULL,
-			 &fscache_histogram_ops))
+	if (!proc_create("fs/fscache/histogram", S_IFREG | 0444, NULL,
+			 &fscache_histogram_fops))
 		goto error_histogram;
 #endif
 

@@ -54,6 +54,12 @@ static int to_nd_device_type(struct device *dev)
 
 static int nvdimm_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
+	/*
+	 * Ensure that region devices always have their numa node set as
+	 * early as possible.
+	 */
+	if (is_nd_region(dev))
+		set_dev_node(dev, to_nd_region(dev)->numa_node);
 	return add_uevent_var(env, "MODALIAS=" ND_DEVICE_MODALIAS_FMT,
 			to_nd_device_type(dev));
 }
@@ -94,9 +100,6 @@ static int nvdimm_bus_probe(struct device *dev)
 	if (!try_module_get(provider))
 		return -ENXIO;
 
-	dev_dbg(&nvdimm_bus->dev, "START: %s.probe(%s)\n",
-			dev->driver->name, dev_name(dev));
-
 	nvdimm_bus_probe_start(nvdimm_bus);
 	rc = nd_drv->probe(dev);
 	if (rc == 0)
@@ -105,7 +108,7 @@ static int nvdimm_bus_probe(struct device *dev)
 		nd_region_disable(nvdimm_bus, dev);
 	nvdimm_bus_probe_end(nvdimm_bus);
 
-	dev_dbg(&nvdimm_bus->dev, "END: %s.probe(%s) = %d\n", dev->driver->name,
+	dev_dbg(&nvdimm_bus->dev, "%s.probe(%s) = %d\n", dev->driver->name,
 			dev_name(dev), rc);
 
 	if (rc != 0)
@@ -331,12 +334,6 @@ struct nvdimm_bus *to_nvdimm_bus(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(to_nvdimm_bus);
 
-struct nvdimm_bus *nvdimm_to_bus(struct nvdimm *nvdimm)
-{
-	return to_nvdimm_bus(nvdimm->dev.parent);
-}
-EXPORT_SYMBOL_GPL(nvdimm_to_bus);
-
 struct nvdimm_bus *nvdimm_bus_register(struct device *parent,
 		struct nvdimm_bus_descriptor *nd_desc)
 {
@@ -350,18 +347,17 @@ struct nvdimm_bus *nvdimm_bus_register(struct device *parent,
 	INIT_LIST_HEAD(&nvdimm_bus->mapping_list);
 	init_waitqueue_head(&nvdimm_bus->probe_wait);
 	nvdimm_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
+	mutex_init(&nvdimm_bus->reconfig_mutex);
+	badrange_init(&nvdimm_bus->badrange);
 	if (nvdimm_bus->id < 0) {
 		kfree(nvdimm_bus);
 		return NULL;
 	}
-	mutex_init(&nvdimm_bus->reconfig_mutex);
-	badrange_init(&nvdimm_bus->badrange);
 	nvdimm_bus->nd_desc = nd_desc;
 	nvdimm_bus->dev.parent = parent;
 	nvdimm_bus->dev.release = nvdimm_bus_release;
 	nvdimm_bus->dev.groups = nd_desc->attr_groups;
 	nvdimm_bus->dev.bus = &nvdimm_bus_type;
-	nvdimm_bus->dev.of_node = nd_desc->of_node;
 	dev_set_name(&nvdimm_bus->dev, "ndbus%d", nvdimm_bus->id);
 	rc = device_register(&nvdimm_bus->dev);
 	if (rc) {
@@ -393,24 +389,9 @@ static int child_unregister(struct device *dev, void *data)
 	 * i.e. remove classless children
 	 */
 	if (dev->class)
-		return 0;
-
-	if (is_nvdimm(dev)) {
-		struct nvdimm *nvdimm = to_nvdimm(dev);
-		bool dev_put = false;
-
-		/* We are shutting down. Make state frozen artificially. */
-		nvdimm_bus_lock(dev);
-		nvdimm->sec.state = NVDIMM_SECURITY_FROZEN;
-		if (test_and_clear_bit(NDD_WORK_PENDING, &nvdimm->flags))
-			dev_put = true;
-		nvdimm_bus_unlock(dev);
-		cancel_delayed_work_sync(&nvdimm->dwork);
-		if (dev_put)
-			put_device(dev);
-	}
-	nd_device_unregister(dev, ND_SYNC);
-
+		/* pass */;
+	else
+		nd_device_unregister(dev, ND_SYNC);
 	return 0;
 }
 
@@ -503,8 +484,6 @@ static void nd_async_device_register(void *d, async_cookie_t cookie)
 		put_device(dev);
 	}
 	put_device(dev);
-	if (dev->parent)
-		put_device(dev->parent);
 }
 
 static void nd_async_device_unregister(void *d, async_cookie_t cookie)
@@ -523,19 +502,7 @@ void __nd_device_register(struct device *dev)
 {
 	if (!dev)
 		return;
-
-	/*
-	 * Ensure that region devices always have their NUMA node set as
-	 * early as possible. This way we are able to make certain that
-	 * any memory associated with the creation and the creation
-	 * itself of the region is associated with the correct node.
-	 */
-	if (is_nd_region(dev))
-		set_dev_node(dev, to_nd_region(dev)->numa_node);
-
 	dev->bus = &nvdimm_bus_type;
-	if (dev->parent)
-		get_device(dev->parent);
 	get_device(dev);
 	async_schedule_domain(nd_async_device_register, dev,
 			&nd_async_domain);
@@ -598,18 +565,14 @@ int nvdimm_revalidate_disk(struct gendisk *disk)
 {
 	struct device *dev = disk_to_dev(disk)->parent;
 	struct nd_region *nd_region = to_nd_region(dev->parent);
-	int disk_ro = get_disk_ro(disk);
+	const char *pol = nd_region->ro ? "only" : "write";
 
-	/*
-	 * Upgrade to read-only if the region is read-only preserve as
-	 * read-only if the disk is already read-only.
-	 */
-	if (disk_ro || nd_region->ro == disk_ro)
+	if (nd_region->ro == get_disk_ro(disk))
 		return 0;
 
-	dev_info(dev, "%s read-only, marking %s read-only\n",
-			dev_name(&nd_region->dev), disk->disk_name);
-	set_disk_ro(disk, 1);
+	dev_info(dev, "%s read-%s, marking %s read-%s\n",
+			dev_name(&nd_region->dev), pol, disk->disk_name, pol);
+	set_disk_ro(disk, nd_region->ro);
 
 	return 0;
 
@@ -841,9 +804,9 @@ u32 nd_cmd_out_size(struct nvdimm *nvdimm, int cmd,
 		 * overshoots the remainder by 4 bytes, assume it was
 		 * including 'status'.
 		 */
-		if (out_field[1] - 4 == remainder)
+		if (out_field[1] - 8 == remainder)
 			return remainder;
-		return out_field[1] - 8;
+		return out_field[1] - 4;
 	} else if (cmd == ND_CMD_CALL) {
 		struct nd_cmd_pkg *pkg = (struct nd_cmd_pkg *) in_field;
 
@@ -923,7 +886,7 @@ static int nd_cmd_clear_to_send(struct nvdimm_bus *nvdimm_bus,
 
 	/* ask the bus provider if it would like to block this request */
 	if (nd_desc->clear_to_send) {
-		int rc = nd_desc->clear_to_send(nd_desc, nvdimm, cmd, data);
+		int rc = nd_desc->clear_to_send(nd_desc, nvdimm, cmd);
 
 		if (rc)
 			return rc;
@@ -1021,8 +984,8 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 
 	if (cmd == ND_CMD_CALL) {
 		func = pkg.nd_command;
-		dev_dbg(dev, "%s, idx: %llu, in: %u, out: %u, len %llu\n",
-				dimm_name, pkg.nd_command,
+		dev_dbg(dev, "%s:%s, idx: %llu, in: %u, out: %u, len %llu\n",
+				__func__, dimm_name, pkg.nd_command,
 				in_len, out_len, buf_len);
 	}
 
@@ -1033,8 +996,8 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 		u32 copy;
 
 		if (out_size == UINT_MAX) {
-			dev_dbg(dev, "%s unknown output size cmd: %s field: %d\n",
-					dimm_name, cmd_name, i);
+			dev_dbg(dev, "%s:%s unknown output size cmd: %s field: %d\n",
+					__func__, dimm_name, cmd_name, i);
 			return -EFAULT;
 		}
 		if (out_len < sizeof(out_env))
@@ -1049,8 +1012,9 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 
 	buf_len = (u64) out_len + (u64) in_len;
 	if (buf_len > ND_IOCTL_MAX_BUFLEN) {
-		dev_dbg(dev, "%s cmd: %s buf_len: %llu > %d\n", dimm_name,
-				cmd_name, buf_len, ND_IOCTL_MAX_BUFLEN);
+		dev_dbg(dev, "%s:%s cmd: %s buf_len: %llu > %d\n", __func__,
+				dimm_name, cmd_name, buf_len,
+				ND_IOCTL_MAX_BUFLEN);
 		return -EINVAL;
 	}
 

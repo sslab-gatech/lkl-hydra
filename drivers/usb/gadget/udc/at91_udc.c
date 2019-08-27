@@ -234,10 +234,22 @@ static int proc_udc_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
+static int proc_udc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_udc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_ops = {
+	.owner		= THIS_MODULE,
+	.open		= proc_udc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static void create_debug_file(struct at91_udc *udc)
 {
-	udc->pde = proc_create_single_data(debug_filename, 0, NULL,
-			proc_udc_show, udc);
+	udc->pde = proc_create_data(debug_filename, 0, NULL, &proc_ops, udc);
 }
 
 static void remove_debug_file(struct at91_udc *udc)

@@ -59,6 +59,12 @@
 #include <net/net_namespace.h>
 #include <linux/u64_stats_sync.h>
 
+struct pcpu_lstats {
+	u64			packets;
+	u64			bytes;
+	struct u64_stats_sync	syncp;
+};
+
 /* The higher levels take care of making this non-reentrant (it's
  * called with bh's disabled).
  */
@@ -69,10 +75,6 @@ static netdev_tx_t loopback_xmit(struct sk_buff *skb,
 	int len;
 
 	skb_tx_timestamp(skb);
-
-	/* do not fool net_timestamp_check() with various clock bases */
-	skb->tstamp = 0;
-
 	skb_orphan(skb);
 
 	/* Before queueing this packet to netif_rx(),

@@ -69,7 +69,7 @@ static void vbg_guest_mappings_init(struct vbg_dev *gdev)
 	/* Add 4M so that we can align the vmap to 4MiB as the host requires. */
 	size = PAGE_ALIGN(req->hypervisor_size) + SZ_4M;
 
-	pages = kmalloc_array(size >> PAGE_SHIFT, sizeof(*pages), GFP_KERNEL);
+	pages = kmalloc(sizeof(*pages) * (size >> PAGE_SHIFT), GFP_KERNEL);
 	if (!pages)
 		goto out;
 
@@ -114,7 +114,7 @@ static void vbg_guest_mappings_init(struct vbg_dev *gdev)
 	}
 
 out:
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	kfree(pages);
 }
 
@@ -144,7 +144,7 @@ static void vbg_guest_mappings_exit(struct vbg_dev *gdev)
 
 	rc = vbg_req_perform(gdev, req);
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 
 	if (rc < 0) {
 		vbg_err("%s error: %d\n", __func__, rc);
@@ -214,8 +214,8 @@ static int vbg_report_guest_info(struct vbg_dev *gdev)
 	ret = vbg_status_code_to_errno(rc);
 
 out_free:
-	vbg_req_free(req2, sizeof(*req2));
-	vbg_req_free(req1, sizeof(*req1));
+	kfree(req2);
+	kfree(req1);
 	return ret;
 }
 
@@ -245,7 +245,7 @@ static int vbg_report_driver_status(struct vbg_dev *gdev, bool active)
 	if (rc == VERR_NOT_IMPLEMENTED)	/* Compatibility with older hosts. */
 		rc = VINF_SUCCESS;
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 
 	return vbg_status_code_to_errno(rc);
 }
@@ -262,9 +262,8 @@ static int vbg_balloon_inflate(struct vbg_dev *gdev, u32 chunk_idx)
 	struct page **pages;
 	int i, rc, ret;
 
-	pages = kmalloc_array(VMMDEV_MEMORY_BALLOON_CHUNK_PAGES,
-			      sizeof(*pages),
-			      GFP_KERNEL | __GFP_NOWARN);
+	pages = kmalloc(sizeof(*pages) * VMMDEV_MEMORY_BALLOON_CHUNK_PAGES,
+			GFP_KERNEL | __GFP_NOWARN);
 	if (!pages)
 		return -ENOMEM;
 
@@ -432,7 +431,7 @@ static int vbg_heartbeat_host_config(struct vbg_dev *gdev, bool enabled)
 	rc = vbg_req_perform(gdev, req);
 	do_div(req->interval_ns, 1000000); /* ns -> ms */
 	gdev->heartbeat_interval_ms = req->interval_ns;
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 
 	return vbg_status_code_to_errno(rc);
 }
@@ -455,6 +454,12 @@ static int vbg_heartbeat_init(struct vbg_dev *gdev)
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Preallocate the request to use it from the timer callback because:
+	 *    1) on Windows vbg_req_alloc must be called at IRQL <= APC_LEVEL
+	 *       and the timer callback runs at DISPATCH_LEVEL;
+	 *    2) avoid repeated allocations.
+	 */
 	gdev->guest_heartbeat_req = vbg_req_alloc(
 					sizeof(*gdev->guest_heartbeat_req),
 					VMMDEVREQ_GUEST_HEARTBEAT);
@@ -476,8 +481,8 @@ static void vbg_heartbeat_exit(struct vbg_dev *gdev)
 {
 	del_timer_sync(&gdev->heartbeat_timer);
 	vbg_heartbeat_host_config(gdev, false);
-	vbg_req_free(gdev->guest_heartbeat_req,
-		     sizeof(*gdev->guest_heartbeat_req));
+	kfree(gdev->guest_heartbeat_req);
+
 }
 
 /**
@@ -538,7 +543,7 @@ static int vbg_reset_host_event_filter(struct vbg_dev *gdev,
 	if (rc < 0)
 		vbg_err("%s error, rc: %d\n", __func__, rc);
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	return vbg_status_code_to_errno(rc);
 }
 
@@ -612,7 +617,7 @@ static int vbg_set_session_event_filter(struct vbg_dev *gdev,
 
 out:
 	mutex_unlock(&gdev->session_mutex);
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 
 	return ret;
 }
@@ -637,7 +642,7 @@ static int vbg_reset_host_capabilities(struct vbg_dev *gdev)
 	if (rc < 0)
 		vbg_err("%s error, rc: %d\n", __func__, rc);
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	return vbg_status_code_to_errno(rc);
 }
 
@@ -707,7 +712,7 @@ static int vbg_set_session_capabilities(struct vbg_dev *gdev,
 
 out:
 	mutex_unlock(&gdev->session_mutex);
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 
 	return ret;
 }
@@ -728,10 +733,8 @@ static int vbg_query_host_version(struct vbg_dev *gdev)
 
 	rc = vbg_req_perform(gdev, req);
 	ret = vbg_status_code_to_errno(rc);
-	if (ret) {
-		vbg_err("%s error: %d\n", __func__, rc);
+	if (ret)
 		goto out;
-	}
 
 	snprintf(gdev->host_version, sizeof(gdev->host_version), "%u.%u.%ur%u",
 		 req->major, req->minor, req->build, req->revision);
@@ -746,7 +749,7 @@ static int vbg_query_host_version(struct vbg_dev *gdev)
 	}
 
 out:
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	return ret;
 }
 
@@ -844,16 +847,11 @@ int vbg_core_init(struct vbg_dev *gdev, u32 fixed_events)
 	return 0;
 
 err_free_reqs:
-	vbg_req_free(gdev->mouse_status_req,
-		     sizeof(*gdev->mouse_status_req));
-	vbg_req_free(gdev->ack_events_req,
-		     sizeof(*gdev->ack_events_req));
-	vbg_req_free(gdev->cancel_req,
-		     sizeof(*gdev->cancel_req));
-	vbg_req_free(gdev->mem_balloon.change_req,
-		     sizeof(*gdev->mem_balloon.change_req));
-	vbg_req_free(gdev->mem_balloon.get_req,
-		     sizeof(*gdev->mem_balloon.get_req));
+	kfree(gdev->mouse_status_req);
+	kfree(gdev->ack_events_req);
+	kfree(gdev->cancel_req);
+	kfree(gdev->mem_balloon.change_req);
+	kfree(gdev->mem_balloon.get_req);
 	return ret;
 }
 
@@ -874,16 +872,11 @@ void vbg_core_exit(struct vbg_dev *gdev)
 	vbg_reset_host_capabilities(gdev);
 	vbg_core_set_mouse_status(gdev, 0);
 
-	vbg_req_free(gdev->mouse_status_req,
-		     sizeof(*gdev->mouse_status_req));
-	vbg_req_free(gdev->ack_events_req,
-		     sizeof(*gdev->ack_events_req));
-	vbg_req_free(gdev->cancel_req,
-		     sizeof(*gdev->cancel_req));
-	vbg_req_free(gdev->mem_balloon.change_req,
-		     sizeof(*gdev->mem_balloon.change_req));
-	vbg_req_free(gdev->mem_balloon.get_req,
-		     sizeof(*gdev->mem_balloon.get_req));
+	kfree(gdev->mouse_status_req);
+	kfree(gdev->ack_events_req);
+	kfree(gdev->cancel_req);
+	kfree(gdev->mem_balloon.change_req);
+	kfree(gdev->mem_balloon.get_req);
 }
 
 /**
@@ -1312,7 +1305,7 @@ static int vbg_ioctl_hgcm_call(struct vbg_dev *gdev,
 		return -EINVAL;
 	}
 
-	if (IS_ENABLED(CONFIG_COMPAT) && f32bit)
+	if (f32bit)
 		ret = vbg_hgcm_call32(gdev, client_id,
 				      call->function, call->timeout_ms,
 				      VBG_IOCTL_HGCM_CALL_PARMS32(call),
@@ -1422,7 +1415,7 @@ static int vbg_ioctl_write_core_dump(struct vbg_dev *gdev,
 	req->flags = dump->u.in.flags;
 	dump->hdr.rc = vbg_req_perform(gdev, req);
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	return 0;
 }
 
@@ -1520,7 +1513,7 @@ int vbg_core_set_mouse_status(struct vbg_dev *gdev, u32 features)
 	if (rc < 0)
 		vbg_err("%s error, rc: %d\n", __func__, rc);
 
-	vbg_req_free(req, sizeof(*req));
+	kfree(req);
 	return vbg_status_code_to_errno(rc);
 }
 

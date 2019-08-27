@@ -45,7 +45,7 @@ struct fwnode_endpoint {
 struct fwnode_reference_args {
 	struct fwnode_handle *fwnode;
 	unsigned int nargs;
-	u64 args[NR_FWNODE_REFERENCE_ARGS];
+	unsigned int args[NR_FWNODE_REFERENCE_ARGS];
 };
 
 /**

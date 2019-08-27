@@ -11,7 +11,6 @@
 
 #include <linux/fcntl.h>
 #include <linux/wait.h>
-#include <linux/err.h>
 
 /*
  * CAREFUL: Check include/uapi/asm-generic/fcntl.h when defining

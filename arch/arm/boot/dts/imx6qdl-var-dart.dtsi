@@ -10,8 +10,7 @@
 #include <dt-bindings/sound/fsl-imx-audmux.h>
 
 / {
-	memory@10000000 {
-		device_type = "memory";
+	memory {
 		reg = <0x10000000 0x40000000>;
 	};
 

@@ -127,11 +127,19 @@ show_signal_msg(struct pt_regs *regs, int sig, int code,
 static void __do_fault_siginfo(int code, int sig, struct pt_regs *regs,
 			       unsigned long addr)
 {
+	siginfo_t info;
+
+	info.si_signo = sig;
+	info.si_code = code;
+	info.si_errno = 0;
+	info.si_addr = (void __user *) addr;
+	info.si_trapno = 0;
+
 	if (unlikely(show_unhandled_signals))
-		show_signal_msg(regs, sig, code,
+		show_signal_msg(regs, sig, info.si_code,
 				addr, current);
 
-	force_sig_fault(sig, code, (void __user *) addr, 0, current);
+	force_sig_info (sig, &info, current);
 }
 
 static unsigned long compute_si_addr(struct pt_regs *regs, int text_fault)
@@ -166,8 +174,7 @@ asmlinkage void do_sparc_fault(struct pt_regs *regs, int text_fault, int write,
 	unsigned int fixup;
 	unsigned long g2;
 	int from_user = !(regs->psr & PSR_PS);
-	int code;
-	vm_fault_t fault;
+	int fault, code;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	if (text_fault)

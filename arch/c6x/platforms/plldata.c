@@ -19,7 +19,6 @@
 
 #include <asm/clock.h>
 #include <asm/setup.h>
-#include <asm/special_insns.h>
 #include <asm/irq.h>
 
 /*

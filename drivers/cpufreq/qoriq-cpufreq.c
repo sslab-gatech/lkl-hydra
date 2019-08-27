@@ -165,7 +165,7 @@ static void freq_table_sort(struct cpufreq_frequency_table *freq_table,
 static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
 	struct device_node *np;
-	int i, count;
+	int i, count, ret;
 	u32 freq;
 	struct clk *clk;
 	const struct clk_hw *hwclk;
@@ -192,12 +192,16 @@ static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	count = clk_hw_get_num_parents(hwclk);
 
 	data->pclk = kcalloc(count, sizeof(struct clk *), GFP_KERNEL);
-	if (!data->pclk)
+	if (!data->pclk) {
+		pr_err("%s: no memory\n", __func__);
 		goto err_nomem2;
+	}
 
 	table = kcalloc(count + 1, sizeof(*table), GFP_KERNEL);
-	if (!table)
+	if (!table) {
+		pr_err("%s: no memory\n", __func__);
 		goto err_pclk;
+	}
 
 	for (i = 0; i < count; i++) {
 		clk = clk_hw_get_parent_by_index(hwclk, i)->clk;
@@ -209,7 +213,14 @@ static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	freq_table_redup(table, count);
 	freq_table_sort(table, count);
 	table[i].frequency = CPUFREQ_TABLE_END;
-	policy->freq_table = table;
+
+	/* set the min and max frequency properly */
+	ret = cpufreq_table_validate_and_show(policy, table);
+	if (ret) {
+		pr_err("invalid frequency table: %d\n", ret);
+		goto err_nomem1;
+	}
+
 	data->table = table;
 
 	/* update ->cpus if we have cluster, no harm if not */
@@ -225,6 +236,8 @@ static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 
 	return 0;
 
+err_nomem1:
+	kfree(table);
 err_pclk:
 	kfree(data->pclk);
 err_nomem2:

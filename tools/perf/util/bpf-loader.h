@@ -43,7 +43,6 @@ enum bpf_loader_errno {
 	__BPF_LOADER_ERRNO__END,
 };
 
-struct perf_evsel;
 struct bpf_object;
 struct parse_events_term;
 #define PERF_BPF_PROBE_GROUP "perf_bpf_probe"
@@ -83,8 +82,9 @@ int bpf__apply_obj_config(void);
 int bpf__strerror_apply_obj_config(int err, char *buf, size_t size);
 
 int bpf__setup_stdout(struct perf_evlist *evlist);
-struct perf_evsel *bpf__setup_output_event(struct perf_evlist *evlist, const char *name);
-int bpf__strerror_setup_output_event(struct perf_evlist *evlist, int err, char *buf, size_t size);
+int bpf__strerror_setup_stdout(struct perf_evlist *evlist, int err,
+			       char *buf, size_t size);
+
 #else
 #include <errno.h>
 
@@ -136,12 +136,6 @@ static inline int
 bpf__setup_stdout(struct perf_evlist *evlist __maybe_unused)
 {
 	return 0;
-}
-
-static inline struct perf_evsel *
-bpf__setup_output_event(struct perf_evlist *evlist __maybe_unused, const char *name __maybe_unused)
-{
-	return NULL;
 }
 
 static inline int
@@ -199,16 +193,11 @@ bpf__strerror_apply_obj_config(int err __maybe_unused,
 }
 
 static inline int
-bpf__strerror_setup_output_event(struct perf_evlist *evlist __maybe_unused,
-				 int err __maybe_unused, char *buf, size_t size)
+bpf__strerror_setup_stdout(struct perf_evlist *evlist __maybe_unused,
+			   int err __maybe_unused, char *buf,
+			   size_t size)
 {
 	return __bpf_strerror(buf, size);
 }
-
 #endif
-
-static inline int bpf__strerror_setup_stdout(struct perf_evlist *evlist, int err, char *buf, size_t size)
-{
-	return bpf__strerror_setup_output_event(evlist, err, buf, size);
-}
 #endif

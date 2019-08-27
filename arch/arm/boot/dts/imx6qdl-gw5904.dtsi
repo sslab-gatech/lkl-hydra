@@ -93,8 +93,7 @@
 		};
 	};
 
-	memory@10000000 {
-		device_type = "memory";
+	memory {
 		reg = <0x10000000 0x40000000>;
 	};
 
@@ -163,6 +162,8 @@
 
 		switch@0 {
 			compatible = "marvell,mv88e6085";
+			#address-cells = <1>;
+			#size-cells = <0>;
 			reg = <0>;
 
 			ports {

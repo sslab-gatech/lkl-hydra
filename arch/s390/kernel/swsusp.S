@@ -13,7 +13,6 @@
 #include <asm/ptrace.h>
 #include <asm/thread_info.h>
 #include <asm/asm-offsets.h>
-#include <asm/nospec-insn.h>
 #include <asm/sigp.h>
 
 /*
@@ -25,15 +24,12 @@
  * (see below) in the resume process.
  * This function runs with disabled interrupts.
  */
-	GEN_BR_THUNK %r14
-
 	.section .text
 ENTRY(swsusp_arch_suspend)
-	lg	%r1,__LC_NODAT_STACK
-	stmg	%r6,%r15,__SF_GPRS(%r1)
-	aghi	%r1,-STACK_FRAME_OVERHEAD
-	stg	%r15,__SF_BACKCHAIN(%r1)
-	lgr	%r15,%r1
+	stmg	%r6,%r15,__SF_GPRS(%r15)
+	lgr	%r1,%r15
+	aghi	%r15,-STACK_FRAME_OVERHEAD
+	stg	%r1,__SF_BACKCHAIN(%r15)
 
 	/* Store FPU registers */
 	brasl	%r14,save_fpu_regs
@@ -107,7 +103,7 @@ ENTRY(swsusp_arch_suspend)
 	spx	0x318(%r1)
 	lmg	%r6,%r15,STACK_FRAME_OVERHEAD + __SF_GPRS(%r15)
 	lghi	%r2,0
-	BR_EX	%r14
+	br	%r14
 
 /*
  * Restore saved memory image to correct place and restore register context.
@@ -198,9 +194,14 @@ pgm_check_entry:
 	brc	2,3b				/* busy, try again */
 
 	/* Suspend CPU not available -> panic */
-	larl	%r15,init_thread_union+THREAD_SIZE-STACK_FRAME_OVERHEAD
+	larl	%r15,init_thread_union
+	ahi	%r15,1<<(PAGE_SHIFT+THREAD_SIZE_ORDER)
 	larl	%r2,.Lpanic_string
-	brasl	%r14,sclp_early_printk_force
+	larl	%r3,sclp_early_printk
+	lghi	%r1,0
+	sam31
+	sigp	%r1,%r0,SIGP_SET_ARCHITECTURE
+	basr	%r14,%r3
 	larl	%r3,.Ldisabled_wait_31
 	lpsw	0(%r3)
 4:
@@ -266,7 +267,7 @@ restore_registers:
 	/* Return 0 */
 	lmg	%r6,%r15,STACK_FRAME_OVERHEAD + __SF_GPRS(%r15)
 	lghi	%r2,0
-	BR_EX	%r14
+	br	%r14
 
 	.section .data..nosave,"aw",@progbits
 	.align	8

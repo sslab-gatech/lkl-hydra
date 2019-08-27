@@ -332,15 +332,11 @@ static void bttv_ir_stop(struct bttv *btv)
 static int get_key_pv951(struct IR_i2c *ir, enum rc_proto *protocol,
 			 u32 *scancode, u8 *toggle)
 {
-	int rc;
 	unsigned char b;
 
 	/* poll IR chip */
-	rc = i2c_master_recv(ir->c, &b, 1);
-	if (rc != 1) {
+	if (1 != i2c_master_recv(ir->c, &b, 1)) {
 		dprintk("read error\n");
-		if (rc < 0)
-			return rc;
 		return -EIO;
 	}
 
@@ -370,7 +366,7 @@ static int get_key_pv951(struct IR_i2c *ir, enum rc_proto *protocol,
 /* Instantiate the I2C IR receiver device, if present */
 void init_bttv_i2c_ir(struct bttv *btv)
 {
-	static const unsigned short addr_list[] = {
+	const unsigned short addr_list[] = {
 		0x1a, 0x18, 0x64, 0x30, 0x71,
 		I2C_CLIENT_END
 	};
@@ -382,7 +378,7 @@ void init_bttv_i2c_ir(struct bttv *btv)
 
 	memset(&info, 0, sizeof(struct i2c_board_info));
 	memset(&btv->init_data, 0, sizeof(btv->init_data));
-	strscpy(info.type, "ir_video", I2C_NAME_SIZE);
+	strlcpy(info.type, "ir_video", I2C_NAME_SIZE);
 
 	switch (btv->c.type) {
 	case BTTV_BOARD_PV951:

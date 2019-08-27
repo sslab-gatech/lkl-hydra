@@ -123,8 +123,7 @@ static int adf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct adf_hw_device_data *hw_data;
 	char name[ADF_DEVICE_NAME_LENGTH];
 	unsigned int i, bar_nr;
-	unsigned long bar_mask;
-	int ret;
+	int ret, bar_mask;
 
 	switch (ent->device) {
 	case ADF_C62X_PCI_DEVICE_ID:
@@ -236,7 +235,8 @@ static int adf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Find and map all the device's BARS */
 	i = (hw_data->fuses & ADF_DEVICE_FUSECTL_MASK) ? 1 : 0;
 	bar_mask = pci_select_bars(pdev, IORESOURCE_MEM);
-	for_each_set_bit(bar_nr, &bar_mask, ADF_PCI_MAX_BARS * 2) {
+	for_each_set_bit(bar_nr, (const unsigned long *)&bar_mask,
+			 ADF_PCI_MAX_BARS * 2) {
 		struct adf_bar *bar = &accel_pci_dev->pci_bars[i++];
 
 		bar->base_addr = pci_resource_start(pdev, bar_nr);
@@ -329,7 +329,5 @@ module_exit(adfdrv_release);
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Intel");
-MODULE_FIRMWARE(ADF_C62X_FW);
-MODULE_FIRMWARE(ADF_C62X_MMP);
 MODULE_DESCRIPTION("Intel(R) QuickAssist Technology");
 MODULE_VERSION(ADF_DRV_VERSION);

@@ -26,10 +26,7 @@
 #include <linux/slab.h>
 
 #include <asm/pgtable.h>
-
-#ifdef CONFIG_ARCH_DAVINCI
 #include <mach/cputype.h>
-#endif
 
 #include <media/v4l2-dev.h>
 #include <media/v4l2-common.h>
@@ -56,7 +53,8 @@ static int vpbe_set_osd_display_params(struct vpbe_display *disp_dev,
 static int venc_is_second_field(struct vpbe_display *disp_dev)
 {
 	struct vpbe_device *vpbe_dev = disp_dev->vpbe_dev;
-	int ret, val;
+	int ret;
+	int val;
 
 	ret = v4l2_subdev_call(vpbe_dev->venc,
 			       core,
@@ -66,7 +64,6 @@ static int venc_is_second_field(struct vpbe_display *disp_dev)
 	if (ret < 0) {
 		v4l2_err(&vpbe_dev->v4l2_dev,
 			 "Error in getting Field ID 0\n");
-		return 1;
 	}
 	return val;
 }
@@ -285,7 +282,7 @@ static int vpbe_start_streaming(struct vb2_queue *vq, unsigned int count)
 	struct osd_state *osd_device = layer->disp_dev->osd_device;
 	int ret;
 
-	osd_device->ops.disable_layer(osd_device, layer->layer_info.id);
+	 osd_device->ops.disable_layer(osd_device, layer->layer_info.id);
 
 	/* Get the next frame from the buffer queue */
 	layer->next_frm = layer->cur_frm = list_entry(layer->dma_queue.next,
@@ -521,7 +518,7 @@ vpbe_disp_calculate_scale_factor(struct vpbe_display *disp_dev,
 		else if (v_scale == 4)
 			layer_info->v_zoom = ZOOM_X4;
 		if (v_exp)
-			layer_info->v_exp = V_EXP_6_OVER_5;
+			layer_info->h_exp = V_EXP_6_OVER_5;
 	} else {
 		/* no scaling, only cropping. Set display area to crop area */
 		cfg->ysize = expected_ysize;
@@ -567,7 +564,7 @@ static void vpbe_disp_check_window_params(struct vpbe_display *disp_dev,
 
 }
 
-/*
+/**
  * vpbe_try_format()
  * If user application provides width and height, and have bytesperline set
  * to zero, driver calculates bytesperline and sizeimage based on hardware
@@ -647,7 +644,7 @@ static int vpbe_display_querycap(struct file *file, void  *priv,
 		dev_name(vpbe_dev->pdev));
 	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
 		 dev_name(vpbe_dev->pdev));
-	strscpy(cap->card, vpbe_dev->cfg->module_name, sizeof(cap->card));
+	strlcpy(cap->card, vpbe_dev->cfg->module_name, sizeof(cap->card));
 
 	return 0;
 }
@@ -759,18 +756,18 @@ static int vpbe_display_g_selection(struct file *file, void *priv,
 	return 0;
 }
 
-static int vpbe_display_g_pixelaspect(struct file *file, void *priv,
-				      int type, struct v4l2_fract *f)
+static int vpbe_display_cropcap(struct file *file, void *priv,
+			      struct v4l2_cropcap *cropcap)
 {
 	struct vpbe_layer *layer = video_drvdata(file);
 	struct vpbe_device *vpbe_dev = layer->disp_dev->vpbe_dev;
 
 	v4l2_dbg(1, debug, &vpbe_dev->v4l2_dev, "VIDIOC_CROPCAP ioctl\n");
 
-	if (type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+	if (cropcap->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
 		return -EINVAL;
 
-	*f = vpbe_dev->current_timings.aspect;
+	cropcap->pixelaspect = vpbe_dev->current_timings.aspect;
 	return 0;
 }
 
@@ -816,12 +813,10 @@ static int vpbe_display_enum_fmt(struct file *file, void  *priv,
 	fmt->index = index;
 	fmt->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
 	if (index == 0) {
-		strscpy(fmt->description, "YUV 4:2:2 - UYVY",
-			sizeof(fmt->description));
+		strcpy(fmt->description, "YUV 4:2:2 - UYVY");
 		fmt->pixelformat = V4L2_PIX_FMT_UYVY;
 	} else {
-		strscpy(fmt->description, "Y/CbCr 4:2:0",
-			sizeof(fmt->description));
+		strcpy(fmt->description, "Y/CbCr 4:2:0");
 		fmt->pixelformat = V4L2_PIX_FMT_NV12;
 	}
 
@@ -934,7 +929,7 @@ static int vpbe_display_try_fmt(struct file *file, void *priv,
 
 }
 
-/*
+/**
  * vpbe_display_s_std - Set the given standard in the encoder
  *
  * Sets the standard if supported by the current encoder. Return the status.
@@ -966,7 +961,7 @@ static int vpbe_display_s_std(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_g_std - Get the standard in the current encoder
  *
  * Get the standard in the current encoder. Return the status. 0 - success
@@ -989,7 +984,7 @@ static int vpbe_display_g_std(struct file *file, void *priv,
 	return -EINVAL;
 }
 
-/*
+/**
  * vpbe_display_enum_output - enumerate outputs
  *
  * Enumerates the outputs available at the vpbe display
@@ -1018,7 +1013,7 @@ static int vpbe_display_enum_output(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_s_output - Set output to
  * the output specified by the index
  */
@@ -1047,7 +1042,7 @@ static int vpbe_display_s_output(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_g_output - Get output from subdevice
  * for a given by the index
  */
@@ -1064,7 +1059,7 @@ static int vpbe_display_g_output(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_enum_dv_timings - Enumerate the dv timings
  *
  * enum the timings in the current encoder. Return the status. 0 - success
@@ -1094,7 +1089,7 @@ vpbe_display_enum_dv_timings(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_s_dv_timings - Set the dv timings
  *
  * Set the timings in the current encoder. Return the status. 0 - success
@@ -1127,7 +1122,7 @@ vpbe_display_s_dv_timings(struct file *file, void *priv,
 	return 0;
 }
 
-/*
+/**
  * vpbe_display_g_dv_timings - Set the dv timings
  *
  * Get the timings in the current encoder. Return the status. 0 - success
@@ -1263,7 +1258,7 @@ static const struct v4l2_ioctl_ops vpbe_ioctl_ops = {
 	.vidioc_streamoff	 = vb2_ioctl_streamoff,
 	.vidioc_expbuf		 = vb2_ioctl_expbuf,
 
-	.vidioc_g_pixelaspect	 = vpbe_display_g_pixelaspect,
+	.vidioc_cropcap		 = vpbe_display_cropcap,
 	.vidioc_g_selection	 = vpbe_display_g_selection,
 	.vidioc_s_selection	 = vpbe_display_s_selection,
 
@@ -1356,9 +1351,9 @@ static int register_device(struct vpbe_layer *vpbe_display_layer,
 	v4l2_info(&disp_dev->vpbe_dev->v4l2_dev,
 		  "Trying to register VPBE display device.\n");
 	v4l2_info(&disp_dev->vpbe_dev->v4l2_dev,
-		  "layer=%p,layer->video_dev=%p\n",
-		  vpbe_display_layer,
-		  &vpbe_display_layer->video_dev);
+		  "layer=%x,layer->video_dev=%x\n",
+		  (int)vpbe_display_layer,
+		  (int)&vpbe_display_layer->video_dev);
 
 	vpbe_display_layer->video_dev.queue = &vpbe_display_layer->buffer_queue;
 	err = video_register_device(&vpbe_display_layer->video_dev,

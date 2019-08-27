@@ -111,8 +111,7 @@ int fsnotify_add_event(struct fsnotify_group *group,
 		return 2;
 	}
 
-	if (event == group->overflow_event ||
-	    group->q_len >= group->max_events) {
+	if (group->q_len >= group->max_events) {
 		ret = 2;
 		/* Queue overflow event only if it isn't already queued */
 		if (!list_empty(&group->overflow_event->list)) {

@@ -79,6 +79,8 @@ enum reg_val_type {
 	REG_64BIT_32BIT,
 	/* 32-bit compatible, need truncation for 64-bit ops. */
 	REG_32BIT,
+	/* 32-bit zero extended. */
+	REG_32BIT_ZERO_EX,
 	/* 32-bit no sign/zero extension needed. */
 	REG_32BIT_POS
 };
@@ -93,6 +95,7 @@ enum reg_val_type {
  * struct jit_ctx - JIT context
  * @skf:		The sk_filter
  * @stack_size:		eBPF stack size
+ * @tmp_offset:		eBPF $sp offset to 8-byte temporary memory
  * @idx:		Instruction index
  * @flags:		JIT flags
  * @offsets:		Instruction offsets
@@ -102,6 +105,7 @@ enum reg_val_type {
 struct jit_ctx {
 	const struct bpf_prog *skf;
 	int stack_size;
+	int tmp_offset;
 	u32 idx;
 	u32 flags;
 	u32 *offsets;
@@ -289,6 +293,7 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	locals_size = (ctx->flags & EBPF_SEEN_FP) ? MAX_BPF_STACK : 0;
 
 	stack_adjust += locals_size;
+	ctx->tmp_offset = locals_size;
 
 	ctx->stack_size = stack_adjust;
 
@@ -341,15 +346,12 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	const struct bpf_prog *prog = ctx->skf;
 	int stack_adjust = ctx->stack_size;
 	int store_offset = stack_adjust - 8;
-	enum reg_val_type td;
 	int r0 = MIPS_R_V0;
 
-	if (dest_reg == MIPS_R_RA) {
+	if (dest_reg == MIPS_R_RA &&
+	    get_reg_val_type(ctx, prog->len, BPF_REG_0) == REG_32BIT_ZERO_EX)
 		/* Don't let zero extended value escape. */
-		td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
-		if (td == REG_64BIT)
-			emit_instr(ctx, sll, r0, r0, 0);
-	}
+		emit_instr(ctx, sll, r0, r0, 0);
 
 	if (ctx->flags & EBPF_SAVE_RA) {
 		emit_instr(ctx, ld, MIPS_R_RA, store_offset, MIPS_R_SP);
@@ -397,6 +399,7 @@ static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
 		emit_instr(ctx, lui, reg, upper >> 16);
 		emit_instr(ctx, addiu, reg, reg, lower);
 	}
+
 }
 
 static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
@@ -541,6 +544,28 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		}
 	}
 
+	return 0;
+}
+
+static void * __must_check
+ool_skb_header_pointer(const struct sk_buff *skb, int offset,
+		       int len, void *buffer)
+{
+	return skb_header_pointer(skb, offset, len, buffer);
+}
+
+static int size_to_len(const struct bpf_insn *insn)
+{
+	switch (BPF_SIZE(insn->code)) {
+	case BPF_B:
+		return 1;
+	case BPF_H:
+		return 2;
+	case BPF_W:
+		return 4;
+	case BPF_DW:
+		return 8;
+	}
 	return 0;
 }
 
@@ -693,7 +718,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		if (dst < 0)
 			return dst;
 		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
+		if (td == REG_64BIT || td == REG_32BIT_ZERO_EX) {
 			/* sign extend */
 			emit_instr(ctx, sll, dst, dst, 0);
 		}
@@ -708,7 +733,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		if (dst < 0)
 			return dst;
 		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
+		if (td == REG_64BIT || td == REG_32BIT_ZERO_EX) {
 			/* sign extend */
 			emit_instr(ctx, sll, dst, dst, 0);
 		}
@@ -722,7 +747,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		if (dst < 0)
 			return dst;
 		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT)
+		if (td == REG_64BIT || td == REG_32BIT_ZERO_EX)
 			/* sign extend */
 			emit_instr(ctx, sll, dst, dst, 0);
 		if (insn->imm == 1) {
@@ -855,19 +880,18 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU | BPF_MOD | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_LSH | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_RSH | BPF_X: /* ALU_REG */
-	case BPF_ALU | BPF_ARSH | BPF_X: /* ALU_REG */
 		src = ebpf_to_mips_reg(ctx, insn, src_reg_no_fp);
 		dst = ebpf_to_mips_reg(ctx, insn, dst_reg);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
 		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
+		if (td == REG_64BIT || td == REG_32BIT_ZERO_EX) {
 			/* sign extend */
 			emit_instr(ctx, sll, dst, dst, 0);
 		}
 		did_move = false;
 		ts = get_reg_val_type(ctx, this_idx, insn->src_reg);
-		if (ts == REG_64BIT) {
+		if (ts == REG_64BIT || ts == REG_32BIT_ZERO_EX) {
 			int tmp_reg = MIPS_R_AT;
 
 			if (bpf_op == BPF_MOV) {
@@ -914,9 +938,6 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			break;
 		case BPF_RSH:
 			emit_instr(ctx, srlv, dst, dst, src);
-			break;
-		case BPF_ARSH:
-			emit_instr(ctx, srav, dst, dst, src);
 			break;
 		default:
 			pr_err("ALU_REG NOT HANDLED\n");
@@ -1246,6 +1267,110 @@ jeq_common:
 			return -EINVAL;
 		break;
 
+	case BPF_LD | BPF_B | BPF_ABS:
+	case BPF_LD | BPF_H | BPF_ABS:
+	case BPF_LD | BPF_W | BPF_ABS:
+	case BPF_LD | BPF_DW | BPF_ABS:
+		ctx->flags |= EBPF_SAVE_RA;
+
+		gen_imm_to_reg(insn, MIPS_R_A1, ctx);
+		emit_instr(ctx, addiu, MIPS_R_A2, MIPS_R_ZERO, size_to_len(insn));
+
+		if (insn->imm < 0) {
+			emit_const_to_reg(ctx, MIPS_R_T9, (u64)bpf_internal_load_pointer_neg_helper);
+		} else {
+			emit_const_to_reg(ctx, MIPS_R_T9, (u64)ool_skb_header_pointer);
+			emit_instr(ctx, daddiu, MIPS_R_A3, MIPS_R_SP, ctx->tmp_offset);
+		}
+		goto ld_skb_common;
+
+	case BPF_LD | BPF_B | BPF_IND:
+	case BPF_LD | BPF_H | BPF_IND:
+	case BPF_LD | BPF_W | BPF_IND:
+	case BPF_LD | BPF_DW | BPF_IND:
+		ctx->flags |= EBPF_SAVE_RA;
+		src = ebpf_to_mips_reg(ctx, insn, src_reg_no_fp);
+		if (src < 0)
+			return src;
+		ts = get_reg_val_type(ctx, this_idx, insn->src_reg);
+		if (ts == REG_32BIT_ZERO_EX) {
+			/* sign extend */
+			emit_instr(ctx, sll, MIPS_R_A1, src, 0);
+			src = MIPS_R_A1;
+		}
+		if (insn->imm >= S16_MIN && insn->imm <= S16_MAX) {
+			emit_instr(ctx, daddiu, MIPS_R_A1, src, insn->imm);
+		} else {
+			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+			emit_instr(ctx, daddu, MIPS_R_A1, MIPS_R_AT, src);
+		}
+		/* truncate to 32-bit int */
+		emit_instr(ctx, sll, MIPS_R_A1, MIPS_R_A1, 0);
+		emit_instr(ctx, daddiu, MIPS_R_A3, MIPS_R_SP, ctx->tmp_offset);
+		emit_instr(ctx, slt, MIPS_R_AT, MIPS_R_A1, MIPS_R_ZERO);
+
+		emit_const_to_reg(ctx, MIPS_R_T8, (u64)bpf_internal_load_pointer_neg_helper);
+		emit_const_to_reg(ctx, MIPS_R_T9, (u64)ool_skb_header_pointer);
+		emit_instr(ctx, addiu, MIPS_R_A2, MIPS_R_ZERO, size_to_len(insn));
+		emit_instr(ctx, movn, MIPS_R_T9, MIPS_R_T8, MIPS_R_AT);
+
+ld_skb_common:
+		emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
+		/* delay slot move */
+		emit_instr(ctx, daddu, MIPS_R_A0, MIPS_R_S0, MIPS_R_ZERO);
+
+		/* Check the error value */
+		b_off = b_imm(exit_idx, ctx);
+		if (is_bad_offset(b_off)) {
+			target = j_target(ctx, exit_idx);
+			if (target == (unsigned int)-1)
+				return -E2BIG;
+
+			if (!(ctx->offsets[this_idx] & OFFSETS_B_CONV)) {
+				ctx->offsets[this_idx] |= OFFSETS_B_CONV;
+				ctx->long_b_conversion = 1;
+			}
+			emit_instr(ctx, bne, MIPS_R_V0, MIPS_R_ZERO, 4 * 3);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, j, target);
+			emit_instr(ctx, nop);
+		} else {
+			emit_instr(ctx, beq, MIPS_R_V0, MIPS_R_ZERO, b_off);
+			emit_instr(ctx, nop);
+		}
+
+#ifdef __BIG_ENDIAN
+		need_swap = false;
+#else
+		need_swap = true;
+#endif
+		dst = MIPS_R_V0;
+		switch (BPF_SIZE(insn->code)) {
+		case BPF_B:
+			emit_instr(ctx, lbu, dst, 0, MIPS_R_V0);
+			break;
+		case BPF_H:
+			emit_instr(ctx, lhu, dst, 0, MIPS_R_V0);
+			if (need_swap)
+				emit_instr(ctx, wsbh, dst, dst);
+			break;
+		case BPF_W:
+			emit_instr(ctx, lw, dst, 0, MIPS_R_V0);
+			if (need_swap) {
+				emit_instr(ctx, wsbh, dst, dst);
+				emit_instr(ctx, rotr, dst, dst, 16);
+			}
+			break;
+		case BPF_DW:
+			emit_instr(ctx, ld, dst, 0, MIPS_R_V0);
+			if (need_swap) {
+				emit_instr(ctx, dsbh, dst, dst);
+				emit_instr(ctx, dshd, dst, dst);
+			}
+			break;
+		}
+
+		break;
 	case BPF_ALU | BPF_END | BPF_FROM_BE:
 	case BPF_ALU | BPF_END | BPF_FROM_LE:
 		dst = ebpf_to_mips_reg(ctx, insn, dst_reg);
@@ -1255,7 +1380,8 @@ jeq_common:
 		if (insn->imm == 64 && td == REG_32BIT)
 			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
 
-		if (insn->imm != 64 && td == REG_64BIT) {
+		if (insn->imm != 64 &&
+		    (td == REG_64BIT || td == REG_32BIT_ZERO_EX)) {
 			/* sign extend */
 			emit_instr(ctx, sll, dst, dst, 0);
 		}
@@ -1819,7 +1945,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	/* Update the icache */
 	flush_icache_range((unsigned long)ctx.target,
-			   (unsigned long)&ctx.target[ctx.idx]);
+			   (unsigned long)(ctx.target + ctx.idx * sizeof(u32)));
 
 	if (bpf_jit_enable > 1)
 		/* Dump JIT code */

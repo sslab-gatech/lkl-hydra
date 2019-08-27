@@ -60,6 +60,65 @@ static struct radeon_device *radeon_get_rdev(struct ttm_bo_device *bdev)
 	return rdev;
 }
 
+
+/*
+ * Global memory.
+ */
+static int radeon_ttm_mem_global_init(struct drm_global_reference *ref)
+{
+	return ttm_mem_global_init(ref->object);
+}
+
+static void radeon_ttm_mem_global_release(struct drm_global_reference *ref)
+{
+	ttm_mem_global_release(ref->object);
+}
+
+static int radeon_ttm_global_init(struct radeon_device *rdev)
+{
+	struct drm_global_reference *global_ref;
+	int r;
+
+	rdev->mman.mem_global_referenced = false;
+	global_ref = &rdev->mman.mem_global_ref;
+	global_ref->global_type = DRM_GLOBAL_TTM_MEM;
+	global_ref->size = sizeof(struct ttm_mem_global);
+	global_ref->init = &radeon_ttm_mem_global_init;
+	global_ref->release = &radeon_ttm_mem_global_release;
+	r = drm_global_item_ref(global_ref);
+	if (r != 0) {
+		DRM_ERROR("Failed setting up TTM memory accounting "
+			  "subsystem.\n");
+		return r;
+	}
+
+	rdev->mman.bo_global_ref.mem_glob =
+		rdev->mman.mem_global_ref.object;
+	global_ref = &rdev->mman.bo_global_ref.ref;
+	global_ref->global_type = DRM_GLOBAL_TTM_BO;
+	global_ref->size = sizeof(struct ttm_bo_global);
+	global_ref->init = &ttm_bo_global_init;
+	global_ref->release = &ttm_bo_global_release;
+	r = drm_global_item_ref(global_ref);
+	if (r != 0) {
+		DRM_ERROR("Failed setting up TTM BO subsystem.\n");
+		drm_global_item_unref(&rdev->mman.mem_global_ref);
+		return r;
+	}
+
+	rdev->mman.mem_global_referenced = true;
+	return 0;
+}
+
+static void radeon_ttm_global_fini(struct radeon_device *rdev)
+{
+	if (rdev->mman.mem_global_referenced) {
+		drm_global_item_unref(&rdev->mman.bo_global_ref.ref);
+		drm_global_item_unref(&rdev->mman.mem_global_ref);
+		rdev->mman.mem_global_referenced = false;
+	}
+}
+
 static int radeon_invalidate_caches(struct ttm_bo_device *bdev, uint32_t flags)
 {
 	return 0;
@@ -627,17 +686,18 @@ static struct ttm_backend_func radeon_backend_func = {
 	.destroy = &radeon_ttm_backend_destroy,
 };
 
-static struct ttm_tt *radeon_ttm_tt_create(struct ttm_buffer_object *bo,
-					   uint32_t page_flags)
+static struct ttm_tt *radeon_ttm_tt_create(struct ttm_bo_device *bdev,
+				    unsigned long size, uint32_t page_flags,
+				    struct page *dummy_read_page)
 {
 	struct radeon_device *rdev;
 	struct radeon_ttm_tt *gtt;
 
-	rdev = radeon_get_rdev(bo->bdev);
+	rdev = radeon_get_rdev(bdev);
 #if IS_ENABLED(CONFIG_AGP)
 	if (rdev->flags & RADEON_IS_AGP) {
-		return ttm_agp_tt_create(bo, rdev->ddev->agp->bridge,
-					 page_flags);
+		return ttm_agp_tt_create(bdev, rdev->ddev->agp->bridge,
+					 size, page_flags, dummy_read_page);
 	}
 #endif
 
@@ -647,7 +707,7 @@ static struct ttm_tt *radeon_ttm_tt_create(struct ttm_buffer_object *bo,
 	}
 	gtt->ttm.ttm.func = &radeon_backend_func;
 	gtt->rdev = rdev;
-	if (ttm_dma_tt_init(&gtt->ttm, bo, page_flags)) {
+	if (ttm_dma_tt_init(&gtt->ttm, bdev, size, page_flags, dummy_read_page)) {
 		kfree(gtt);
 		return NULL;
 	}
@@ -667,6 +727,9 @@ static int radeon_ttm_tt_populate(struct ttm_tt *ttm,
 	struct radeon_ttm_tt *gtt = radeon_ttm_tt_to_gtt(ttm);
 	struct radeon_device *rdev;
 	bool slave = !!(ttm->page_flags & TTM_PAGE_FLAG_SG);
+
+	if (ttm->state != tt_unpopulated)
+		return 0;
 
 	if (gtt && gtt->userptr) {
 		ttm->sg = kzalloc(sizeof(struct sg_table), GFP_KERNEL);
@@ -693,7 +756,7 @@ static int radeon_ttm_tt_populate(struct ttm_tt *ttm,
 #endif
 
 #ifdef CONFIG_SWIOTLB
-	if (rdev->need_swiotlb && swiotlb_nr_tbl()) {
+	if (swiotlb_nr_tbl()) {
 		return ttm_dma_populate(&gtt->ttm, rdev->dev, ctx);
 	}
 #endif
@@ -725,7 +788,7 @@ static void radeon_ttm_tt_unpopulate(struct ttm_tt *ttm)
 #endif
 
 #ifdef CONFIG_SWIOTLB
-	if (rdev->need_swiotlb && swiotlb_nr_tbl()) {
+	if (swiotlb_nr_tbl()) {
 		ttm_dma_unpopulate(&gtt->ttm, rdev->dev);
 		return;
 	}
@@ -788,8 +851,13 @@ int radeon_ttm_init(struct radeon_device *rdev)
 {
 	int r;
 
+	r = radeon_ttm_global_init(rdev);
+	if (r) {
+		return r;
+	}
 	/* No others user of address space so set it to 0 */
 	r = ttm_bo_device_init(&rdev->mman.bdev,
+			       rdev->mman.bo_global_ref.ref.object,
 			       &radeon_bo_driver,
 			       rdev->ddev->anon_inode->i_mapping,
 			       DRM_FILE_PAGE_OFFSET,
@@ -861,6 +929,7 @@ void radeon_ttm_fini(struct radeon_device *rdev)
 	ttm_bo_clean_mm(&rdev->mman.bdev, TTM_PL_TT);
 	ttm_bo_device_release(&rdev->mman.bdev);
 	radeon_gart_fini(rdev);
+	radeon_ttm_global_fini(rdev);
 	rdev->mman.initialized = false;
 	DRM_INFO("radeon: ttm finalized\n");
 }
@@ -882,11 +951,11 @@ void radeon_ttm_set_active_vram_size(struct radeon_device *rdev, u64 size)
 static struct vm_operations_struct radeon_ttm_vm_ops;
 static const struct vm_operations_struct *ttm_vm_ops = NULL;
 
-static vm_fault_t radeon_ttm_fault(struct vm_fault *vmf)
+static int radeon_ttm_fault(struct vm_fault *vmf)
 {
 	struct ttm_buffer_object *bo;
 	struct radeon_device *rdev;
-	vm_fault_t ret;
+	int r;
 
 	bo = (struct ttm_buffer_object *)vmf->vma->vm_private_data;
 	if (bo == NULL) {
@@ -894,9 +963,9 @@ static vm_fault_t radeon_ttm_fault(struct vm_fault *vmf)
 	}
 	rdev = radeon_get_rdev(bo->bdev);
 	down_read(&rdev->pm.mclk_lock);
-	ret = ttm_vm_ops->fault(vmf);
+	r = ttm_vm_ops->fault(vmf);
 	up_read(&rdev->pm.mclk_lock);
-	return ret;
+	return r;
 }
 
 int radeon_mmap(struct file *filp, struct vm_area_struct *vma)
@@ -1086,7 +1155,7 @@ static int radeon_ttm_debugfs_init(struct radeon_device *rdev)
 	count = ARRAY_SIZE(radeon_ttm_debugfs_list);
 
 #ifdef CONFIG_SWIOTLB
-	if (!(rdev->need_swiotlb && swiotlb_nr_tbl()))
+	if (!swiotlb_nr_tbl())
 		--count;
 #endif
 

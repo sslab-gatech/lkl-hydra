@@ -1,5 +1,35 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-/* Copyright (C) 2015-2018 Netronome Systems, Inc. */
+/*
+ * Copyright (C) 2015-2017 Netronome Systems, Inc.
+ *
+ * This software is dual licensed under the GNU General License Version 2,
+ * June 1991 as shown in the file COPYING in the top-level directory of this
+ * source tree or the BSD 2-Clause License provided below.  You have the
+ * option to license this software under the complete terms of either license.
+ *
+ * The BSD 2-Clause License:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      1. Redistributions of source code must retain the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer.
+ *
+ *      2. Redistributions in binary form must reproduce the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer in the documentation and/or other materials
+ *         provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 #include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/rtnetlink.h>
@@ -8,7 +38,7 @@
 
 static struct dentry *nfp_dir;
 
-static int nfp_rx_q_show(struct seq_file *file, void *data)
+static int nfp_net_debugfs_rx_q_read(struct seq_file *file, void *data)
 {
 	struct nfp_net_r_vector *r_vec = file->private;
 	struct nfp_net_rx_ring *rx_ring;
@@ -65,12 +95,31 @@ out:
 	rtnl_unlock();
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(nfp_rx_q);
 
-static int nfp_tx_q_show(struct seq_file *file, void *data);
-DEFINE_SHOW_ATTRIBUTE(nfp_tx_q);
+static int nfp_net_debugfs_rx_q_open(struct inode *inode, struct file *f)
+{
+	return single_open(f, nfp_net_debugfs_rx_q_read, inode->i_private);
+}
 
-static int nfp_tx_q_show(struct seq_file *file, void *data)
+static const struct file_operations nfp_rx_q_fops = {
+	.owner = THIS_MODULE,
+	.open = nfp_net_debugfs_rx_q_open,
+	.release = single_release,
+	.read = seq_read,
+	.llseek = seq_lseek
+};
+
+static int nfp_net_debugfs_tx_q_open(struct inode *inode, struct file *f);
+
+static const struct file_operations nfp_tx_q_fops = {
+	.owner = THIS_MODULE,
+	.open = nfp_net_debugfs_tx_q_open,
+	.release = single_release,
+	.read = seq_read,
+	.llseek = seq_lseek
+};
+
+static int nfp_net_debugfs_tx_q_read(struct seq_file *file, void *data)
 {
 	struct nfp_net_r_vector *r_vec = file->private;
 	struct nfp_net_tx_ring *tx_ring;
@@ -139,13 +188,20 @@ out:
 	return 0;
 }
 
-static int nfp_xdp_q_show(struct seq_file *file, void *data)
+static int nfp_net_debugfs_tx_q_open(struct inode *inode, struct file *f)
 {
-	return nfp_tx_q_show(file, data);
+	return single_open(f, nfp_net_debugfs_tx_q_read, inode->i_private);
 }
-DEFINE_SHOW_ATTRIBUTE(nfp_xdp_q);
 
-void nfp_net_debugfs_vnic_add(struct nfp_net *nn, struct dentry *ddir)
+static const struct file_operations nfp_xdp_q_fops = {
+	.owner = THIS_MODULE,
+	.open = nfp_net_debugfs_tx_q_open,
+	.release = single_release,
+	.read = seq_read,
+	.llseek = seq_lseek
+};
+
+void nfp_net_debugfs_vnic_add(struct nfp_net *nn, struct dentry *ddir, int id)
 {
 	struct dentry *queues, *tx, *rx, *xdp;
 	char name[20];
@@ -155,7 +211,7 @@ void nfp_net_debugfs_vnic_add(struct nfp_net *nn, struct dentry *ddir)
 		return;
 
 	if (nfp_net_is_data_vnic(nn))
-		sprintf(name, "vnic%d", nn->id);
+		sprintf(name, "vnic%d", id);
 	else
 		strcpy(name, "ctrl-vnic");
 	nn->debugfs_dir = debugfs_create_dir(name, ddir);
@@ -175,15 +231,15 @@ void nfp_net_debugfs_vnic_add(struct nfp_net *nn, struct dentry *ddir)
 
 	for (i = 0; i < min(nn->max_rx_rings, nn->max_r_vecs); i++) {
 		sprintf(name, "%d", i);
-		debugfs_create_file(name, 0400, rx,
+		debugfs_create_file(name, S_IRUSR, rx,
 				    &nn->r_vecs[i], &nfp_rx_q_fops);
-		debugfs_create_file(name, 0400, xdp,
+		debugfs_create_file(name, S_IRUSR, xdp,
 				    &nn->r_vecs[i], &nfp_xdp_q_fops);
 	}
 
 	for (i = 0; i < min(nn->max_tx_rings, nn->max_r_vecs); i++) {
 		sprintf(name, "%d", i);
-		debugfs_create_file(name, 0400, tx,
+		debugfs_create_file(name, S_IRUSR, tx,
 				    &nn->r_vecs[i], &nfp_tx_q_fops);
 	}
 }

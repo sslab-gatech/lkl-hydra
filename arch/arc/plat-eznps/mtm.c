@@ -15,8 +15,6 @@
  */
 
 #include <linux/smp.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
 #include <linux/io.h>
 #include <linux/log2.h>
 #include <asm/arcregs.h>
@@ -159,10 +157,10 @@ void mtm_enable_core(unsigned int cpu)
 /* Verify and set the value of the mtm hs counter */
 static int __init set_mtm_hs_ctr(char *ctr_str)
 {
-	int hs_ctr;
+	long hs_ctr;
 	int ret;
 
-	ret = kstrtoint(ctr_str, 0, &hs_ctr);
+	ret = kstrtol(ctr_str, 0, &hs_ctr);
 
 	if (ret || hs_ctr > MT_HS_CNT_MAX || hs_ctr < MT_HS_CNT_MIN) {
 		pr_err("** Invalid @nps_mtm_hs_ctr [%d] needs to be [%d:%d] (incl)\n",

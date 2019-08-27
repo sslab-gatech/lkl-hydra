@@ -269,7 +269,7 @@ static const struct snd_pcm_ops dw_pcm_ops = {
 	.pointer = dw_pcm_pointer,
 };
 
-static const struct snd_soc_component_driver dw_pcm_component = {
+static const struct snd_soc_platform_driver dw_pcm_platform = {
 	.pcm_new = dw_pcm_new,
 	.pcm_free = dw_pcm_free,
 	.ops = &dw_pcm_ops,
@@ -277,6 +277,5 @@ static const struct snd_soc_component_driver dw_pcm_component = {
 
 int dw_pcm_register(struct platform_device *pdev)
 {
-	return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_component,
-					       NULL, 0);
+	return devm_snd_soc_register_platform(&pdev->dev, &dw_pcm_platform);
 }

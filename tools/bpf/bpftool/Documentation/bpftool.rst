@@ -16,23 +16,19 @@ SYNOPSIS
 
 	**bpftool** **version**
 
-	*OBJECT* := { **map** | **program** | **cgroup** | **perf** | **net** }
+	*OBJECT* := { **map** | **program** | **cgroup** }
 
 	*OPTIONS* := { { **-V** | **--version** } | { **-h** | **--help** }
 	| { **-j** | **--json** } [{ **-p** | **--pretty** }] }
 
 	*MAP-COMMANDS* :=
-	{ **show** | **list** | **create** | **dump** | **update** | **lookup** | **getnext**
-	| **delete** | **pin** | **event_pipe** | **help** }
+	{ **show** | **list** | **dump** | **update** | **lookup** | **getnext** | **delete**
+	| **pin** | **help** }
 
 	*PROG-COMMANDS* := { **show** | **list** | **dump jited** | **dump xlated** | **pin**
-	| **load** | **attach** | **detach** | **help** }
+	| **load** | **help** }
 
 	*CGROUP-COMMANDS* := { **show** | **list** | **attach** | **detach** | **help** }
-
-	*PERF-COMMANDS* := { **show** | **list** | **help** }
-
-	*NET-COMMANDS* := { **show** | **list** | **help** }
 
 DESCRIPTION
 ===========
@@ -57,20 +53,6 @@ OPTIONS
 	-p, --pretty
 		  Generate human-readable JSON output. Implies **-j**.
 
-	-m, --mapcompat
-		  Allow loading maps with unknown map definitions.
-
-	-n, --nomount
-		  Do not automatically attempt to mount any virtual file system
-		  (such as tracefs or BPF virtual file system) when necessary.
-
-
 SEE ALSO
 ========
-	**bpf**\ (2),
-	**bpf-helpers**\ (7),
-	**bpftool-prog**\ (8),
-	**bpftool-map**\ (8),
-	**bpftool-cgroup**\ (8),
-	**bpftool-net**\ (8),
-	**bpftool-perf**\ (8)
+	**bpftool-map**\ (8), **bpftool-prog**\ (8), **bpftool-cgroup**\ (8)

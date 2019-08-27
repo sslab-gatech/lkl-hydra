@@ -566,7 +566,6 @@ struct mtk_rx_ring {
 #define MTK_GMAC2_SGMII			(BIT(10) | MTK_SGMII)
 #define MTK_DUAL_GMAC_SHARED_SGMII	(BIT(11) | MTK_GMAC1_SGMII | \
 					 MTK_GMAC2_SGMII)
-#define MTK_HWLRO			BIT(12)
 #define MTK_HAS_CAPS(caps, _x)		(((caps) & (_x)) == (_x))
 
 /* struct mtk_eth_data -	This is the structure holding all differences
@@ -636,6 +635,7 @@ struct mtk_eth {
 	struct regmap			*ethsys;
 	struct regmap			*sgmiisys;
 	struct regmap			*pctl;
+	u32				chip_id;
 	bool				hwlro;
 	refcount_t			dma_refcnt;
 	struct mtk_tx_ring		tx_ring;

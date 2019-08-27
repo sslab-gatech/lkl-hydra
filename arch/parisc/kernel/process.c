@@ -112,6 +112,14 @@ void machine_restart(char *cmd)
 
 }
 
+void machine_halt(void)
+{
+	/*
+	** The LED/ChassisCodes are updated by the led_halt()
+	** function, called by the reboot notifier chain.
+	*/
+}
+
 void (*chassis_power_off)(void);
 
 /*
@@ -130,10 +138,6 @@ void machine_power_off(void)
 	pdc_soft_power_button(0);
 	
 	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_SHUTDOWN);
-
-	/* ipmi_poweroff may have been installed. */
-	if (pm_power_off)
-		pm_power_off();
 		
 	/* It seems we have no way to power the system off via
 	 * software. The user has to press the button himself. */
@@ -147,13 +151,8 @@ void machine_power_off(void)
 	for (;;);
 }
 
-void (*pm_power_off)(void);
+void (*pm_power_off)(void) = machine_power_off;
 EXPORT_SYMBOL(pm_power_off);
-
-void machine_halt(void)
-{
-	machine_power_off();
-}
 
 void flush_thread(void)
 {
@@ -302,7 +301,7 @@ get_wchan(struct task_struct *p)
 		ip = info.ip;
 		if (!in_sched_functions(ip))
 			return ip;
-	} while (count++ < MAX_UNWIND_ENTRIES);
+	} while (count++ < 16);
 	return 0;
 }
 

@@ -1293,6 +1293,7 @@ static struct fb_ops ufx_ops = {
  * Assumes no active clients have framebuffer open */
 static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 {
+	int retval = -ENOMEM;
 	int old_len = info->fix.smem_len;
 	int new_len;
 	unsigned char *old_fb = info->screen_base;
@@ -1307,8 +1308,10 @@ static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 		 * Alloc system memory for virtual framebuffer
 		 */
 		new_fb = vmalloc(new_len);
-		if (!new_fb)
-			return -ENOMEM;
+		if (!new_fb) {
+			pr_err("Virtual framebuffer alloc failed");
+			goto error;
+		}
 
 		if (info->screen_base) {
 			memcpy(new_fb, old_fb, old_len);
@@ -1320,7 +1323,11 @@ static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 		info->fix.smem_start = (unsigned long) new_fb;
 		info->flags = smscufx_info_flags;
 	}
-	return 0;
+
+	retval = 0;
+
+error:
+	return retval;
 }
 
 /* sets up I2C Controller for 100 Kbps, std. speed, 7-bit addr, master,
@@ -1613,8 +1620,8 @@ static int ufx_usb_probe(struct usb_interface *interface,
 {
 	struct usb_device *usbdev;
 	struct ufx_data *dev;
-	struct fb_info *info;
-	int retval;
+	struct fb_info *info = NULL;
+	int retval = -ENOMEM;
 	u32 id_rev, fpga_rev;
 
 	/* usb initialization */
@@ -1624,7 +1631,7 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (dev == NULL) {
 		dev_err(&usbdev->dev, "ufx_usb_probe: failed alloc of dev struct\n");
-		return -ENOMEM;
+		goto error;
 	}
 
 	/* we need to wait for both usb and fbdev to spin down on disconnect */
@@ -1645,8 +1652,9 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	dev_dbg(dev->gdev, "fb_defio enable=%d\n", fb_defio);
 
 	if (!ufx_alloc_urb_list(dev, WRITES_IN_FLIGHT, MAX_TRANSFER)) {
+		retval = -ENOMEM;
 		dev_err(dev->gdev, "ufx_alloc_urb_list failed\n");
-		goto e_nomem;
+		goto error;
 	}
 
 	/* We don't register a new USB class. Our client interface is fbdev */
@@ -1654,8 +1662,9 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	/* allocates framebuffer driver structure, not framebuffer memory */
 	info = framebuffer_alloc(0, &usbdev->dev);
 	if (!info) {
+		retval = -ENOMEM;
 		dev_err(dev->gdev, "framebuffer_alloc failed\n");
-		goto e_nomem;
+		goto error;
 	}
 
 	dev->info = info;
@@ -1666,7 +1675,7 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	retval = fb_alloc_cmap(&info->cmap, 256, 0);
 	if (retval < 0) {
 		dev_err(dev->gdev, "fb_alloc_cmap failed %x\n", retval);
-		goto destroy_modedb;
+		goto error;
 	}
 
 	INIT_DELAYED_WORK(&dev->free_framebuffer_work,
@@ -1727,20 +1736,26 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	return 0;
 
 error:
-	fb_dealloc_cmap(&info->cmap);
-destroy_modedb:
-	fb_destroy_modedb(info->monspecs.modedb);
-	vfree(info->screen_base);
-	fb_destroy_modelist(&info->modelist);
-	framebuffer_release(info);
-put_ref:
-	kref_put(&dev->kref, ufx_free); /* ref for framebuffer */
-	kref_put(&dev->kref, ufx_free); /* last ref from kref_init */
-	return retval;
+	if (dev) {
+		if (info) {
+			if (info->cmap.len != 0)
+				fb_dealloc_cmap(&info->cmap);
+			if (info->monspecs.modedb)
+				fb_destroy_modedb(info->monspecs.modedb);
+			vfree(info->screen_base);
 
-e_nomem:
-	retval = -ENOMEM;
-	goto put_ref;
+			fb_destroy_modelist(&info->modelist);
+
+			framebuffer_release(info);
+		}
+
+		kref_put(&dev->kref, ufx_free); /* ref for framebuffer */
+		kref_put(&dev->kref, ufx_free); /* last ref from kref_init */
+
+		/* dev has been deallocated. Do not dereference */
+	}
+
+	return retval;
 }
 
 static void ufx_usb_disconnect(struct usb_interface *interface)

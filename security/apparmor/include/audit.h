@@ -126,20 +126,7 @@ struct apparmor_audit_data {
 					const char *target;
 					kuid_t ouid;
 				} fs;
-				struct {
-					int rlim;
-					unsigned long max;
-				} rlim;
-				struct {
-					int signal;
-					int unmappedsig;
-				};
-				struct {
-					int type, protocol;
-					struct sock *peer_sk;
-					void *addr;
-					int addrlen;
-				} net;
+				int signal;
 			};
 		};
 		struct {
@@ -147,6 +134,10 @@ struct apparmor_audit_data {
 			const char *ns;
 			long pos;
 		} iface;
+		struct {
+			int rlim;
+			unsigned long max;
+		} rlim;
 		struct {
 			const char *src_name;
 			const char *type;
@@ -188,11 +179,5 @@ static inline int complain_error(int error)
 		return 0;
 	return error;
 }
-
-void aa_audit_rule_free(void *vrule);
-int aa_audit_rule_init(u32 field, u32 op, char *rulestr, void **vrule);
-int aa_audit_rule_known(struct audit_krule *rule);
-int aa_audit_rule_match(u32 sid, u32 field, u32 op, void *vrule,
-			struct audit_context *actx);
 
 #endif /* __AA_AUDIT_H */

@@ -47,7 +47,6 @@ int test__task_exit(struct test *test __maybe_unused, int subtest __maybe_unused
 	char sbuf[STRERR_BUFSIZE];
 	struct cpu_map *cpus;
 	struct thread_map *threads;
-	struct perf_mmap *md;
 
 	signal(SIGCHLD, sig_handler);
 
@@ -111,19 +110,13 @@ int test__task_exit(struct test *test __maybe_unused, int subtest __maybe_unused
 	perf_evlist__start_workload(evlist);
 
 retry:
-	md = &evlist->mmap[0];
-	if (perf_mmap__read_init(md) < 0)
-		goto out_init;
-
-	while ((event = perf_mmap__read_event(md)) != NULL) {
+	while ((event = perf_evlist__mmap_read(evlist, 0)) != NULL) {
 		if (event->header.type == PERF_RECORD_EXIT)
 			nr_exit++;
 
-		perf_mmap__consume(md);
+		perf_evlist__mmap_consume(evlist, 0);
 	}
-	perf_mmap__read_done(md);
 
-out_init:
 	if (!exited || !nr_exit) {
 		perf_evlist__poll(evlist, -1);
 		goto retry;

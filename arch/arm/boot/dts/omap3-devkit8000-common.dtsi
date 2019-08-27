@@ -349,16 +349,9 @@
 	vdda_dac-supply = <&vdac>;
 
 	port {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		dpi_dvi_out: endpoint@0 {
-			reg = <0>;
+		dpi_dvi_out: endpoint {
 			remote-endpoint = <&tfp410_in>;
 			data-lines = <24>;
-		};
-
-		endpoint@1 {
-			reg = <1>;
 		};
 	};
 };

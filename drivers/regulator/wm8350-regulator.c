@@ -911,7 +911,6 @@ static unsigned int get_mode(int uA, const struct wm8350_dcdc_efficiency *eff)
 	while (eff[i].uA_load_min != -1) {
 		if (uA >= eff[i].uA_load_min && uA <= eff[i].uA_load_max)
 			return eff[i].mode;
-		i++;
 	}
 	return REGULATOR_MODE_NORMAL;
 }
@@ -1153,7 +1152,7 @@ static irqreturn_t pmic_uv_handler(int irq, void *data)
 {
 	struct regulator_dev *rdev = (struct regulator_dev *)data;
 
-	regulator_lock(rdev);
+	mutex_lock(&rdev->mutex);
 	if (irq == WM8350_IRQ_CS1 || irq == WM8350_IRQ_CS2)
 		regulator_notifier_call_chain(rdev,
 					      REGULATOR_EVENT_REGULATION_OUT,
@@ -1162,7 +1161,7 @@ static irqreturn_t pmic_uv_handler(int irq, void *data)
 		regulator_notifier_call_chain(rdev,
 					      REGULATOR_EVENT_UNDER_VOLTAGE,
 					      NULL);
-	regulator_unlock(rdev);
+	mutex_unlock(&rdev->mutex);
 
 	return IRQ_HANDLED;
 }

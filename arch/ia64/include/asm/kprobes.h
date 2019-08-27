@@ -82,6 +82,8 @@ struct prev_kprobe {
 #define ARCH_PREV_KPROBE_SZ 2
 struct kprobe_ctlblk {
 	unsigned long kprobe_status;
+	struct pt_regs jprobe_saved_regs;
+	unsigned long jprobes_saved_stacked_regs[MAX_PARAM_RSE_SIZE];
 	unsigned long *bsp;
 	unsigned long cfm;
 	atomic_t prev_kprobe_index;

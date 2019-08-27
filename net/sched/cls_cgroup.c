@@ -23,7 +23,10 @@ struct cls_cgroup_head {
 	struct tcf_exts		exts;
 	struct tcf_ematch_tree	ematches;
 	struct tcf_proto	*tp;
-	struct rcu_work		rwork;
+	union {
+		struct work_struct	work;
+		struct rcu_head		rcu;
+	};
 };
 
 static int cls_cgroup_classify(struct sk_buff *skb, const struct tcf_proto *tp,
@@ -67,12 +70,22 @@ static void __cls_cgroup_destroy(struct cls_cgroup_head *head)
 
 static void cls_cgroup_destroy_work(struct work_struct *work)
 {
-	struct cls_cgroup_head *head = container_of(to_rcu_work(work),
+	struct cls_cgroup_head *head = container_of(work,
 						    struct cls_cgroup_head,
-						    rwork);
+						    work);
 	rtnl_lock();
 	__cls_cgroup_destroy(head);
 	rtnl_unlock();
+}
+
+static void cls_cgroup_destroy_rcu(struct rcu_head *root)
+{
+	struct cls_cgroup_head *head = container_of(root,
+						    struct cls_cgroup_head,
+						    rcu);
+
+	INIT_WORK(&head->work, cls_cgroup_destroy_work);
+	tcf_queue_work(&head->work);
 }
 
 static int cls_cgroup_change(struct net *net, struct sk_buff *in_skb,
@@ -121,7 +134,7 @@ static int cls_cgroup_change(struct net *net, struct sk_buff *in_skb,
 	rcu_assign_pointer(tp->root, new);
 	if (head) {
 		tcf_exts_get_net(&head->exts);
-		tcf_queue_work(&head->rwork, cls_cgroup_destroy_work);
+		call_rcu(&head->rcu, cls_cgroup_destroy_rcu);
 	}
 	return 0;
 errout:
@@ -138,7 +151,7 @@ static void cls_cgroup_destroy(struct tcf_proto *tp,
 	/* Head can still be NULL due to cls_cgroup_init(). */
 	if (head) {
 		if (tcf_exts_get_net(&head->exts))
-			tcf_queue_work(&head->rwork, cls_cgroup_destroy_work);
+			call_rcu(&head->rcu, cls_cgroup_destroy_rcu);
 		else
 			__cls_cgroup_destroy(head);
 	}

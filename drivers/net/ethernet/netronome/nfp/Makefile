@@ -30,14 +30,12 @@ nfp-objs := \
 	    nfp_net_sriov.o \
 	    nfp_netvf_main.o \
 	    nfp_port.o \
-	    nfp_shared_buf.o \
 	    nic/main.o
 
 ifeq ($(CONFIG_NFP_APP_FLOWER),y)
 nfp-objs += \
 	    flower/action.o \
 	    flower/cmsg.o \
-	    flower/lag_conf.o \
 	    flower/main.o \
 	    flower/match.o \
 	    flower/metadata.o \
@@ -52,14 +50,6 @@ nfp-objs += \
 	    bpf/offload.o \
 	    bpf/verifier.o \
 	    bpf/jit.o
-endif
-
-ifeq ($(CONFIG_NFP_APP_ABM_NIC),y)
-nfp-objs += \
-	    abm/cls.o \
-	    abm/ctrl.o \
-	    abm/qdisc.o \
-	    abm/main.o
 endif
 
 nfp-$(CONFIG_NFP_DEBUG) += nfp_net_debugfs.o

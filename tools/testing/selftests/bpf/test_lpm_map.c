@@ -22,11 +22,10 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 
 #include <bpf/bpf.h>
-
 #include "bpf_util.h"
-#include "bpf_rlimit.h"
 
 struct tlpm_node {
 	struct tlpm_node *next;
@@ -474,16 +473,6 @@ static void test_lpm_delete(void)
 	assert(bpf_map_lookup_elem(map_fd, key, &value) == -1 &&
 		errno == ENOENT);
 
-	key->prefixlen = 30; // unused prefix so far
-	inet_pton(AF_INET, "192.255.0.0", key->data);
-	assert(bpf_map_delete_elem(map_fd, key) == -1 &&
-		errno == ENOENT);
-
-	key->prefixlen = 16; // same prefix as the root node
-	inet_pton(AF_INET, "192.255.0.0", key->data);
-	assert(bpf_map_delete_elem(map_fd, key) == -1 &&
-		errno == ENOENT);
-
 	/* assert initial lookup */
 	key->prefixlen = 32;
 	inet_pton(AF_INET, "192.168.0.1", key->data);
@@ -747,10 +736,16 @@ static void test_lpm_multi_thread(void)
 
 int main(void)
 {
-	int i;
+	struct rlimit limit  = { RLIM_INFINITY, RLIM_INFINITY };
+	int i, ret;
 
 	/* we want predictable, pseudo random tests */
 	srand(0xf00ba1);
+
+	/* allow unlimited locked memory */
+	ret = setrlimit(RLIMIT_MEMLOCK, &limit);
+	if (ret < 0)
+		perror("Unable to lift memlock rlimit");
 
 	test_lpm_basic();
 	test_lpm_order();
@@ -760,8 +755,11 @@ int main(void)
 		test_lpm_map(i);
 
 	test_lpm_ipaddr();
+
 	test_lpm_delete();
+
 	test_lpm_get_next_key();
+
 	test_lpm_multi_thread();
 
 	printf("test_lpm: OK\n");

@@ -146,7 +146,7 @@
 	};
 
 	chosen {
-		stdout-path = &serial0;
+		linux,stdout-path = &serial0;
 	};
 };
 

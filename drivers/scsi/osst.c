@@ -341,7 +341,7 @@ static void osst_end_async(struct request *req, blk_status_t status)
 		blk_rq_unmap_user(SRpnt->bio);
 	}
 
-	blk_put_request(req);
+	__blk_put_request(req->q, req);
 }
 
 /* osst_request memory management */
@@ -368,7 +368,7 @@ static int osst_execute(struct osst_request *SRpnt, const unsigned char *cmd,
 	int write = (data_direction == DMA_TO_DEVICE);
 
 	req = blk_get_request(SRpnt->stp->device->request_queue,
-			write ? REQ_OP_SCSI_OUT : REQ_OP_SCSI_IN, 0);
+			write ? REQ_OP_SCSI_OUT : REQ_OP_SCSI_IN, GFP_KERNEL);
 	if (IS_ERR(req))
 		return DRIVER_ERROR << 24;
 
@@ -381,7 +381,7 @@ static int osst_execute(struct osst_request *SRpnt, const unsigned char *cmd,
 		struct scatterlist *sg, *sgl = (struct scatterlist *)buffer;
 		int i;
 
-		pages = kcalloc(use_sg, sizeof(struct page *), GFP_KERNEL);
+		pages = kzalloc(use_sg * sizeof(struct page *), GFP_KERNEL);
 		if (!pages)
 			goto free_req;
 
@@ -1488,7 +1488,7 @@ static int osst_read_back_buffer_and_rewrite(struct osst_tape * STp, struct osst
 	int			dbg              = debugging;
 #endif
 
-	if ((buffer = vmalloc(array_size((nframes + 1), OS_DATA_SIZE))) == NULL)
+	if ((buffer = vmalloc((nframes + 1) * OS_DATA_SIZE)) == NULL)
 		return (-EIO);
 
 	printk(KERN_INFO "%s:I: Reading back %d frames from drive buffer%s\n",
@@ -5856,9 +5856,7 @@ static int osst_probe(struct device *dev)
 	/* if this is the first attach, build the infrastructure */
 	write_lock(&os_scsi_tapes_lock);
 	if (os_scsi_tapes == NULL) {
-		os_scsi_tapes = kmalloc_array(osst_max_dev,
-                                              sizeof(struct osst_tape *),
-                                              GFP_ATOMIC);
+		os_scsi_tapes = kmalloc(osst_max_dev * sizeof(struct osst_tape *), GFP_ATOMIC);
 		if (os_scsi_tapes == NULL) {
 			write_unlock(&os_scsi_tapes_lock);
 			printk(KERN_ERR "osst :E: Unable to allocate array for OnStream SCSI tapes.\n");

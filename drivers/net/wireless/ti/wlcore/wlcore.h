@@ -199,10 +199,8 @@ struct wl1271 {
 	struct wl1271_if_operations *if_ops;
 
 	int irq;
-	int wakeirq;
 
 	int irq_flags;
-	int wakeirq_flags;
 
 	spinlock_t wl_lock;
 
@@ -350,6 +348,7 @@ struct wl1271 {
 	enum nl80211_band band;
 
 	struct completion *elp_compl;
+	struct delayed_work elp_work;
 
 	/* in dBm */
 	int power_level;

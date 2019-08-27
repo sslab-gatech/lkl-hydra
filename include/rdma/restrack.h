@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
 /*
  * Copyright (c) 2017-2018 Mellanox Technologies. All rights reserved.
  */
@@ -11,8 +11,6 @@
 #include <linux/sched.h>
 #include <linux/kref.h>
 #include <linux/completion.h>
-#include <linux/sched/task.h>
-#include <uapi/rdma/rdma_netlink.h>
 
 /**
  * enum rdma_restrack_type - HW objects to track
@@ -31,26 +29,12 @@ enum rdma_restrack_type {
 	 */
 	RDMA_RESTRACK_QP,
 	/**
-	 * @RDMA_RESTRACK_CM_ID: Connection Manager ID (CM_ID)
-	 */
-	RDMA_RESTRACK_CM_ID,
-	/**
-	 * @RDMA_RESTRACK_MR: Memory Region (MR)
-	 */
-	RDMA_RESTRACK_MR,
-	/**
-	 * @RDMA_RESTRACK_CTX: Verbs contexts (CTX)
-	 */
-	RDMA_RESTRACK_CTX,
-	/**
 	 * @RDMA_RESTRACK_MAX: Last entry, used for array dclarations
 	 */
 	RDMA_RESTRACK_MAX
 };
 
 #define RDMA_RESTRACK_HASH_BITS	8
-struct rdma_restrack_entry;
-
 /**
  * struct rdma_restrack_root - main resource tracking management
  * entity, per-device
@@ -64,13 +48,6 @@ struct rdma_restrack_root {
 	 * @hash: global database for all resources per-device
 	 */
 	DECLARE_HASHTABLE(hash, RDMA_RESTRACK_HASH_BITS);
-	/**
-	 * @fill_res_entry: driver-specific fill function
-	 *
-	 * Allows rdma drivers to add their own restrack attributes.
-	 */
-	int (*fill_res_entry)(struct sk_buff *msg,
-			      struct rdma_restrack_entry *entry);
 };
 
 /**
@@ -116,10 +93,6 @@ struct rdma_restrack_entry {
 	 * @type: various objects in restrack database
 	 */
 	enum rdma_restrack_type	type;
-	/**
-	 * @user: user resource
-	 */
-	bool			user;
 };
 
 /**
@@ -144,8 +117,11 @@ int rdma_restrack_count(struct rdma_restrack_root *res,
 			enum rdma_restrack_type type,
 			struct pid_namespace *ns);
 
-void rdma_restrack_kadd(struct rdma_restrack_entry *res);
-void rdma_restrack_uadd(struct rdma_restrack_entry *res);
+/**
+ * rdma_restrack_add() - add object to the reource tracking database
+ * @res:  resource entry
+ */
+void rdma_restrack_add(struct rdma_restrack_entry *res);
 
 /**
  * rdma_restrack_del() - delete object from the reource tracking database
@@ -160,7 +136,7 @@ void rdma_restrack_del(struct rdma_restrack_entry *res);
  */
 static inline bool rdma_is_kernel_res(struct rdma_restrack_entry *res)
 {
-	return !res->user;
+	return !res->task;
 }
 
 /**
@@ -170,27 +146,8 @@ static inline bool rdma_is_kernel_res(struct rdma_restrack_entry *res)
 int __must_check rdma_restrack_get(struct rdma_restrack_entry *res);
 
 /**
- * rdma_restrack_put() - release resource
+ * rdma_restrack_put() - relase resource
  * @res:  resource entry
  */
 int rdma_restrack_put(struct rdma_restrack_entry *res);
-
-/**
- * rdma_restrack_set_task() - set the task for this resource
- * @res:  resource entry
- * @caller: kernel name, the current task will be used if the caller is NULL.
- */
-void rdma_restrack_set_task(struct rdma_restrack_entry *res,
-			    const char *caller);
-
-/*
- * Helper functions for rdma drivers when filling out
- * nldev driver attributes.
- */
-int rdma_nl_put_driver_u32(struct sk_buff *msg, const char *name, u32 value);
-int rdma_nl_put_driver_u32_hex(struct sk_buff *msg, const char *name,
-			       u32 value);
-int rdma_nl_put_driver_u64(struct sk_buff *msg, const char *name, u64 value);
-int rdma_nl_put_driver_u64_hex(struct sk_buff *msg, const char *name,
-			       u64 value);
 #endif /* _RDMA_RESTRACK_H_ */

@@ -14,7 +14,6 @@
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
 #include <asm/page.h>
-#include <asm/ptrace.h>
 
 __HEAD
 ENTRY(startup_continue)
@@ -36,33 +35,20 @@ ENTRY(startup_continue)
 #
 	larl	%r14,init_task
 	stg	%r14,__LC_CURRENT
-	larl	%r15,init_thread_union+THREAD_SIZE-STACK_FRAME_OVERHEAD
+	larl	%r15,init_thread_union
+	aghi	%r15,1<<(PAGE_SHIFT+THREAD_SIZE_ORDER) # init_task_union + THREAD_SIZE
+	stg	%r15,__LC_KERNEL_STACK	# set end of kernel stack
+	aghi	%r15,-160
 #
-# Early setup functions that may not rely on an initialized bss section,
-# like moving the initrd. Returns with an initialized bss section.
-#
-	brasl	%r14,startup_init_nobss
-#
-# Early machine initialization and detection functions.
+# Save ipl parameters, clear bss memory, initialize storage key for kernel pages,
+# and create a kernel NSS if the SAVESYS= parm is defined
 #
 	brasl	%r14,startup_init
-
-# check control registers
-	stctg	%c0,%c15,0(%r15)
-	oi	6(%r15),0x60		# enable sigp emergency & external call
-	oi	4(%r15),0x10		# switch on low address proctection
-	lctlg	%c0,%c15,0(%r15)
-
-	lam	0,15,.Laregs-.LPG1(%r13)	# load acrs needed by uaccess
-	brasl	%r14,start_kernel		# go to C code
-#
-# We returned from start_kernel ?!? PANIK
-#
-	basr	%r13,0
-	lpswe	.Ldw-.(%r13)		# load disabled wait psw
-
+	lpswe	.Lentry-.LPG1(13)	# jump to _stext in primary-space,
+					# virtual and never return ...
 	.align	16
 .LPG1:
+.Lentry:.quad	0x0000000180000000,_stext
 .Lctl:	.quad	0x04040000		# cr0: AFP registers & secondary space
 	.quad	0			# cr1: primary space segment table
 	.quad	.Lduct			# cr2: dispatchable unit control table
@@ -95,5 +81,30 @@ ENTRY(startup_continue)
 	.endr
 .Llinkage_stack:
 	.long	0,0,0x89000000,0,0,0,0x8a000000,0
+
+ENTRY(_ehead)
+
+	.org	0x100000 - 0x11000	# head.o ends at 0x11000
+#
+# startup-code, running in absolute addressing mode
+#
+ENTRY(_stext)
+	basr	%r13,0			# get base
+.LPG3:
+# check control registers
+	stctg	%c0,%c15,0(%r15)
+	oi	6(%r15),0x60		# enable sigp emergency & external call
+	oi	4(%r15),0x10		# switch on low address proctection
+	lctlg	%c0,%c15,0(%r15)
+
+	lam	0,15,.Laregs-.LPG3(%r13)	# load acrs needed by uaccess
+	brasl	%r14,start_kernel	# go to C code
+#
+# We returned from start_kernel ?!? PANIK
+#
+	basr	%r13,0
+	lpswe	.Ldw-.(%r13)		# load disabled wait psw
+
+	.align	8
 .Ldw:	.quad	0x0002000180000000,0x0000000000000000
 .Laregs:.long	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0

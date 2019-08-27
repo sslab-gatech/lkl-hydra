@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2003,2005 Silicon Graphics, Inc.
  * Copyright (c) 2013 Red Hat, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -69,8 +81,7 @@ xfs_dir3_leaf_check(
 	if (!fa)
 		return;
 	xfs_corruption_error(__func__, XFS_ERRLEVEL_LOW, dp->i_mount,
-			bp->b_addr, BBTOB(bp->b_length), __FILE__, __LINE__,
-			fa);
+			bp->b_addr, __FILE__, __LINE__, fa);
 	ASSERT(0);
 }
 #else
@@ -590,8 +601,8 @@ xfs_dir3_leaf_find_entry(
 				(index - lowstale - 1) *
 					sizeof(xfs_dir2_leaf_entry_t));
 		}
-		*lfloglow = min(lowstale, *lfloglow);
-		*lfloghigh = max(index - 1, *lfloghigh);
+		*lfloglow = MIN(lowstale, *lfloglow);
+		*lfloghigh = MAX(index - 1, *lfloghigh);
 		leafhdr->stale--;
 		return &ents[index - 1];
 	}
@@ -610,8 +621,8 @@ xfs_dir3_leaf_find_entry(
 		memmove(&ents[index + 1], &ents[index],
 			(highstale - index) * sizeof(xfs_dir2_leaf_entry_t));
 	}
-	*lfloglow = min(index, *lfloglow);
-	*lfloghigh = max(highstale, *lfloghigh);
+	*lfloglow = MIN(index, *lfloglow);
+	*lfloghigh = MAX(highstale, *lfloghigh);
 	leafhdr->stale--;
 	return &ents[index];
 }
@@ -861,17 +872,14 @@ xfs_dir2_leaf_addname(
 	 */
 	dup = (xfs_dir2_data_unused_t *)
 	      ((char *)hdr + be16_to_cpu(bf[0].offset));
+	ASSERT(be16_to_cpu(dup->length) >= length);
 	needscan = needlog = 0;
 	/*
 	 * Mark the initial part of our freespace in use for the new entry.
 	 */
-	error = xfs_dir2_data_use_free(args, dbp, dup,
-			(xfs_dir2_data_aoff_t)((char *)dup - (char *)hdr),
-			length, &needlog, &needscan);
-	if (error) {
-		xfs_trans_brelse(tp, lbp);
-		return error;
-	}
+	xfs_dir2_data_use_free(args, dbp, dup,
+		(xfs_dir2_data_aoff_t)((char *)dup - (char *)hdr), length,
+		&needlog, &needscan);
 	/*
 	 * Initialize our new entry (at last).
 	 */
@@ -1407,8 +1415,7 @@ xfs_dir2_leaf_removename(
 	oldbest = be16_to_cpu(bf[0].length);
 	ltp = xfs_dir2_leaf_tail_p(args->geo, leaf);
 	bestsp = xfs_dir2_leaf_bests_p(ltp);
-	if (be16_to_cpu(bestsp[db]) != oldbest)
-		return -EFSCORRUPTED;
+	ASSERT(be16_to_cpu(bestsp[db]) == oldbest);
 	/*
 	 * Mark the former data entry unused.
 	 */

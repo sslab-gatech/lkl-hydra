@@ -653,12 +653,6 @@ static int max732x_probe(struct i2c_client *client,
 		chip->client_group_a = client;
 		if (nr_port > 8) {
 			c = i2c_new_dummy(client->adapter, addr_b);
-			if (!c) {
-				dev_err(&client->dev,
-					"Failed to allocate I2C device\n");
-				ret = -ENODEV;
-				goto out_failed;
-			}
 			chip->client_group_b = chip->client_dummy = c;
 		}
 		break;
@@ -666,12 +660,6 @@ static int max732x_probe(struct i2c_client *client,
 		chip->client_group_b = client;
 		if (nr_port > 8) {
 			c = i2c_new_dummy(client->adapter, addr_a);
-			if (!c) {
-				dev_err(&client->dev,
-					"Failed to allocate I2C device\n");
-				ret = -ENODEV;
-				goto out_failed;
-			}
 			chip->client_group_a = chip->client_dummy = c;
 		}
 		break;

@@ -5,7 +5,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
-#include <bpf/bpf.h>
+#include "libbpf.h"
 #include "bpf_load.h"
 #include <sys/resource.h>
 

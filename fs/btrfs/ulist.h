@@ -1,11 +1,12 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2011 STRATO AG
  * written by Arne Jansen <sensille@gmx.net>
+ * Distributed under the GNU GPL license version 2.
+ *
  */
 
-#ifndef BTRFS_ULIST_H
-#define BTRFS_ULIST_H
+#ifndef __ULIST__
+#define __ULIST__
 
 #include <linux/list.h>
 #include <linux/rbtree.h>

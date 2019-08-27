@@ -192,6 +192,12 @@ void machine_halt(void)
 	machine_hang();
 }
 
+
+#ifdef CONFIG_TAU
+extern u32 cpu_temp(unsigned long cpu);
+extern u32 cpu_temp_both(unsigned long cpu);
+#endif /* CONFIG_TAU */
+
 #ifdef CONFIG_SMP
 DEFINE_PER_CPU(unsigned int, cpu_pvr);
 #endif
@@ -431,8 +437,6 @@ static void __init cpu_init_thread_core_maps(int tpc)
 }
 
 
-u32 *cpu_to_phys_id = NULL;
-
 /**
  * setup_cpu_maps - initialize the following cpu maps:
  *                  cpu_possible_mask
@@ -459,9 +463,6 @@ void __init smp_setup_cpu_maps(void)
 
 	DBG("smp_setup_cpu_maps()\n");
 
-	cpu_to_phys_id = __va(memblock_phys_alloc(nr_cpu_ids * sizeof(u32), __alignof__(u32)));
-	memset(cpu_to_phys_id, 0, nr_cpu_ids * sizeof(u32));
-
 	for_each_node_by_type(dn, "cpu") {
 		const __be32 *intserv;
 		__be32 cpu_be;
@@ -479,7 +480,6 @@ void __init smp_setup_cpu_maps(void)
 			intserv = of_get_property(dn, "reg", &len);
 			if (!intserv) {
 				cpu_be = cpu_to_be32(cpu);
-				/* XXX: what is this? uninitialized?? */
 				intserv = &cpu_be;	/* assume logical == phys */
 				len = 4;
 			}
@@ -499,8 +499,8 @@ void __init smp_setup_cpu_maps(void)
 						"enable-method", "spin-table");
 
 			set_cpu_present(cpu, avail);
+			set_hard_smp_processor_id(cpu, be32_to_cpu(intserv[j]));
 			set_cpu_possible(cpu, true);
-			cpu_to_phys_id[cpu] = be32_to_cpu(intserv[j]);
 			cpu++;
 		}
 
@@ -687,7 +687,7 @@ int check_legacy_ioport(unsigned long base_port)
 		return ret;
 	parent = of_get_parent(np);
 	if (parent) {
-		if (of_node_is_type(parent, "isa"))
+		if (strcmp(parent->type, "isa") == 0)
 			ret = 0;
 		of_node_put(parent);
 	}
@@ -700,18 +700,11 @@ static int ppc_panic_event(struct notifier_block *this,
                              unsigned long event, void *ptr)
 {
 	/*
-	 * panic does a local_irq_disable, but we really
-	 * want interrupts to be hard disabled.
-	 */
-	hard_irq_disable();
-
-	/*
 	 * If firmware-assisted dump has been registered then trigger
 	 * firmware-assisted dump and let firmware handle everything else.
 	 */
 	crash_fadump(NULL, ptr);
-	if (ppc_md.panic)
-		ppc_md.panic(ptr);  /* May not return */
+	ppc_md.panic(ptr);  /* May not return */
 	return NOTIFY_DONE;
 }
 
@@ -722,8 +715,7 @@ static struct notifier_block ppc_panic_block = {
 
 void __init setup_panic(void)
 {
-	/* PPC64 always does a hard irq disable in its panic handler */
-	if (!IS_ENABLED(CONFIG_PPC64) && !ppc_md.panic)
+	if (!ppc_md.panic)
 		return;
 	atomic_notifier_chain_register(&panic_notifier_list, &ppc_panic_block);
 }
@@ -800,7 +792,7 @@ static __init void print_system_info(void)
 #ifdef CONFIG_PPC_BOOK3S_64
 	pr_info("ppc64_pft_size    = 0x%llx\n", ppc64_pft_size);
 #endif
-#ifdef CONFIG_PPC_BOOK3S_32
+#ifdef CONFIG_PPC_STD_MMU_32
 	pr_info("Hash_size         = 0x%lx\n", Hash_size);
 #endif
 	pr_info("phys_mem_size     = 0x%llx\n",
@@ -830,7 +822,7 @@ static __init void print_system_info(void)
 	if (htab_hash_mask)
 		pr_info("htab_hash_mask    = 0x%lx\n", htab_hash_mask);
 #endif
-#ifdef CONFIG_PPC_BOOK3S_32
+#ifdef CONFIG_PPC_STD_MMU_32
 	if (Hash)
 		pr_info("Hash              = 0x%p\n", Hash);
 	if (Hash_mask)
@@ -842,23 +834,6 @@ static __init void print_system_info(void)
 		       (unsigned long long)PHYSICAL_START);
 	pr_info("-----------------------------------------------------\n");
 }
-
-#ifdef CONFIG_SMP
-static void smp_setup_pacas(void)
-{
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		if (cpu == smp_processor_id())
-			continue;
-		allocate_paca(cpu);
-		set_hard_smp_processor_id(cpu, cpu_to_phys_id[cpu]);
-	}
-
-	memblock_free(__pa(cpu_to_phys_id), nr_cpu_ids * sizeof(u32));
-	cpu_to_phys_id = NULL;
-}
-#endif
 
 /*
  * Called into from start_kernel this initializes memblock, which is used
@@ -913,8 +888,8 @@ void __init setup_arch(char **cmdline_p)
 	/* Check the SMT related command line arguments (ppc64). */
 	check_smt_enabled();
 
-	/* Parse memory topology */
-	mem_topology_setup();
+	/* On BookE, setup per-core TLB data structures. */
+	setup_tlb_core_data();
 
 	/*
 	 * Release secondary cpus out of their spinloops at 0x60 now that
@@ -924,11 +899,6 @@ void __init setup_arch(char **cmdline_p)
 	 * so smp_release_cpus() does nothing for them.
 	 */
 #ifdef CONFIG_SMP
-	smp_setup_pacas();
-
-	/* On BookE, setup per-core TLB data structures. */
-	setup_tlb_core_data();
-
 	smp_release_cpus();
 #endif
 
@@ -949,8 +919,6 @@ void __init setup_arch(char **cmdline_p)
 #ifdef CONFIG_PPC64
 	if (!radix_enabled())
 		init_mm.context.slb_addr_limit = DEFAULT_MAP_WINDOW_USER64;
-#elif defined(CONFIG_PPC_8xx)
-	init_mm.context.slb_addr_limit = DEFAULT_MAP_WINDOW;
 #else
 #error	"context.addr_limit not initialized."
 #endif
@@ -965,16 +933,11 @@ void __init setup_arch(char **cmdline_p)
 
 	initmem_init();
 
-	early_memtest(min_low_pfn << PAGE_SHIFT, max_low_pfn << PAGE_SHIFT);
-
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;
 #endif
 	if (ppc_md.setup_arch)
 		ppc_md.setup_arch();
-
-	setup_barrier_nospec();
-	setup_spectre_v2();
 
 	paging_init();
 

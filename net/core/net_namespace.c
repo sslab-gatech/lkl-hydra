@@ -17,7 +17,6 @@
 #include <linux/user_namespace.h>
 #include <linux/net_namespace.h>
 #include <linux/sched/task.h>
-#include <linux/uidgid.h>
 
 #include <net/sock.h>
 #include <net/netlink.h>
@@ -30,13 +29,10 @@
 
 static LIST_HEAD(pernet_list);
 static struct list_head *first_device = &pernet_list;
+DEFINE_MUTEX(net_mutex);
 
 LIST_HEAD(net_namespace_list);
 EXPORT_SYMBOL_GPL(net_namespace_list);
-
-/* Protects net_namespace_list. Nests iside rtnl_lock() */
-DECLARE_RWSEM(net_rwsem);
-EXPORT_SYMBOL_GPL(net_rwsem);
 
 struct net init_net = {
 	.count		= REFCOUNT_INIT(1),
@@ -45,14 +41,6 @@ struct net init_net = {
 EXPORT_SYMBOL(init_net);
 
 static bool init_net_initialized;
-/*
- * pernet_ops_rwsem: protects: pernet_list, net_generic_ids,
- * init_net_initialized and first_device pointer.
- * This is internal net namespace object. Please, don't use it
- * outside.
- */
-DECLARE_RWSEM(pernet_ops_rwsem);
-EXPORT_SYMBOL_GPL(pernet_ops_rwsem);
 
 #define MIN_PERNET_OPS_ID	\
 	((sizeof(struct net_generic) + sizeof(void *) - 1) / sizeof(void *))
@@ -77,10 +65,11 @@ static int net_assign_generic(struct net *net, unsigned int id, void *data)
 {
 	struct net_generic *ng, *old_ng;
 
+	BUG_ON(!mutex_is_locked(&net_mutex));
 	BUG_ON(id < MIN_PERNET_OPS_ID);
 
 	old_ng = rcu_dereference_protected(net->gen,
-					   lockdep_is_held(&pernet_ops_rwsem));
+					   lockdep_is_held(&net_mutex));
 	if (old_ng->s.len > id) {
 		old_ng->ptr[id] = data;
 		return 0;
@@ -297,7 +286,7 @@ struct net *get_net_ns_by_id(struct net *net, int id)
  */
 static __net_init int setup_net(struct net *net, struct user_namespace *user_ns)
 {
-	/* Must be called with pernet_ops_rwsem held */
+	/* Must be called with net_mutex held */
 	const struct pernet_operations *ops, *saved_ops;
 	int error = 0;
 	LIST_HEAD(net_exit_list);
@@ -308,16 +297,12 @@ static __net_init int setup_net(struct net *net, struct user_namespace *user_ns)
 	net->user_ns = user_ns;
 	idr_init(&net->netns_ids);
 	spin_lock_init(&net->nsid_lock);
-	mutex_init(&net->ipv4.ra_mutex);
 
 	list_for_each_entry(ops, &pernet_list, list) {
 		error = ops_init(ops, net);
 		if (error < 0)
 			goto out_undo;
 	}
-	down_write(&net_rwsem);
-	list_add_tail_rcu(&net->list, &net_namespace_list);
-	up_write(&net_rwsem);
 out:
 	return error;
 
@@ -369,7 +354,7 @@ static void dec_net_namespaces(struct ucounts *ucounts)
 	dec_ucount(ucounts, UCOUNT_NET_NAMESPACES);
 }
 
-static struct kmem_cache *net_cachep __ro_after_init;
+static struct kmem_cache *net_cachep;
 static struct workqueue_struct *netns_wq;
 
 static struct net *net_alloc(void)
@@ -423,58 +408,36 @@ struct net *copy_net_ns(unsigned long flags,
 
 	net = net_alloc();
 	if (!net) {
-		rv = -ENOMEM;
-		goto dec_ucounts;
+		dec_net_namespaces(ucounts);
+		return ERR_PTR(-ENOMEM);
 	}
-	refcount_set(&net->passive, 1);
-	net->ucounts = ucounts;
+
 	get_user_ns(user_ns);
 
-	rv = down_read_killable(&pernet_ops_rwsem);
-	if (rv < 0)
-		goto put_userns;
-
-	rv = setup_net(net, user_ns);
-
-	up_read(&pernet_ops_rwsem);
-
+	rv = mutex_lock_killable(&net_mutex);
 	if (rv < 0) {
-put_userns:
+		net_free(net);
+		dec_net_namespaces(ucounts);
+		put_user_ns(user_ns);
+		return ERR_PTR(rv);
+	}
+
+	net->ucounts = ucounts;
+	rv = setup_net(net, user_ns);
+	if (rv == 0) {
+		rtnl_lock();
+		list_add_tail_rcu(&net->list, &net_namespace_list);
+		rtnl_unlock();
+	}
+	mutex_unlock(&net_mutex);
+	if (rv < 0) {
+		dec_net_namespaces(ucounts);
 		put_user_ns(user_ns);
 		net_drop_ns(net);
-dec_ucounts:
-		dec_net_namespaces(ucounts);
 		return ERR_PTR(rv);
 	}
 	return net;
 }
-
-/**
- * net_ns_get_ownership - get sysfs ownership data for @net
- * @net: network namespace in question (can be NULL)
- * @uid: kernel user ID for sysfs objects
- * @gid: kernel group ID for sysfs objects
- *
- * Returns the uid/gid pair of root in the user namespace associated with the
- * given network namespace.
- */
-void net_ns_get_ownership(const struct net *net, kuid_t *uid, kgid_t *gid)
-{
-	if (net) {
-		kuid_t ns_root_uid = make_kuid(net->user_ns, 0);
-		kgid_t ns_root_gid = make_kgid(net->user_ns, 0);
-
-		if (uid_valid(ns_root_uid))
-			*uid = ns_root_uid;
-
-		if (gid_valid(ns_root_gid))
-			*gid = ns_root_gid;
-	} else {
-		*uid = GLOBAL_ROOT_UID;
-		*gid = GLOBAL_ROOT_GID;
-	}
-}
-EXPORT_SYMBOL_GPL(net_ns_get_ownership);
 
 static void unhash_nsid(struct net *net, struct net *last)
 {
@@ -483,7 +446,7 @@ static void unhash_nsid(struct net *net, struct net *last)
 	 * and this work is the only process, that may delete
 	 * a net from net_namespace_list. So, when the below
 	 * is executing, the list may only grow. Thus, we do not
-	 * use for_each_net_rcu() or net_rwsem.
+	 * use for_each_net_rcu() or rtnl_lock().
 	 */
 	for_each_net(tmp) {
 		int id;
@@ -503,23 +466,26 @@ static void unhash_nsid(struct net *net, struct net *last)
 	spin_unlock_bh(&net->nsid_lock);
 }
 
-static LLIST_HEAD(cleanup_list);
+static DEFINE_SPINLOCK(cleanup_list_lock);
+static LIST_HEAD(cleanup_list);  /* Must hold cleanup_list_lock to touch */
 
 static void cleanup_net(struct work_struct *work)
 {
 	const struct pernet_operations *ops;
 	struct net *net, *tmp, *last;
-	struct llist_node *net_kill_list;
+	struct list_head net_kill_list;
 	LIST_HEAD(net_exit_list);
 
 	/* Atomically snapshot the list of namespaces to cleanup */
-	net_kill_list = llist_del_all(&cleanup_list);
+	spin_lock_irq(&cleanup_list_lock);
+	list_replace_init(&cleanup_list, &net_kill_list);
+	spin_unlock_irq(&cleanup_list_lock);
 
-	down_read(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 
 	/* Don't let anyone else find us. */
-	down_write(&net_rwsem);
-	llist_for_each_entry(net, net_kill_list, cleanup_list)
+	rtnl_lock();
+	list_for_each_entry(net, &net_kill_list, cleanup_list)
 		list_del_rcu(&net->list);
 	/* Cache last net. After we unlock rtnl, no one new net
 	 * added to net_namespace_list can assign nsid pointer
@@ -532,9 +498,9 @@ static void cleanup_net(struct work_struct *work)
 	 * useless anyway, as netns_ids are destroyed there.
 	 */
 	last = list_last_entry(&net_namespace_list, struct net, list);
-	up_write(&net_rwsem);
+	rtnl_unlock();
 
-	llist_for_each_entry(net, net_kill_list, cleanup_list) {
+	list_for_each_entry(net, &net_kill_list, cleanup_list) {
 		unhash_nsid(net, last);
 		list_add_tail(&net->exit_list, &net_exit_list);
 	}
@@ -554,7 +520,7 @@ static void cleanup_net(struct work_struct *work)
 	list_for_each_entry_reverse(ops, &pernet_list, list)
 		ops_free_list(ops, &net_exit_list);
 
-	up_read(&pernet_ops_rwsem);
+	mutex_unlock(&net_mutex);
 
 	/* Ensure there are no outstanding rcu callbacks using this
 	 * network namespace.
@@ -581,8 +547,8 @@ static void cleanup_net(struct work_struct *work)
  */
 void net_ns_barrier(void)
 {
-	down_write(&pernet_ops_rwsem);
-	up_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
+	mutex_unlock(&net_mutex);
 }
 EXPORT_SYMBOL(net_ns_barrier);
 
@@ -591,8 +557,13 @@ static DECLARE_WORK(net_cleanup_work, cleanup_net);
 void __put_net(struct net *net)
 {
 	/* Cleanup the network namespace in process context */
-	if (llist_add(&net->cleanup_list, &cleanup_list))
-		queue_work(netns_wq, &net_cleanup_work);
+	unsigned long flags;
+
+	spin_lock_irqsave(&cleanup_list_lock, flags);
+	list_add(&net->cleanup_list, &cleanup_list);
+	spin_unlock_irqrestore(&cleanup_list_lock, flags);
+
+	queue_work(netns_wq, &net_cleanup_work);
 }
 EXPORT_SYMBOL_GPL(__put_net);
 
@@ -669,7 +640,6 @@ static const struct nla_policy rtnl_net_policy[NETNSA_MAX + 1] = {
 	[NETNSA_NSID]		= { .type = NLA_S32 },
 	[NETNSA_PID]		= { .type = NLA_U32 },
 	[NETNSA_FD]		= { .type = NLA_U32 },
-	[NETNSA_TARGET_NSID]	= { .type = NLA_S32 },
 };
 
 static int rtnl_net_newid(struct sk_buff *skb, struct nlmsghdr *nlh,
@@ -736,38 +706,23 @@ static int rtnl_net_get_size(void)
 {
 	return NLMSG_ALIGN(sizeof(struct rtgenmsg))
 	       + nla_total_size(sizeof(s32)) /* NETNSA_NSID */
-	       + nla_total_size(sizeof(s32)) /* NETNSA_CURRENT_NSID */
 	       ;
 }
 
-struct net_fill_args {
-	u32 portid;
-	u32 seq;
-	int flags;
-	int cmd;
-	int nsid;
-	bool add_ref;
-	int ref_nsid;
-};
-
-static int rtnl_net_fill(struct sk_buff *skb, struct net_fill_args *args)
+static int rtnl_net_fill(struct sk_buff *skb, u32 portid, u32 seq, int flags,
+			 int cmd, struct net *net, int nsid)
 {
 	struct nlmsghdr *nlh;
 	struct rtgenmsg *rth;
 
-	nlh = nlmsg_put(skb, args->portid, args->seq, args->cmd, sizeof(*rth),
-			args->flags);
+	nlh = nlmsg_put(skb, portid, seq, cmd, sizeof(*rth), flags);
 	if (!nlh)
 		return -EMSGSIZE;
 
 	rth = nlmsg_data(nlh);
 	rth->rtgen_family = AF_UNSPEC;
 
-	if (nla_put_s32(skb, NETNSA_NSID, args->nsid))
-		goto nla_put_failure;
-
-	if (args->add_ref &&
-	    nla_put_s32(skb, NETNSA_CURRENT_NSID, args->ref_nsid))
+	if (nla_put_s32(skb, NETNSA_NSID, nsid))
 		goto nla_put_failure;
 
 	nlmsg_end(skb, nlh);
@@ -783,15 +738,10 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 {
 	struct net *net = sock_net(skb->sk);
 	struct nlattr *tb[NETNSA_MAX + 1];
-	struct net_fill_args fillargs = {
-		.portid = NETLINK_CB(skb).portid,
-		.seq = nlh->nlmsg_seq,
-		.cmd = RTM_NEWNSID,
-	};
-	struct net *peer, *target = net;
 	struct nlattr *nla;
 	struct sk_buff *msg;
-	int err;
+	struct net *peer;
+	int err, id;
 
 	err = nlmsg_parse(nlh, sizeof(struct rtgenmsg), tb, NETNSA_MAX,
 			  rtnl_net_policy, extack);
@@ -803,11 +753,6 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 	} else if (tb[NETNSA_FD]) {
 		peer = get_net_ns_by_fd(nla_get_u32(tb[NETNSA_FD]));
 		nla = tb[NETNSA_FD];
-	} else if (tb[NETNSA_NSID]) {
-		peer = get_net_ns_by_id(net, nla_get_u32(tb[NETNSA_NSID]));
-		if (!peer)
-			peer = ERR_PTR(-ENOENT);
-		nla = tb[NETNSA_NSID];
 	} else {
 		NL_SET_ERR_MSG(extack, "Peer netns reference is missing");
 		return -EINVAL;
@@ -819,29 +764,15 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 		return PTR_ERR(peer);
 	}
 
-	if (tb[NETNSA_TARGET_NSID]) {
-		int id = nla_get_s32(tb[NETNSA_TARGET_NSID]);
-
-		target = rtnl_get_net_ns_capable(NETLINK_CB(skb).sk, id);
-		if (IS_ERR(target)) {
-			NL_SET_BAD_ATTR(extack, tb[NETNSA_TARGET_NSID]);
-			NL_SET_ERR_MSG(extack,
-				       "Target netns reference is invalid");
-			err = PTR_ERR(target);
-			goto out;
-		}
-		fillargs.add_ref = true;
-		fillargs.ref_nsid = peernet2id(net, peer);
-	}
-
 	msg = nlmsg_new(rtnl_net_get_size(), GFP_KERNEL);
 	if (!msg) {
 		err = -ENOMEM;
 		goto out;
 	}
 
-	fillargs.nsid = peernet2id(target, peer);
-	err = rtnl_net_fill(msg, &fillargs);
+	id = peernet2id(net, peer);
+	err = rtnl_net_fill(msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq, 0,
+			    RTM_NEWNSID, net, id);
 	if (err < 0)
 		goto err_out;
 
@@ -851,17 +782,14 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 err_out:
 	nlmsg_free(msg);
 out:
-	if (fillargs.add_ref)
-		put_net(target);
 	put_net(peer);
 	return err;
 }
 
 struct rtnl_net_dump_cb {
-	struct net *tgt_net;
-	struct net *ref_net;
+	struct net *net;
 	struct sk_buff *skb;
-	struct net_fill_args fillargs;
+	struct netlink_callback *cb;
 	int idx;
 	int s_idx;
 };
@@ -874,10 +802,9 @@ static int rtnl_net_dumpid_one(int id, void *peer, void *data)
 	if (net_cb->idx < net_cb->s_idx)
 		goto cont;
 
-	net_cb->fillargs.nsid = id;
-	if (net_cb->fillargs.add_ref)
-		net_cb->fillargs.ref_nsid = __peernet2id(net_cb->ref_net, peer);
-	ret = rtnl_net_fill(net_cb->skb, &net_cb->fillargs);
+	ret = rtnl_net_fill(net_cb->skb, NETLINK_CB(net_cb->cb->skb).portid,
+			    net_cb->cb->nlh->nlmsg_seq, NLM_F_MULTI,
+			    RTM_NEWNSID, net_cb->net, id);
 	if (ret < 0)
 		return ret;
 
@@ -886,96 +813,27 @@ cont:
 	return 0;
 }
 
-static int rtnl_valid_dump_net_req(const struct nlmsghdr *nlh, struct sock *sk,
-				   struct rtnl_net_dump_cb *net_cb,
-				   struct netlink_callback *cb)
-{
-	struct netlink_ext_ack *extack = cb->extack;
-	struct nlattr *tb[NETNSA_MAX + 1];
-	int err, i;
-
-	err = nlmsg_parse_strict(nlh, sizeof(struct rtgenmsg), tb, NETNSA_MAX,
-				 rtnl_net_policy, extack);
-	if (err < 0)
-		return err;
-
-	for (i = 0; i <= NETNSA_MAX; i++) {
-		if (!tb[i])
-			continue;
-
-		if (i == NETNSA_TARGET_NSID) {
-			struct net *net;
-
-			net = rtnl_get_net_ns_capable(sk, nla_get_s32(tb[i]));
-			if (IS_ERR(net)) {
-				NL_SET_BAD_ATTR(extack, tb[i]);
-				NL_SET_ERR_MSG(extack,
-					       "Invalid target network namespace id");
-				return PTR_ERR(net);
-			}
-			net_cb->fillargs.add_ref = true;
-			net_cb->ref_net = net_cb->tgt_net;
-			net_cb->tgt_net = net;
-		} else {
-			NL_SET_BAD_ATTR(extack, tb[i]);
-			NL_SET_ERR_MSG(extack,
-				       "Unsupported attribute in dump request");
-			return -EINVAL;
-		}
-	}
-
-	return 0;
-}
-
 static int rtnl_net_dumpid(struct sk_buff *skb, struct netlink_callback *cb)
 {
+	struct net *net = sock_net(skb->sk);
 	struct rtnl_net_dump_cb net_cb = {
-		.tgt_net = sock_net(skb->sk),
+		.net = net,
 		.skb = skb,
-		.fillargs = {
-			.portid = NETLINK_CB(cb->skb).portid,
-			.seq = cb->nlh->nlmsg_seq,
-			.flags = NLM_F_MULTI,
-			.cmd = RTM_NEWNSID,
-		},
+		.cb = cb,
 		.idx = 0,
 		.s_idx = cb->args[0],
 	};
-	int err = 0;
 
-	if (cb->strict_check) {
-		err = rtnl_valid_dump_net_req(cb->nlh, skb->sk, &net_cb, cb);
-		if (err < 0)
-			goto end;
-	}
-
-	spin_lock_bh(&net_cb.tgt_net->nsid_lock);
-	if (net_cb.fillargs.add_ref &&
-	    !net_eq(net_cb.ref_net, net_cb.tgt_net) &&
-	    !spin_trylock_bh(&net_cb.ref_net->nsid_lock)) {
-		spin_unlock_bh(&net_cb.tgt_net->nsid_lock);
-		err = -EAGAIN;
-		goto end;
-	}
-	idr_for_each(&net_cb.tgt_net->netns_ids, rtnl_net_dumpid_one, &net_cb);
-	if (net_cb.fillargs.add_ref &&
-	    !net_eq(net_cb.ref_net, net_cb.tgt_net))
-		spin_unlock_bh(&net_cb.ref_net->nsid_lock);
-	spin_unlock_bh(&net_cb.tgt_net->nsid_lock);
+	spin_lock_bh(&net->nsid_lock);
+	idr_for_each(&net->netns_ids, rtnl_net_dumpid_one, &net_cb);
+	spin_unlock_bh(&net->nsid_lock);
 
 	cb->args[0] = net_cb.idx;
-end:
-	if (net_cb.fillargs.add_ref)
-		put_net(net_cb.tgt_net);
-	return err < 0 ? err : skb->len;
+	return skb->len;
 }
 
 static void rtnl_net_notifyid(struct net *net, int cmd, int id)
 {
-	struct net_fill_args fillargs = {
-		.cmd = cmd,
-		.nsid = id,
-	};
 	struct sk_buff *msg;
 	int err = -ENOMEM;
 
@@ -983,7 +841,7 @@ static void rtnl_net_notifyid(struct net *net, int cmd, int id)
 	if (!msg)
 		goto out;
 
-	err = rtnl_net_fill(msg, &fillargs);
+	err = rtnl_net_fill(msg, 0, 0, 0, cmd, net, id);
 	if (err < 0)
 		goto err_out;
 
@@ -1003,7 +861,7 @@ static int __init net_ns_init(void)
 #ifdef CONFIG_NET_NS
 	net_cachep = kmem_cache_create("net_namespace", sizeof(struct net),
 					SMP_CACHE_BYTES,
-					SLAB_PANIC|SLAB_ACCOUNT, NULL);
+					SLAB_PANIC, NULL);
 
 	/* Create workqueue for cleanup */
 	netns_wq = create_singlethread_workqueue("netns");
@@ -1017,15 +875,19 @@ static int __init net_ns_init(void)
 
 	rcu_assign_pointer(init_net.gen, ng);
 
-	down_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 	if (setup_net(&init_net, &init_user_ns))
 		panic("Could not setup the initial network namespace");
 
 	init_net_initialized = true;
-	up_write(&pernet_ops_rwsem);
 
-	if (register_pernet_subsys(&net_ns_ops))
-		panic("Could not register network namespace subsystems");
+	rtnl_lock();
+	list_add_tail_rcu(&init_net.list, &net_namespace_list);
+	rtnl_unlock();
+
+	mutex_unlock(&net_mutex);
+
+	register_pernet_subsys(&net_ns_ops);
 
 	rtnl_register(PF_UNSPEC, RTM_NEWNSID, rtnl_net_newid, NULL,
 		      RTNL_FLAG_DOIT_UNLOCKED);
@@ -1047,9 +909,6 @@ static int __register_pernet_operations(struct list_head *list,
 
 	list_add_tail(&ops->list, list);
 	if (ops->init || (ops->id && ops->size)) {
-		/* We held write locked pernet_ops_rwsem, and parallel
-		 * setup_net() and cleanup_net() are not possible.
-		 */
 		for_each_net(net) {
 			error = ops_init(ops, net);
 			if (error)
@@ -1073,7 +932,6 @@ static void __unregister_pernet_operations(struct pernet_operations *ops)
 	LIST_HEAD(net_exit_list);
 
 	list_del(&ops->list);
-	/* See comment in __register_pernet_operations() */
 	for_each_net(net)
 		list_add_tail(&net->exit_list, &net_exit_list);
 	ops_exit_list(ops, &net_exit_list);
@@ -1115,18 +973,22 @@ static int register_pernet_operations(struct list_head *list,
 	int error;
 
 	if (ops->id) {
-		error = ida_alloc_min(&net_generic_ids, MIN_PERNET_OPS_ID,
-				GFP_KERNEL);
-		if (error < 0)
+again:
+		error = ida_get_new_above(&net_generic_ids, MIN_PERNET_OPS_ID, ops->id);
+		if (error < 0) {
+			if (error == -EAGAIN) {
+				ida_pre_get(&net_generic_ids, GFP_KERNEL);
+				goto again;
+			}
 			return error;
-		*ops->id = error;
+		}
 		max_gen_ptrs = max(max_gen_ptrs, *ops->id + 1);
 	}
 	error = __register_pernet_operations(list, ops);
 	if (error) {
 		rcu_barrier();
 		if (ops->id)
-			ida_free(&net_generic_ids, *ops->id);
+			ida_remove(&net_generic_ids, *ops->id);
 	}
 
 	return error;
@@ -1134,10 +996,11 @@ static int register_pernet_operations(struct list_head *list,
 
 static void unregister_pernet_operations(struct pernet_operations *ops)
 {
+	
 	__unregister_pernet_operations(ops);
 	rcu_barrier();
 	if (ops->id)
-		ida_free(&net_generic_ids, *ops->id);
+		ida_remove(&net_generic_ids, *ops->id);
 }
 
 /**
@@ -1162,9 +1025,9 @@ static void unregister_pernet_operations(struct pernet_operations *ops)
 int register_pernet_subsys(struct pernet_operations *ops)
 {
 	int error;
-	down_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 	error =  register_pernet_operations(first_device, ops);
-	up_write(&pernet_ops_rwsem);
+	mutex_unlock(&net_mutex);
 	return error;
 }
 EXPORT_SYMBOL_GPL(register_pernet_subsys);
@@ -1180,9 +1043,9 @@ EXPORT_SYMBOL_GPL(register_pernet_subsys);
  */
 void unregister_pernet_subsys(struct pernet_operations *ops)
 {
-	down_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 	unregister_pernet_operations(ops);
-	up_write(&pernet_ops_rwsem);
+	mutex_unlock(&net_mutex);
 }
 EXPORT_SYMBOL_GPL(unregister_pernet_subsys);
 
@@ -1208,11 +1071,11 @@ EXPORT_SYMBOL_GPL(unregister_pernet_subsys);
 int register_pernet_device(struct pernet_operations *ops)
 {
 	int error;
-	down_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 	error = register_pernet_operations(&pernet_list, ops);
 	if (!error && (first_device == &pernet_list))
 		first_device = &ops->list;
-	up_write(&pernet_ops_rwsem);
+	mutex_unlock(&net_mutex);
 	return error;
 }
 EXPORT_SYMBOL_GPL(register_pernet_device);
@@ -1228,11 +1091,11 @@ EXPORT_SYMBOL_GPL(register_pernet_device);
  */
 void unregister_pernet_device(struct pernet_operations *ops)
 {
-	down_write(&pernet_ops_rwsem);
+	mutex_lock(&net_mutex);
 	if (&ops->list == first_device)
 		first_device = first_device->next;
 	unregister_pernet_operations(ops);
-	up_write(&pernet_ops_rwsem);
+	mutex_unlock(&net_mutex);
 }
 EXPORT_SYMBOL_GPL(unregister_pernet_device);
 

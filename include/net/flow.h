@@ -38,8 +38,8 @@ struct flowi_common {
 #define FLOWI_FLAG_KNOWN_NH		0x02
 #define FLOWI_FLAG_SKIP_NH_OIF		0x04
 	__u32	flowic_secid;
-	kuid_t  flowic_uid;
 	struct flowi_tunnel flowic_tun_key;
+	kuid_t  flowic_uid;
 };
 
 union flowi_uli {
@@ -125,7 +125,7 @@ static inline void flowi4_update_output(struct flowi4 *fl4, int oif, __u8 tos,
 	fl4->daddr = daddr;
 	fl4->saddr = saddr;
 }
-
+				      
 
 struct flowi6 {
 	struct flowi_common	__fl_common;
@@ -221,5 +221,21 @@ static inline unsigned int flow_key_size(u16 family)
 }
 
 __u32 __get_hash_from_flowi6(const struct flowi6 *fl6, struct flow_keys *keys);
+
+static inline __u32 get_hash_from_flowi6(const struct flowi6 *fl6)
+{
+	struct flow_keys keys;
+
+	return __get_hash_from_flowi6(fl6, &keys);
+}
+
+__u32 __get_hash_from_flowi4(const struct flowi4 *fl4, struct flow_keys *keys);
+
+static inline __u32 get_hash_from_flowi4(const struct flowi4 *fl4)
+{
+	struct flow_keys keys;
+
+	return __get_hash_from_flowi4(fl4, &keys);
+}
 
 #endif

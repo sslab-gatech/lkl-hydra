@@ -2496,16 +2496,15 @@ static void init_6120_cntrnames(struct qib_devdata *dd)
 		dd->cspec->cntrnamelen = sizeof(cntr6120names) - 1;
 	else
 		dd->cspec->cntrnamelen = 1 + s - cntr6120names;
-	dd->cspec->cntrs = kmalloc_array(dd->cspec->ncntrs, sizeof(u64),
-					 GFP_KERNEL);
+	dd->cspec->cntrs = kmalloc(dd->cspec->ncntrs
+		* sizeof(u64), GFP_KERNEL);
 
 	for (i = 0, s = (char *)portcntr6120names; s; i++)
 		s = strchr(s + 1, '\n');
 	dd->cspec->nportcntrs = i - 1;
 	dd->cspec->portcntrnamelen = sizeof(portcntr6120names) - 1;
-	dd->cspec->portcntrs = kmalloc_array(dd->cspec->nportcntrs,
-					     sizeof(u64),
-					     GFP_KERNEL);
+	dd->cspec->portcntrs = kmalloc(dd->cspec->nportcntrs
+		* sizeof(u64), GFP_KERNEL);
 }
 
 static u32 qib_read_6120cntrs(struct qib_devdata *dd, loff_t pos, char **namep,
@@ -3237,6 +3236,7 @@ static int init_6120_variables(struct qib_devdata *dd)
 	/* we always allocate at least 2048 bytes for eager buffers */
 	ret = ib_mtu_enum_to_int(qib_ibmtu);
 	dd->rcvegrbufsize = ret != -1 ? max(ret, 2048) : QIB_DEFAULT_MTU;
+	BUG_ON(!is_power_of_2(dd->rcvegrbufsize));
 	dd->rcvegrbufsize_shift = ilog2(dd->rcvegrbufsize);
 
 	qib_6120_tidtemplate(dd);

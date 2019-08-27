@@ -48,7 +48,9 @@
 #include <linux/nvram.h>
 #include <linux/adb.h>
 #include <linux/cuda.h>
+#include <asm/io.h>
 #include <asm/prom.h>
+#include <asm/pgtable.h>
 #include <asm/btext.h>
 
 #include "macmodes.h"
@@ -713,7 +715,8 @@ static int __init control_of_init(struct device_node *dp)
 		goto error_out;
 	}
 	/* map at most 8MB for the frame buffer */
-	p->frame_buffer = ioremap_wt(p->frame_buffer_phys, 0x800000);
+	p->frame_buffer = __ioremap(p->frame_buffer_phys, 0x800000,
+				    _PAGE_WRITETHRU);
 
 	if (!p->control_regs_phys ||
 	    !request_mem_region(p->control_regs_phys, p->control_regs_size,

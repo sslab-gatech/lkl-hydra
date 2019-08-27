@@ -199,7 +199,6 @@ void free_platform_config(struct hfi1_devdata *dd)
 {
 	/* Release memory allocated for eprom or fallback file read. */
 	kfree(dd->platform_config.data);
-	dd->platform_config.data = NULL;
 }
 
 void get_port_type(struct hfi1_pportdata *ppd)

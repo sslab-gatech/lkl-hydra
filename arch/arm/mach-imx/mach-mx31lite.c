@@ -83,8 +83,15 @@ static const struct imxuart_platform_data uart_pdata __initconst = {
 };
 
 /* SPI */
+static int spi0_internal_chipselect[] = {
+	MXC_SPI_CS(0),
+	MXC_SPI_CS(1),
+	MXC_SPI_CS(2),
+};
+
 static const struct spi_imx_master spi0_pdata __initconst = {
-	.num_chipselect	= 3,
+	.chipselect	= spi0_internal_chipselect,
+	.num_chipselect	= ARRAY_SIZE(spi0_internal_chipselect),
 };
 
 static const struct mxc_nand_platform_data
@@ -126,8 +133,13 @@ static struct platform_device smsc911x_device = {
  * The MC13783 is the only hard-wired SPI device on the module.
  */
 
+static int spi1_internal_chipselect[] = {
+	MXC_SPI_CS(0),
+};
+
 static const struct spi_imx_master spi1_pdata __initconst = {
-	.num_chipselect	= 1,
+	.chipselect	= spi1_internal_chipselect,
+	.num_chipselect	= ARRAY_SIZE(spi1_internal_chipselect),
 };
 
 static struct mc13xxx_platform_data mc13783_pdata __initdata = {

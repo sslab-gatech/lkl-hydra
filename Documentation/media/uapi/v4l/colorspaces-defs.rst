@@ -1,11 +1,4 @@
-.. Permission is granted to copy, distribute and/or modify this
-.. document under the terms of the GNU Free Documentation License,
-.. Version 1.1 or any later version published by the Free Software
-.. Foundation, with no Invariant Sections, no Front-Cover Texts
-.. and no Back-Cover Texts. A copy of the license is included at
-.. Documentation/media/uapi/fdl-appendix.rst.
-..
-.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
+.. -*- coding: utf-8; mode: rst -*-
 
 ****************************
 Defining Colorspaces in V4L2
@@ -58,8 +51,8 @@ whole range, 0-255, dividing the angular value by 1.41. The enum
       - See :ref:`col-rec709`.
     * - ``V4L2_COLORSPACE_SRGB``
       - See :ref:`col-srgb`.
-    * - ``V4L2_COLORSPACE_OPRGB``
-      - See :ref:`col-oprgb`.
+    * - ``V4L2_COLORSPACE_ADOBERGB``
+      - See :ref:`col-adobergb`.
     * - ``V4L2_COLORSPACE_BT2020``
       - See :ref:`col-bt2020`.
     * - ``V4L2_COLORSPACE_DCI_P3``
@@ -97,8 +90,8 @@ whole range, 0-255, dividing the angular value by 1.41. The enum
       - Use the Rec. 709 transfer function.
     * - ``V4L2_XFER_FUNC_SRGB``
       - Use the sRGB transfer function.
-    * - ``V4L2_XFER_FUNC_OPRGB``
-      - Use the opRGB transfer function.
+    * - ``V4L2_XFER_FUNC_ADOBERGB``
+      - Use the AdobeRGB transfer function.
     * - ``V4L2_XFER_FUNC_SMPTE240M``
       - Use the SMPTE 240M transfer function.
     * - ``V4L2_XFER_FUNC_NONE``

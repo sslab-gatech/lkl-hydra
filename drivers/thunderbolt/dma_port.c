@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Thunderbolt DMA configuration based mailbox support
  *
  * Copyright (C) 2017, Intel Corporation
  * Authors: Michael Jamet <michael.jamet@intel.com>
  *          Mika Westerberg <mika.westerberg@linux.intel.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
@@ -167,22 +170,24 @@ static int dma_port_write(struct tb_ctl *ctl, const void *buffer, u64 route,
 
 static int dma_find_port(struct tb_switch *sw)
 {
-	static const int ports[] = { 3, 5, 7 };
-	int i;
+	int port, ret;
+	u32 type;
 
 	/*
-	 * The DMA (NHI) port is either 3, 5 or 7 depending on the
-	 * controller. Try all of them.
+	 * The DMA (NHI) port is either 3 or 5 depending on the
+	 * controller. Try both starting from 5 which is more common.
 	 */
-	for (i = 0; i < ARRAY_SIZE(ports); i++) {
-		u32 type;
-		int ret;
+	port = 5;
+	ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), port, 2, 1,
+			    DMA_PORT_TIMEOUT);
+	if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
+		return port;
 
-		ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), ports[i],
-				    2, 1, DMA_PORT_TIMEOUT);
-		if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
-			return ports[i];
-	}
+	port = 3;
+	ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), port, 2, 1,
+			    DMA_PORT_TIMEOUT);
+	if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
+		return port;
 
 	return -ENODEV;
 }

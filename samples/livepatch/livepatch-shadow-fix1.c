@@ -56,21 +56,6 @@ struct dummy {
 	unsigned long jiffies_expire;
 };
 
-/*
- * The constructor makes more sense together with klp_shadow_get_or_alloc().
- * In this example, it would be safe to assign the pointer also to the shadow
- * variable returned by klp_shadow_alloc().  But we wanted to show the more
- * complicated use of the API.
- */
-static int shadow_leak_ctor(void *obj, void *shadow_data, void *ctor_data)
-{
-	void **shadow_leak = shadow_data;
-	void *leak = ctor_data;
-
-	*shadow_leak = leak;
-	return 0;
-}
-
 struct dummy *livepatch_fix1_dummy_alloc(void)
 {
 	struct dummy *d;
@@ -89,13 +74,7 @@ struct dummy *livepatch_fix1_dummy_alloc(void)
 	 * pointer to handle resource release.
 	 */
 	leak = kzalloc(sizeof(int), GFP_KERNEL);
-	if (!leak) {
-		kfree(d);
-		return NULL;
-	}
-
-	klp_shadow_alloc(d, SV_LEAK, sizeof(leak), GFP_KERNEL,
-			 shadow_leak_ctor, leak);
+	klp_shadow_alloc(d, SV_LEAK, &leak, sizeof(leak), GFP_KERNEL);
 
 	pr_info("%s: dummy @ %p, expires @ %lx\n",
 		__func__, d, d->jiffies_expire);
@@ -103,19 +82,9 @@ struct dummy *livepatch_fix1_dummy_alloc(void)
 	return d;
 }
 
-static void livepatch_fix1_dummy_leak_dtor(void *obj, void *shadow_data)
-{
-	void *d = obj;
-	void **shadow_leak = shadow_data;
-
-	kfree(*shadow_leak);
-	pr_info("%s: dummy @ %p, prevented leak @ %p\n",
-			 __func__, d, *shadow_leak);
-}
-
 void livepatch_fix1_dummy_free(struct dummy *d)
 {
-	void **shadow_leak;
+	void **shadow_leak, *leak;
 
 	/*
 	 * Patch: fetch the saved SV_LEAK shadow variable, detach and
@@ -124,10 +93,15 @@ void livepatch_fix1_dummy_free(struct dummy *d)
 	 * was loaded.)
 	 */
 	shadow_leak = klp_shadow_get(d, SV_LEAK);
-	if (shadow_leak)
-		klp_shadow_free(d, SV_LEAK, livepatch_fix1_dummy_leak_dtor);
-	else
+	if (shadow_leak) {
+		leak = *shadow_leak;
+		klp_shadow_free(d, SV_LEAK);
+		kfree(leak);
+		pr_info("%s: dummy @ %p, prevented leak @ %p\n",
+			 __func__, d, leak);
+	} else {
 		pr_info("%s: dummy @ %p leaked!\n", __func__, d);
+	}
 
 	kfree(d);
 }
@@ -173,7 +147,7 @@ static int livepatch_shadow_fix1_init(void)
 static void livepatch_shadow_fix1_exit(void)
 {
 	/* Cleanup any existing SV_LEAK shadow variables */
-	klp_shadow_free_all(SV_LEAK, livepatch_fix1_dummy_leak_dtor);
+	klp_shadow_free_all(SV_LEAK);
 
 	WARN_ON(klp_unregister_patch(&patch));
 }

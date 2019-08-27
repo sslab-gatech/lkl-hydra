@@ -74,6 +74,12 @@ static inline size_t sizeof_pwm_leds_priv(int num_leds)
 		      (sizeof(struct led_pwm_data) * num_leds);
 }
 
+static void led_pwm_cleanup(struct led_pwm_priv *priv)
+{
+	while (priv->num_leds--)
+		led_classdev_unregister(&priv->leds[priv->num_leds].cdev);
+}
+
 static int led_pwm_add(struct device *dev, struct led_pwm_priv *priv,
 		       struct led_pwm *led, struct device_node *child)
 {
@@ -94,9 +100,8 @@ static int led_pwm_add(struct device *dev, struct led_pwm_priv *priv,
 		led_data->pwm = devm_pwm_get(dev, led->name);
 	if (IS_ERR(led_data->pwm)) {
 		ret = PTR_ERR(led_data->pwm);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "unable to request PWM for %s: %d\n",
-				led->name, ret);
+		dev_err(dev, "unable to request PWM for %s: %d\n",
+			led->name, ret);
 		return ret;
 	}
 
@@ -114,7 +119,7 @@ static int led_pwm_add(struct device *dev, struct led_pwm_priv *priv,
 	if (!led_data->period && (led->pwm_period_ns > 0))
 		led_data->period = led->pwm_period_ns;
 
-	ret = devm_of_led_classdev_register(dev, child, &led_data->cdev);
+	ret = led_classdev_register(dev, &led_data->cdev);
 	if (ret == 0) {
 		priv->num_leds++;
 		led_pwm_set(&led_data->cdev, led_data->cdev.brightness);
@@ -185,10 +190,21 @@ static int led_pwm_probe(struct platform_device *pdev)
 		ret = led_pwm_create_of(&pdev->dev, priv);
 	}
 
-	if (ret)
+	if (ret) {
+		led_pwm_cleanup(priv);
 		return ret;
+	}
 
 	platform_set_drvdata(pdev, priv);
+
+	return 0;
+}
+
+static int led_pwm_remove(struct platform_device *pdev)
+{
+	struct led_pwm_priv *priv = platform_get_drvdata(pdev);
+
+	led_pwm_cleanup(priv);
 
 	return 0;
 }
@@ -201,6 +217,7 @@ MODULE_DEVICE_TABLE(of, of_pwm_leds_match);
 
 static struct platform_driver led_pwm_driver = {
 	.probe		= led_pwm_probe,
+	.remove		= led_pwm_remove,
 	.driver		= {
 		.name	= "leds_pwm",
 		.of_match_table = of_pwm_leds_match,

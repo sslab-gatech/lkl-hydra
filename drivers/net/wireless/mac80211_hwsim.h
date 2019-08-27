@@ -68,12 +68,7 @@ enum hwsim_tx_control_flags {
  *	%HWSIM_ATTR_SIGNAL, %HWSIM_ATTR_COOKIE
  * @HWSIM_CMD_NEW_RADIO: create a new radio with the given parameters,
  *	returns the radio ID (>= 0) or negative on errors, if successful
- *	then multicast the result, uses optional parameter:
- *	%HWSIM_ATTR_REG_STRICT_REG, %HWSIM_ATTR_SUPPORT_P2P_DEVICE,
- *	%HWSIM_ATTR_DESTROY_RADIO_ON_CLOSE, %HWSIM_ATTR_CHANNELS,
- *	%HWSIM_ATTR_NO_VIF, %HWSIM_ATTR_RADIO_NAME, %HWSIM_ATTR_USE_CHANCTX,
- *	%HWSIM_ATTR_REG_HINT_ALPHA2, %HWSIM_ATTR_REG_CUSTOM_REG,
- *	%HWSIM_ATTR_PERM_ADDR
+ *	then multicast the result
  * @HWSIM_CMD_DEL_RADIO: destroy a radio, reply is multicasted
  * @HWSIM_CMD_GET_RADIO: fetch information about existing radios, uses:
  *	%HWSIM_ATTR_RADIO_ID
@@ -131,9 +126,6 @@ enum {
  * @HWSIM_ATTR_FREQ: Frequency at which packet is transmitted or received.
  * @HWSIM_ATTR_TX_INFO_FLAGS: additional flags for corresponding
  *	rates of %HWSIM_ATTR_TX_INFO
- * @HWSIM_ATTR_PERM_ADDR: permanent mac address of new radio
- * @HWSIM_ATTR_IFTYPE_SUPPORT: u32 attribute of supported interface types bits
- * @HWSIM_ATTR_CIPHER_SUPPORT: u32 array of supported cipher types
  * @__HWSIM_ATTR_MAX: enum limit
  */
 
@@ -161,9 +153,6 @@ enum {
 	HWSIM_ATTR_FREQ,
 	HWSIM_ATTR_PAD,
 	HWSIM_ATTR_TX_INFO_FLAGS,
-	HWSIM_ATTR_PERM_ADDR,
-	HWSIM_ATTR_IFTYPE_SUPPORT,
-	HWSIM_ATTR_CIPHER_SUPPORT,
 	__HWSIM_ATTR_MAX,
 };
 #define HWSIM_ATTR_MAX (__HWSIM_ATTR_MAX - 1)

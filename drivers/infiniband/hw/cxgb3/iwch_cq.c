@@ -32,16 +32,38 @@
 #include "iwch_provider.h"
 #include "iwch.h"
 
-static int __iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
-			      struct iwch_qp *qhp, struct ib_wc *wc)
+/*
+ * Get one cq entry from cxio and map it to openib.
+ *
+ * Returns:
+ *	0			EMPTY;
+ *	1			cqe returned
+ *	-EAGAIN		caller must try again
+ *	any other -errno	fatal error
+ */
+static int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
+			    struct ib_wc *wc)
 {
-	struct t3_wq *wq = qhp ? &qhp->wq : NULL;
-	struct t3_cqe cqe;
+	struct iwch_qp *qhp = NULL;
+	struct t3_cqe cqe, *rd_cqe;
+	struct t3_wq *wq;
 	u32 credit = 0;
 	u8 cqe_flushed;
 	u64 cookie;
 	int ret = 1;
 
+	rd_cqe = cxio_next_cqe(&chp->cq);
+
+	if (!rd_cqe)
+		return 0;
+
+	qhp = get_qhp(rhp, CQE_QPID(*rd_cqe));
+	if (!qhp)
+		wq = NULL;
+	else {
+		spin_lock(&qhp->lock);
+		wq = &(qhp->wq);
+	}
 	ret = cxio_poll_cq(wq, &(chp->cq), &cqe, &cqe_flushed, &cookie,
 				   &credit);
 	if (t3a_device(chp->rhp) && credit) {
@@ -57,7 +79,7 @@ static int __iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
 	ret = 1;
 
 	wc->wr_id = cookie;
-	wc->qp = qhp ? &qhp->ibqp : NULL;
+	wc->qp = &qhp->ibqp;
 	wc->vendor_err = CQE_STATUS(cqe);
 	wc->wc_flags = 0;
 
@@ -160,38 +182,8 @@ static int __iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
 		}
 	}
 out:
-	return ret;
-}
-
-/*
- * Get one cq entry from cxio and map it to openib.
- *
- * Returns:
- *	0			EMPTY;
- *	1			cqe returned
- *	-EAGAIN		caller must try again
- *	any other -errno	fatal error
- */
-static int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
-			    struct ib_wc *wc)
-{
-	struct iwch_qp *qhp;
-	struct t3_cqe *rd_cqe;
-	int ret;
-
-	rd_cqe = cxio_next_cqe(&chp->cq);
-
-	if (!rd_cqe)
-		return 0;
-
-	qhp = get_qhp(rhp, CQE_QPID(*rd_cqe));
-	if (qhp) {
-		spin_lock(&qhp->lock);
-		ret = __iwch_poll_cq_one(rhp, chp, qhp, wc);
+	if (wq)
 		spin_unlock(&qhp->lock);
-	} else {
-		ret = __iwch_poll_cq_one(rhp, chp, NULL, wc);
-	}
 	return ret;
 }
 
@@ -208,6 +200,9 @@ int iwch_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 
 	spin_lock_irqsave(&chp->lock, flags);
 	for (npolled = 0; npolled < num_entries; ++npolled) {
+#ifdef DEBUG
+		int i=0;
+#endif
 
 		/*
 		 * Because T3 can post CQEs that are _not_ associated
@@ -216,6 +211,9 @@ int iwch_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 		 */
 		do {
 			err = iwch_poll_cq_one(rhp, chp, wc + npolled);
+#ifdef DEBUG
+			BUG_ON(++i > 1000);
+#endif
 		} while (err == -EAGAIN);
 		if (err <= 0)
 			break;

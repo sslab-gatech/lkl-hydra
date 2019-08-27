@@ -13,7 +13,6 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/mod_devicetable.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/watchdog.h>
@@ -237,21 +236,14 @@ static int davinci_wdt_probe(struct platform_device *pdev)
 
 	wdt_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	davinci_wdt->base = devm_ioremap_resource(dev, wdt_mem);
-	if (IS_ERR(davinci_wdt->base)) {
-		ret = PTR_ERR(davinci_wdt->base);
-		goto err_clk_disable;
-	}
+	if (IS_ERR(davinci_wdt->base))
+		return PTR_ERR(davinci_wdt->base);
 
 	ret = watchdog_register_device(wdd);
-	if (ret) {
+	if (ret < 0) {
+		clk_disable_unprepare(davinci_wdt->clk);
 		dev_err(dev, "cannot register watchdog device\n");
-		goto err_clk_disable;
 	}
-
-	return 0;
-
-err_clk_disable:
-	clk_disable_unprepare(davinci_wdt->clk);
 
 	return ret;
 }

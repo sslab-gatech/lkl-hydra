@@ -1,4 +1,6 @@
 /*
+ *  linux/include/linux/mtd/bbm.h
+ *
  *  NAND family Bad Block Management (BBM) header file
  *    - Bad Block Table (BBT) implementation
  *

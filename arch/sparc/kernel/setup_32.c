@@ -34,7 +34,6 @@
 #include <linux/kdebug.h>
 #include <linux/export.h>
 #include <linux/start_kernel.h>
-#include <uapi/linux/mount.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -87,7 +86,7 @@ static void prom_sync_me(void)
 	show_free_areas(0, NULL);
 	if (!is_idle_task(current)) {
 		local_irq_enable();
-		ksys_sync();
+		sys_sync();
 		local_irq_disable();
 	}
 	prom_printf("Returning to prom\n");
@@ -311,24 +310,25 @@ void __init setup_arch(char **cmdline_p)
 
 	register_console(&prom_early_console);
 
+	printk("ARCH: ");
 	switch(sparc_cpu_model) {
 	case sun4m:
-		pr_info("ARCH: SUN4M\n");
+		printk("SUN4M\n");
 		break;
 	case sun4d:
-		pr_info("ARCH: SUN4D\n");
+		printk("SUN4D\n");
 		break;
 	case sun4e:
-		pr_info("ARCH: SUN4E\n");
+		printk("SUN4E\n");
 		break;
 	case sun4u:
-		pr_info("ARCH: SUN4U\n");
+		printk("SUN4U\n");
 		break;
 	case sparc_leon:
-		pr_info("ARCH: LEON\n");
+		printk("LEON\n");
 		break;
 	default:
-		pr_info("ARCH: UNKNOWN!\n");
+		printk("UNKNOWN!\n");
 		break;
 	}
 

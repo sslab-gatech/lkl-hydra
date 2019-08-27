@@ -80,7 +80,6 @@ struct regmap;
  * These modes can be OR'ed together to make up a mask of valid register modes.
  */
 
-#define REGULATOR_MODE_INVALID			0x0
 #define REGULATOR_MODE_FAST			0x1
 #define REGULATOR_MODE_NORMAL			0x2
 #define REGULATOR_MODE_IDLE			0x4
@@ -508,7 +507,7 @@ static inline int regulator_get_error_flags(struct regulator *regulator,
 
 static inline int regulator_set_load(struct regulator *regulator, int load_uA)
 {
-	return 0;
+	return REGULATOR_MODE_NORMAL;
 }
 
 static inline int regulator_allow_bypass(struct regulator *regulator,

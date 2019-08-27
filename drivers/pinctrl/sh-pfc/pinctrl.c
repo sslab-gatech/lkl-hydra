@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * SuperH Pin Function Controller pinmux support.
  *
  * Copyright (C) 2012  Paul Mundt
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #define DRV_NAME "sh-pfc"
@@ -72,7 +75,7 @@ static int sh_pfc_get_group_pins(struct pinctrl_dev *pctldev, unsigned selector,
 static void sh_pfc_pin_dbg_show(struct pinctrl_dev *pctldev, struct seq_file *s,
 				unsigned offset)
 {
-	seq_puts(s, DRV_NAME);
+	seq_printf(s, "%s", DRV_NAME);
 }
 
 #ifdef CONFIG_OF
@@ -767,14 +770,14 @@ static int sh_pfc_map_pins(struct sh_pfc *pfc, struct sh_pfc_pinctrl *pmx)
 	unsigned int i;
 
 	/* Allocate and initialize the pins and configs arrays. */
-	pmx->pins = devm_kcalloc(pfc->dev,
-				 pfc->info->nr_pins, sizeof(*pmx->pins),
+	pmx->pins = devm_kzalloc(pfc->dev,
+				 sizeof(*pmx->pins) * pfc->info->nr_pins,
 				 GFP_KERNEL);
 	if (unlikely(!pmx->pins))
 		return -ENOMEM;
 
-	pmx->configs = devm_kcalloc(pfc->dev,
-				    pfc->info->nr_pins, sizeof(*pmx->configs),
+	pmx->configs = devm_kzalloc(pfc->dev,
+				    sizeof(*pmx->configs) * pfc->info->nr_pins,
 				    GFP_KERNEL);
 	if (unlikely(!pmx->configs))
 		return -ENOMEM;

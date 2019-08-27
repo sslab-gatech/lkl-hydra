@@ -40,6 +40,17 @@ static void set_stklim(void)
 	}
 }
 
+static __init void do_uml_initcalls(void)
+{
+	initcall_t *call;
+
+	call = &__uml_initcall_start;
+	while (call < &__uml_initcall_end) {
+		(*call)();
+		call++;
+	}
+}
+
 static void last_ditch_exit(int sig)
 {
 	uml_cleanup();
@@ -140,6 +151,7 @@ int __init main(int argc, char **argv, char **envp)
 	scan_elf_aux(envp);
 #endif
 
+	do_uml_initcalls();
 	change_sig(SIGPIPE, 0);
 	ret = linux_main(argc, argv);
 

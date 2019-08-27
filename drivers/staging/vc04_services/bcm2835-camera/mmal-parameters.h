@@ -18,9 +18,6 @@
  * @{
  */
 
-#ifndef __MMAL_PARAMETERS_H
-#define __MMAL_PARAMETERS_H
-
 /** Common parameter ID group, used with many types of component. */
 #define MMAL_PARAMETER_GROUP_COMMON            (0<<16)
 /** Camera-specific parameter ID group. */
@@ -564,14 +561,6 @@ enum mmal_parameter_displayset {
 	MMAL_DISPLAY_SET_ALPHA = 0x400,
 };
 
-/* rectangle, used lots so it gets its own struct */
-struct vchiq_mmal_rect {
-	s32 x;
-	s32 y;
-	s32 width;
-	s32 height;
-};
-
 struct mmal_parameter_displayregion {
 	/** Bitfield that indicates which fields are set and should be
 	 * used. All other fields will maintain their current value.
@@ -693,5 +682,3 @@ struct mmal_parameter_camera_info_t {
 	struct mmal_parameter_camera_info_flash_t
 				flashes[MMAL_PARAMETER_CAMERA_INFO_MAX_FLASHES];
 };
-
-#endif

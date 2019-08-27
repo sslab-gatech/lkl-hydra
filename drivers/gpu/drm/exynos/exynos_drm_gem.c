@@ -19,6 +19,7 @@
 
 #include "exynos_drm_drv.h"
 #include "exynos_drm_gem.h"
+#include "exynos_drm_iommu.h"
 
 static int exynos_drm_alloc_buf(struct exynos_drm_gem *exynos_gem)
 {
@@ -142,7 +143,7 @@ static int exynos_drm_gem_handle_create(struct drm_gem_object *obj,
 	DRM_DEBUG_KMS("gem handle = 0x%x\n", *handle);
 
 	/* drop reference from allocate - handle holds it now. */
-	drm_gem_object_put_unlocked(obj);
+	drm_gem_object_unreference_unlocked(obj);
 
 	return 0;
 }
@@ -168,6 +169,26 @@ void exynos_drm_gem_destroy(struct exynos_drm_gem *exynos_gem)
 	drm_gem_object_release(obj);
 
 	kfree(exynos_gem);
+}
+
+unsigned long exynos_drm_gem_get_size(struct drm_device *dev,
+						unsigned int gem_handle,
+						struct drm_file *file_priv)
+{
+	struct exynos_drm_gem *exynos_gem;
+	struct drm_gem_object *obj;
+
+	obj = drm_gem_object_lookup(file_priv, gem_handle);
+	if (!obj) {
+		DRM_ERROR("failed to lookup gem object.\n");
+		return 0;
+	}
+
+	exynos_gem = to_exynos_gem(obj);
+
+	drm_gem_object_unreference_unlocked(obj);
+
+	return exynos_gem->size;
 }
 
 static struct exynos_drm_gem *exynos_drm_gem_init(struct drm_device *dev,
@@ -278,15 +299,43 @@ int exynos_drm_gem_map_ioctl(struct drm_device *dev, void *data,
 				       &args->offset);
 }
 
-struct exynos_drm_gem *exynos_drm_gem_get(struct drm_file *filp,
-					  unsigned int gem_handle)
+dma_addr_t *exynos_drm_gem_get_dma_addr(struct drm_device *dev,
+					unsigned int gem_handle,
+					struct drm_file *filp)
+{
+	struct exynos_drm_gem *exynos_gem;
+	struct drm_gem_object *obj;
+
+	obj = drm_gem_object_lookup(filp, gem_handle);
+	if (!obj) {
+		DRM_ERROR("failed to lookup gem object.\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	exynos_gem = to_exynos_gem(obj);
+
+	return &exynos_gem->dma_addr;
+}
+
+void exynos_drm_gem_put_dma_addr(struct drm_device *dev,
+					unsigned int gem_handle,
+					struct drm_file *filp)
 {
 	struct drm_gem_object *obj;
 
 	obj = drm_gem_object_lookup(filp, gem_handle);
-	if (!obj)
-		return NULL;
-	return to_exynos_gem(obj);
+	if (!obj) {
+		DRM_ERROR("failed to lookup gem object.\n");
+		return;
+	}
+
+	drm_gem_object_unreference_unlocked(obj);
+
+	/*
+	 * decrease obj->refcount one more time because we has already
+	 * increased it at exynos_drm_gem_get_dma_addr().
+	 */
+	drm_gem_object_unreference_unlocked(obj);
 }
 
 static int exynos_drm_gem_mmap_buffer(struct exynos_drm_gem *exynos_gem,
@@ -334,7 +383,7 @@ int exynos_drm_gem_get_ioctl(struct drm_device *dev, void *data,
 	args->flags = exynos_gem->flags;
 	args->size = exynos_gem->size;
 
-	drm_gem_object_put_unlocked(obj);
+	drm_gem_object_unreference_unlocked(obj);
 
 	return 0;
 }
@@ -382,24 +431,37 @@ int exynos_drm_gem_dumb_create(struct drm_file *file_priv,
 	return 0;
 }
 
-vm_fault_t exynos_drm_gem_fault(struct vm_fault *vmf)
+int exynos_drm_gem_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct drm_gem_object *obj = vma->vm_private_data;
 	struct exynos_drm_gem *exynos_gem = to_exynos_gem(obj);
 	unsigned long pfn;
 	pgoff_t page_offset;
+	int ret;
 
 	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
 	if (page_offset >= (exynos_gem->size >> PAGE_SHIFT)) {
 		DRM_ERROR("invalid page offset\n");
-		return VM_FAULT_SIGBUS;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	pfn = page_to_pfn(exynos_gem->pages[page_offset]);
-	return vmf_insert_mixed(vma, vmf->address,
-			__pfn_to_pfn_t(pfn, PFN_DEV));
+	ret = vm_insert_mixed(vma, vmf->address, __pfn_to_pfn_t(pfn, PFN_DEV));
+
+out:
+	switch (ret) {
+	case 0:
+	case -ERESTARTSYS:
+	case -EINTR:
+		return VM_FAULT_NOPAGE;
+	case -ENOMEM:
+		return VM_FAULT_OOM;
+	default:
+		return VM_FAULT_SIGBUS;
+	}
 }
 
 static int exynos_drm_gem_mmap_obj(struct drm_gem_object *obj,

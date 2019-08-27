@@ -492,7 +492,7 @@ static struct pmac_i2c_host_kw *__init kw_i2c_host_init(struct device_node *np)
 	const u32		*psteps, *prate, *addrp;
 	u32			steps;
 
-	host = kzalloc(sizeof(*host), GFP_KERNEL);
+	host = kzalloc(sizeof(struct pmac_i2c_host_kw), GFP_KERNEL);
 	if (host == NULL) {
 		printk(KERN_ERR "low_i2c: Can't allocate host for %pOF\n",
 		       np);
@@ -617,7 +617,7 @@ static void __init kw_i2c_probe(void)
 		 * but not for now
 		 */
 		child = of_get_next_child(np, NULL);
-		multibus = !of_node_name_eq(child, "i2c-bus");
+		multibus = !child || strcmp(child->name, "i2c-bus");
 		of_node_put(child);
 
 		/* For a multibus setup, we get the bus count based on the
@@ -917,9 +917,10 @@ static void __init smu_i2c_probe(void)
 	 * type as older device trees mix i2c busses and other things
 	 * at the same level
 	 */
-	for_each_child_of_node(controller, busnode) {
-		if (!of_node_is_type(busnode, "i2c") &&
-		    !of_node_is_type(busnode, "i2c-bus"))
+	for (busnode = NULL;
+	     (busnode = of_get_next_child(controller, busnode)) != NULL;) {
+		if (strcmp(busnode->type, "i2c") &&
+		    strcmp(busnode->type, "i2c-bus"))
 			continue;
 		reg = of_get_property(busnode, "reg", NULL);
 		if (reg == NULL)
@@ -1191,7 +1192,7 @@ static void pmac_i2c_devscan(void (*callback)(struct device_node *dev,
 		{ NULL, NULL, 0 },
 	};
 
-	/* Only some devices need to have platform functions instantiated
+	/* Only some devices need to have platform functions instanciated
 	 * here. For now, we have a table. Others, like 9554 i2c GPIOs used
 	 * on Xserve, if we ever do a driver for them, will use their own
 	 * platform function instance
@@ -1205,7 +1206,7 @@ static void pmac_i2c_devscan(void (*callback)(struct device_node *dev,
 				if (bus != pmac_i2c_find_bus(np))
 					continue;
 			for (p = whitelist; p->name != NULL; p++) {
-				if (!of_node_name_eq(np, p->name))
+				if (strcmp(np->name, p->name))
 					continue;
 				if (p->compatible &&
 				    !of_device_is_compatible(np, p->compatible))

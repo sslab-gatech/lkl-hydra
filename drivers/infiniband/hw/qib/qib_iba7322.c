@@ -463,16 +463,6 @@ static u8 ib_rate_to_delay[IB_RATE_120_GBPS + 1] = {
 	[IB_RATE_40_GBPS] = 1
 };
 
-static const char * const qib_sdma_state_names[] = {
-	[qib_sdma_state_s00_hw_down]          = "s00_HwDown",
-	[qib_sdma_state_s10_hw_start_up_wait] = "s10_HwStartUpWait",
-	[qib_sdma_state_s20_idle]             = "s20_Idle",
-	[qib_sdma_state_s30_sw_clean_up_wait] = "s30_SwCleanUpWait",
-	[qib_sdma_state_s40_hw_clean_up_wait] = "s40_HwCleanUpWait",
-	[qib_sdma_state_s50_hw_halt_wait]     = "s50_HwHaltWait",
-	[qib_sdma_state_s99_running]          = "s99_Running",
-};
-
 #define IBA7322_LINKSPEED_SHIFT SYM_LSB(IBCStatusA_0, LinkSpeedActive)
 #define IBA7322_LINKWIDTH_SHIFT SYM_LSB(IBCStatusA_0, LinkWidthActive)
 
@@ -1382,6 +1372,7 @@ static void err_decode(char *msg, size_t len, u64 errs,
 					*msg++ = ',';
 					len--;
 				}
+				BUG_ON(!msp->sz);
 				/* msp->sz counts the nul */
 				took = min_t(size_t, msp->sz - (size_t)1, len);
 				memcpy(msg,  msp->msg, took);
@@ -3647,9 +3638,8 @@ static int qib_do_7322_reset(struct qib_devdata *dd)
 
 	if (msix_entries) {
 		/* can be up to 512 bytes, too big for stack */
-		msix_vecsave = kmalloc_array(2 * dd->cspec->num_msix_entries,
-					     sizeof(u64),
-					     GFP_KERNEL);
+		msix_vecsave = kmalloc(2 * dd->cspec->num_msix_entries *
+			sizeof(u64), GFP_KERNEL);
 	}
 
 	/*
@@ -5009,17 +4999,16 @@ static void init_7322_cntrnames(struct qib_devdata *dd)
 		dd->cspec->cntrnamelen = sizeof(cntr7322names) - 1;
 	else
 		dd->cspec->cntrnamelen = 1 + s - cntr7322names;
-	dd->cspec->cntrs = kmalloc_array(dd->cspec->ncntrs, sizeof(u64),
-					 GFP_KERNEL);
+	dd->cspec->cntrs = kmalloc(dd->cspec->ncntrs
+		* sizeof(u64), GFP_KERNEL);
 
 	for (i = 0, s = (char *)portcntr7322names; s; i++)
 		s = strchr(s + 1, '\n');
 	dd->cspec->nportcntrs = i - 1;
 	dd->cspec->portcntrnamelen = sizeof(portcntr7322names) - 1;
 	for (i = 0; i < dd->num_pports; ++i) {
-		dd->pport[i].cpspec->portcntrs =
-			kmalloc_array(dd->cspec->nportcntrs, sizeof(u64),
-				      GFP_KERNEL);
+		dd->pport[i].cpspec->portcntrs = kmalloc(dd->cspec->nportcntrs
+			* sizeof(u64), GFP_KERNEL);
 	}
 }
 
@@ -6413,15 +6402,12 @@ static int qib_init_7322_variables(struct qib_devdata *dd)
 	sbufcnt = dd->piobcnt2k + dd->piobcnt4k +
 		NUM_VL15_BUFS + BITS_PER_LONG - 1;
 	sbufcnt /= BITS_PER_LONG;
-	dd->cspec->sendchkenable =
-		kmalloc_array(sbufcnt, sizeof(*dd->cspec->sendchkenable),
-			      GFP_KERNEL);
-	dd->cspec->sendgrhchk =
-		kmalloc_array(sbufcnt, sizeof(*dd->cspec->sendgrhchk),
-			      GFP_KERNEL);
-	dd->cspec->sendibchk =
-		kmalloc_array(sbufcnt, sizeof(*dd->cspec->sendibchk),
-			      GFP_KERNEL);
+	dd->cspec->sendchkenable = kmalloc(sbufcnt *
+		sizeof(*dd->cspec->sendchkenable), GFP_KERNEL);
+	dd->cspec->sendgrhchk = kmalloc(sbufcnt *
+		sizeof(*dd->cspec->sendgrhchk), GFP_KERNEL);
+	dd->cspec->sendibchk = kmalloc(sbufcnt *
+		sizeof(*dd->cspec->sendibchk), GFP_KERNEL);
 	if (!dd->cspec->sendchkenable || !dd->cspec->sendgrhchk ||
 		!dd->cspec->sendibchk) {
 		ret = -ENOMEM;
@@ -6598,6 +6584,7 @@ static int qib_init_7322_variables(struct qib_devdata *dd)
 
 	/* we always allocate at least 2048 bytes for eager buffers */
 	dd->rcvegrbufsize = max(mtu, 2048);
+	BUG_ON(!is_power_of_2(dd->rcvegrbufsize));
 	dd->rcvegrbufsize_shift = ilog2(dd->rcvegrbufsize);
 
 	qib_7322_tidtemplate(dd);
@@ -6902,6 +6889,7 @@ static int init_sdma_7322_regs(struct qib_pportdata *ppd)
 		unsigned word = erstbuf / BITS_PER_LONG;
 		unsigned bit = erstbuf & (BITS_PER_LONG - 1);
 
+		BUG_ON(word >= 3);
 		senddmabufmask[word] |= 1ULL << bit;
 	}
 	qib_write_kreg_port(ppd, krp_senddmabufmask0, senddmabufmask[0]);
@@ -7292,9 +7280,8 @@ struct qib_devdata *qib_init_iba7322_funcs(struct pci_dev *pdev,
 		actual_cnt -= dd->num_pports;
 
 	tabsize = actual_cnt;
-	dd->cspec->msix_entries = kcalloc(tabsize,
-					  sizeof(struct qib_msix_entry),
-					  GFP_KERNEL);
+	dd->cspec->msix_entries = kzalloc(tabsize *
+			sizeof(struct qib_msix_entry), GFP_KERNEL);
 	if (!dd->cspec->msix_entries)
 		tabsize = 0;
 

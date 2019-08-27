@@ -115,9 +115,7 @@ static void rd_write(struct msm_rd_state *rd, const void *buf, int sz)
 		char *fptr = &fifo->buf[fifo->head];
 		int n;
 
-		wait_event(rd->fifo_event, circ_space(&rd->fifo) > 0 || !rd->open);
-		if (!rd->open)
-			return;
+		wait_event(rd->fifo_event, circ_space(&rd->fifo) > 0);
 
 		/* Note that smp_load_acquire() is not strictly required
 		 * as CIRC_SPACE_TO_END() does not access the tail more
@@ -215,10 +213,7 @@ out:
 static int rd_release(struct inode *inode, struct file *file)
 {
 	struct msm_rd_state *rd = inode->i_private;
-
 	rd->open = false;
-	wake_up_all(&rd->fifo_event);
-
 	return 0;
 }
 
@@ -321,11 +316,10 @@ static void snapshot_buf(struct msm_rd_state *rd,
 		uint64_t iova, uint32_t size)
 {
 	struct msm_gem_object *obj = submit->bos[idx].obj;
-	unsigned offset = 0;
 	const char *buf;
 
 	if (iova) {
-		offset = iova - submit->bos[idx].iova;
+		buf += iova - submit->bos[idx].iova;
 	} else {
 		iova = submit->bos[idx].iova;
 		size = obj->base.size;
@@ -346,17 +340,9 @@ static void snapshot_buf(struct msm_rd_state *rd,
 	if (IS_ERR(buf))
 		return;
 
-	buf += offset;
-
 	rd_write_section(rd, RD_BUFFER_CONTENTS, buf, size);
 
 	msm_gem_put_vaddr(&obj->base);
-}
-
-static bool
-should_dump(struct msm_gem_submit *submit, int idx)
-{
-	return rd_full || (submit->bos[idx].flags & MSM_SUBMIT_BO_DUMP);
 }
 
 /* called under struct_mutex */
@@ -380,7 +366,7 @@ void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 		va_list args;
 
 		va_start(args, fmt);
-		n = vscnprintf(msg, sizeof(msg), fmt, args);
+		n = vsnprintf(msg, sizeof(msg), fmt, args);
 		va_end(args);
 
 		rd_write_section(rd, RD_CMD, msg, ALIGN(n, 4));
@@ -389,27 +375,26 @@ void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_submit *submit,
 	rcu_read_lock();
 	task = pid_task(submit->pid, PIDTYPE_PID);
 	if (task) {
-		n = scnprintf(msg, sizeof(msg), "%.*s/%d: fence=%u",
+		n = snprintf(msg, sizeof(msg), "%.*s/%d: fence=%u",
 				TASK_COMM_LEN, task->comm,
 				pid_nr(submit->pid), submit->seqno);
 	} else {
-		n = scnprintf(msg, sizeof(msg), "???/%d: fence=%u",
+		n = snprintf(msg, sizeof(msg), "???/%d: fence=%u",
 				pid_nr(submit->pid), submit->seqno);
 	}
 	rcu_read_unlock();
 
 	rd_write_section(rd, RD_CMD, msg, ALIGN(n, 4));
 
-	for (i = 0; i < submit->nr_bos; i++)
-		if (should_dump(submit, i))
-			snapshot_buf(rd, submit, i, 0, 0);
+	for (i = 0; rd_full && i < submit->nr_bos; i++)
+		snapshot_buf(rd, submit, i, 0, 0);
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		uint64_t iova = submit->cmd[i].iova;
 		uint32_t szd  = submit->cmd[i].size; /* in dwords */
 
 		/* snapshot cmdstream bo's (if we haven't already): */
-		if (!should_dump(submit, i)) {
+		if (!rd_full) {
 			snapshot_buf(rd, submit, submit->cmd[i].idx,
 					submit->cmd[i].iova, szd * 4);
 		}

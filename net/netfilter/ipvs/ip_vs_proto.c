@@ -42,11 +42,6 @@
 
 static struct ip_vs_protocol *ip_vs_proto_table[IP_VS_PROTO_TAB_SIZE];
 
-/* States for conn templates: NONE or words separated with ",", max 15 chars */
-static const char *ip_vs_ctpl_state_name_table[IP_VS_CTPL_S_LAST] = {
-	[IP_VS_CTPL_S_NONE]			= "NONE",
-	[IP_VS_CTPL_S_ASSURED]			= "ASSURED",
-};
 
 /*
  *	register an ipvs protocol
@@ -198,20 +193,12 @@ ip_vs_create_timeout_table(int *table, int size)
 }
 
 
-const char *ip_vs_state_name(const struct ip_vs_conn *cp)
+const char * ip_vs_state_name(__u16 proto, int state)
 {
-	unsigned int state = cp->state;
-	struct ip_vs_protocol *pp;
+	struct ip_vs_protocol *pp = ip_vs_proto_get(proto);
 
-	if (cp->flags & IP_VS_CONN_F_TEMPLATE) {
-
-		if (state >= IP_VS_CTPL_S_LAST)
-			return "ERR!";
-		return ip_vs_ctpl_state_name_table[state] ? : "?";
-	}
-	pp = ip_vs_proto_get(cp->protocol);
 	if (pp == NULL || pp->state_name == NULL)
-		return (cp->protocol == IPPROTO_IP) ? "NONE" : "ERR!";
+		return (IPPROTO_IP == proto) ? "NONE" : "ERR!";
 	return pp->state_name(state);
 }
 

@@ -182,31 +182,16 @@ static int fib4_rule_match(struct fib_rule *rule, struct flowi *fl, int flags)
 	if (r->tos && (r->tos != fl4->flowi4_tos))
 		return 0;
 
-	if (rule->ip_proto && (rule->ip_proto != fl4->flowi4_proto))
-		return 0;
-
-	if (fib_rule_port_range_set(&rule->sport_range) &&
-	    !fib_rule_port_inrange(&rule->sport_range, fl4->fl4_sport))
-		return 0;
-
-	if (fib_rule_port_range_set(&rule->dport_range) &&
-	    !fib_rule_port_inrange(&rule->dport_range, fl4->fl4_dport))
-		return 0;
-
 	return 1;
 }
 
 static struct fib_table *fib_empty_table(struct net *net)
 {
-	u32 id = 1;
+	u32 id;
 
-	while (1) {
+	for (id = 1; id <= RT_TABLE_MAX; id++)
 		if (!fib_get_table(net, id))
 			return fib_new_table(net, id);
-
-		if (id++ == RT_TABLE_MAX)
-			break;
-	}
 	return NULL;
 }
 
@@ -217,17 +202,14 @@ static const struct nla_policy fib4_rule_policy[FRA_MAX+1] = {
 
 static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 			       struct fib_rule_hdr *frh,
-			       struct nlattr **tb,
-			       struct netlink_ext_ack *extack)
+			       struct nlattr **tb)
 {
 	struct net *net = sock_net(skb->sk);
 	int err = -EINVAL;
 	struct fib4_rule *rule4 = (struct fib4_rule *) rule;
 
-	if (frh->tos & ~IPTOS_TOS_MASK) {
-		NL_SET_ERR_MSG(extack, "Invalid tos");
+	if (frh->tos & ~IPTOS_TOS_MASK)
 		goto errout;
-	}
 
 	/* split local/main if they are not already split */
 	err = fib_unmerge(net);
@@ -262,9 +244,6 @@ static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 	}
 #endif
 
-	if (fib_rule_requires_fldissect(rule))
-		net->ipv4.fib_rules_require_fldissect++;
-
 	rule4->src_len = frh->src_len;
 	rule4->srcmask = inet_make_mask(rule4->src_len);
 	rule4->dst_len = frh->dst_len;
@@ -293,10 +272,6 @@ static int fib4_rule_delete(struct fib_rule *rule)
 		net->ipv4.fib_num_tclassid_users--;
 #endif
 	net->ipv4.fib_has_custom_rules = true;
-
-	if (net->ipv4.fib_rules_require_fldissect &&
-	    fib_rule_requires_fldissect(rule))
-		net->ipv4.fib_rules_require_fldissect--;
 errout:
 	return err;
 }
@@ -414,7 +389,6 @@ int __net_init fib4_rules_init(struct net *net)
 		goto fail;
 	net->ipv4.rules_ops = ops;
 	net->ipv4.fib_has_custom_rules = false;
-	net->ipv4.fib_rules_require_fldissect = 0;
 	return 0;
 
 fail:

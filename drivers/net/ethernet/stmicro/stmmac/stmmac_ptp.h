@@ -21,7 +21,6 @@
 #ifndef	__STMMAC_PTP_H__
 #define	__STMMAC_PTP_H__
 
-#define PTP_XGMAC_OFFSET	0xd00
 #define	PTP_GMAC4_OFFSET	0xb00
 #define	PTP_GMAC3_X_OFFSET	0x700
 

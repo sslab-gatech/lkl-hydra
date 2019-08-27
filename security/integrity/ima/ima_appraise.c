@@ -8,7 +8,7 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, version 2 of the License.
  */
-#include <linux/init.h>
+#include <linux/module.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/xattr.h>
@@ -50,14 +50,11 @@ bool is_ima_appraise_enabled(void)
  */
 int ima_must_appraise(struct inode *inode, int mask, enum ima_hooks func)
 {
-	u32 secid;
-
 	if (!ima_appraise)
 		return 0;
 
-	security_task_getsecid(current, &secid);
-	return ima_match_policy(inode, current_cred(), secid, func, mask,
-				IMA_APPRAISE | IMA_HASH, NULL);
+	return ima_match_policy(inode, func, mask, IMA_APPRAISE | IMA_HASH,
+				NULL);
 }
 
 static int ima_fix_xattr(struct dentry *dentry,
@@ -90,8 +87,6 @@ enum integrity_status ima_get_cache_status(struct integrity_iint_cache *iint,
 		return iint->ima_mmap_status;
 	case BPRM_CHECK:
 		return iint->ima_bprm_status;
-	case CREDS_CHECK:
-		return iint->ima_creds_status;
 	case FILE_CHECK:
 	case POST_SETATTR:
 		return iint->ima_file_status;
@@ -112,8 +107,6 @@ static void ima_set_cache_status(struct integrity_iint_cache *iint,
 	case BPRM_CHECK:
 		iint->ima_bprm_status = status;
 		break;
-	case CREDS_CHECK:
-		iint->ima_creds_status = status;
 	case FILE_CHECK:
 	case POST_SETATTR:
 		iint->ima_file_status = status;
@@ -134,9 +127,6 @@ static void ima_cache_flags(struct integrity_iint_cache *iint,
 		break;
 	case BPRM_CHECK:
 		iint->flags |= (IMA_BPRM_APPRAISED | IMA_APPRAISED);
-		break;
-	case CREDS_CHECK:
-		iint->flags |= (IMA_CREDS_APPRAISED | IMA_APPRAISED);
 		break;
 	case FILE_CHECK:
 	case POST_SETATTR:
@@ -212,10 +202,10 @@ int ima_appraise_measurement(enum ima_hooks func,
 			     struct integrity_iint_cache *iint,
 			     struct file *file, const unsigned char *filename,
 			     struct evm_ima_xattr_data *xattr_value,
-			     int xattr_len)
+			     int xattr_len, int opened)
 {
 	static const char op[] = "appraise_data";
-	const char *cause = "unknown";
+	char *cause = "unknown";
 	struct dentry *dentry = file_dentry(file);
 	struct inode *inode = d_backing_inode(dentry);
 	enum integrity_status status = INTEGRITY_UNKNOWN;
@@ -231,7 +221,7 @@ int ima_appraise_measurement(enum ima_hooks func,
 		cause = iint->flags & IMA_DIGSIG_REQUIRED ?
 				"IMA-signature-required" : "missing-hash";
 		status = INTEGRITY_NOLABEL;
-		if (file->f_mode & FMODE_CREATED)
+		if (opened & FILE_CREATED)
 			iint->flags |= IMA_NEW_FILE;
 		if ((iint->flags & IMA_NEW_FILE) &&
 		    (!(iint->flags & IMA_DIGSIG_REQUIRED) ||
@@ -241,22 +231,16 @@ int ima_appraise_measurement(enum ima_hooks func,
 	}
 
 	status = evm_verifyxattr(dentry, XATTR_NAME_IMA, xattr_value, rc, iint);
-	switch (status) {
-	case INTEGRITY_PASS:
-	case INTEGRITY_PASS_IMMUTABLE:
-	case INTEGRITY_UNKNOWN:
-		break;
-	case INTEGRITY_NOXATTRS:	/* No EVM protected xattrs. */
-	case INTEGRITY_NOLABEL:		/* No security.evm xattr. */
-		cause = "missing-HMAC";
+	if ((status != INTEGRITY_PASS) &&
+	    (status != INTEGRITY_PASS_IMMUTABLE) &&
+	    (status != INTEGRITY_UNKNOWN)) {
+		if ((status == INTEGRITY_NOLABEL)
+		    || (status == INTEGRITY_NOXATTRS))
+			cause = "missing-HMAC";
+		else if (status == INTEGRITY_FAIL)
+			cause = "invalid-HMAC";
 		goto out;
-	case INTEGRITY_FAIL:		/* Invalid HMAC/signature. */
-		cause = "invalid-HMAC";
-		goto out;
-	default:
-		WARN_ONCE(true, "Unexpected integrity status %d\n", status);
 	}
-
 	switch (xattr_value->type) {
 	case IMA_XATTR_DIGEST_NG:
 		/* first byte contains algorithm id */
@@ -289,22 +273,12 @@ int ima_appraise_measurement(enum ima_hooks func,
 	case EVM_IMA_XATTR_DIGSIG:
 		set_bit(IMA_DIGSIG, &iint->atomic_flags);
 		rc = integrity_digsig_verify(INTEGRITY_KEYRING_IMA,
-					     (const char *)xattr_value,
-					     xattr_len,
+					     (const char *)xattr_value, rc,
 					     iint->ima_hash->digest,
 					     iint->ima_hash->length);
 		if (rc == -EOPNOTSUPP) {
 			status = INTEGRITY_UNKNOWN;
-			break;
-		}
-		if (IS_ENABLED(CONFIG_INTEGRITY_PLATFORM_KEYRING) && rc &&
-		    func == KEXEC_KERNEL_CHECK)
-			rc = integrity_digsig_verify(INTEGRITY_KEYRING_PLATFORM,
-						     (const char *)xattr_value,
-						     xattr_len,
-						     iint->ima_hash->digest,
-						     iint->ima_hash->length);
-		if (rc) {
+		} else if (rc) {
 			cause = "invalid-signature";
 			status = INTEGRITY_FAIL;
 		} else {
@@ -318,40 +292,23 @@ int ima_appraise_measurement(enum ima_hooks func,
 	}
 
 out:
-	/*
-	 * File signatures on some filesystems can not be properly verified.
-	 * When such filesystems are mounted by an untrusted mounter or on a
-	 * system not willing to accept such a risk, fail the file signature
-	 * verification.
-	 */
-	if ((inode->i_sb->s_iflags & SB_I_IMA_UNVERIFIABLE_SIGNATURE) &&
-	    ((inode->i_sb->s_iflags & SB_I_UNTRUSTED_MOUNTER) ||
-	     (iint->flags & IMA_FAIL_UNVERIFIABLE_SIGS))) {
-		status = INTEGRITY_FAIL;
-		cause = "unverifiable-signature";
-		integrity_audit_msg(AUDIT_INTEGRITY_DATA, inode, filename,
-				    op, cause, rc, 0);
-	} else if (status != INTEGRITY_PASS) {
-		/* Fix mode, but don't replace file signatures. */
+	if (status != INTEGRITY_PASS) {
 		if ((ima_appraise & IMA_APPRAISE_FIX) &&
 		    (!xattr_value ||
 		     xattr_value->type != EVM_IMA_XATTR_DIGSIG)) {
 			if (!ima_fix_xattr(dentry, iint))
 				status = INTEGRITY_PASS;
-		}
-
-		/* Permit new files with file signatures, but without data. */
-		if (inode->i_size == 0 && iint->flags & IMA_NEW_FILE &&
-		    xattr_value && xattr_value->type == EVM_IMA_XATTR_DIGSIG) {
+		} else if ((inode->i_size == 0) &&
+			   (iint->flags & IMA_NEW_FILE) &&
+			   (xattr_value &&
+			    xattr_value->type == EVM_IMA_XATTR_DIGSIG)) {
 			status = INTEGRITY_PASS;
 		}
-
 		integrity_audit_msg(AUDIT_INTEGRITY_DATA, inode, filename,
 				    op, cause, rc, 0);
 	} else {
 		ima_cache_flags(iint, func);
 	}
-
 	ima_set_cache_status(iint, func, status);
 	return status;
 }

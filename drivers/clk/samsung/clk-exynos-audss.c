@@ -15,6 +15,7 @@
 #include <linux/clk-provider.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
+#include <linux/syscore_ops.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -142,14 +143,16 @@ static int exynos_audss_clk_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	reg_base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(reg_base))
+	if (IS_ERR(reg_base)) {
+		dev_err(dev, "failed to map audss registers\n");
 		return PTR_ERR(reg_base);
+	}
 
 	epll = ERR_PTR(-ENODEV);
 
 	clk_data = devm_kzalloc(dev,
-				struct_size(clk_data, hws,
-					    EXYNOS_AUDSS_MAX_CLKS),
+				sizeof(*clk_data) +
+				sizeof(*clk_data->hws) * EXYNOS_AUDSS_MAX_CLKS,
 				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;

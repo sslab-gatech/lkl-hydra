@@ -9,16 +9,17 @@
 #include <linux/nsproxy.h>
 #include <linux/ns_common.h>
 #include <linux/refcount.h>
-#include <linux/rhashtable-types.h>
+#include <linux/rhashtable.h>
 
 struct user_namespace;
 
 struct ipc_ids {
 	int in_use;
 	unsigned short seq;
+	bool tables_initialized;
 	struct rw_semaphore rwsem;
 	struct idr ipcs_idr;
-	int max_idx;
+	int max_id;
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	int next_id;
 #endif

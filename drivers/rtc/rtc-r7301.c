@@ -11,7 +11,6 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
 #include <linux/platform_device.h>
@@ -225,7 +224,7 @@ static int rtc7301_read_time(struct device *dev, struct rtc_time *tm)
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	return err;
+	return err ? err : rtc_valid_tm(tm);
 }
 
 static int rtc7301_set_time(struct device *dev, struct rtc_time *tm)

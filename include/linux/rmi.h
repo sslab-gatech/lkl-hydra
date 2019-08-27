@@ -354,8 +354,6 @@ struct rmi_driver_data {
 	struct mutex irq_mutex;
 	struct input_dev *input;
 
-	struct irq_domain *irqdomain;
-
 	u8 pdt_props;
 
 	u8 num_rx_electrodes;

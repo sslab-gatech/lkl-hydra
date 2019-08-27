@@ -47,28 +47,13 @@ struct super_block *ovl_same_sb(struct super_block *sb)
 {
 	struct ovl_fs *ofs = sb->s_fs_info;
 
-	if (!ofs->numlowerfs)
-		return ofs->upper_mnt->mnt_sb;
-	else if (ofs->numlowerfs == 1 && !ofs->upper_mnt)
-		return ofs->lower_fs[0].sb;
-	else
-		return NULL;
+	return ofs->same_sb;
 }
 
-/*
- * Check if underlying fs supports file handles and try to determine encoding
- * type, in order to deduce maximum inode number used by fs.
- *
- * Return 0 if file handles are not supported.
- * Return 1 (FILEID_INO32_GEN) if fs uses the default 32bit inode encoding.
- * Return -1 if fs uses a non default encoding with unknown inode size.
- */
-int ovl_can_decode_fh(struct super_block *sb)
+bool ovl_can_decode_fh(struct super_block *sb)
 {
-	if (!sb->s_export_op || !sb->s_export_op->fh_to_dentry)
-		return 0;
-
-	return sb->s_export_op->encode_fh ? -1 : FILEID_INO32_GEN;
+	return (sb->s_export_op && sb->s_export_op->fh_to_dentry &&
+		!uuid_is_null(&sb->s_uuid));
 }
 
 struct dentry *ovl_indexdir(struct super_block *sb)
@@ -132,10 +117,8 @@ enum ovl_path_type ovl_path_type(struct dentry *dentry)
 		 * Non-dir dentry can hold lower dentry of its copy up origin.
 		 */
 		if (oe->numlower) {
-			if (ovl_test_flag(OVL_CONST_INO, d_inode(dentry)))
-				type |= __OVL_PATH_ORIGIN;
-			if (d_is_dir(dentry) ||
-			    !ovl_has_upperdata(d_inode(dentry)))
+			type |= __OVL_PATH_ORIGIN;
+			if (d_is_dir(dentry))
 				type |= __OVL_PATH_MERGE;
 		}
 	} else {
@@ -165,18 +148,6 @@ void ovl_path_lower(struct dentry *dentry, struct path *path)
 	}
 }
 
-void ovl_path_lowerdata(struct dentry *dentry, struct path *path)
-{
-	struct ovl_entry *oe = dentry->d_fsdata;
-
-	if (oe->numlower) {
-		path->mnt = oe->lowerstack[oe->numlower - 1].layer->mnt;
-		path->dentry = oe->lowerstack[oe->numlower - 1].dentry;
-	} else {
-		*path = (struct path) { };
-	}
-}
-
 enum ovl_path_type ovl_path_real(struct dentry *dentry, struct path *path)
 {
 	enum ovl_path_type type = ovl_path_type(dentry);
@@ -199,26 +170,6 @@ struct dentry *ovl_dentry_lower(struct dentry *dentry)
 	struct ovl_entry *oe = dentry->d_fsdata;
 
 	return oe->numlower ? oe->lowerstack[0].dentry : NULL;
-}
-
-struct ovl_layer *ovl_layer_lower(struct dentry *dentry)
-{
-	struct ovl_entry *oe = dentry->d_fsdata;
-
-	return oe->numlower ? oe->lowerstack[0].layer : NULL;
-}
-
-/*
- * ovl_dentry_lower() could return either a data dentry or metacopy dentry
- * dependig on what is stored in lowerstack[0]. At times we need to find
- * lower dentry which has data (and not metacopy dentry). This helper
- * returns the lower data dentry.
- */
-struct dentry *ovl_dentry_lowerdata(struct dentry *dentry)
-{
-	struct ovl_entry *oe = dentry->d_fsdata;
-
-	return oe->numlower ? oe->lowerstack[oe->numlower - 1].dentry : NULL;
 }
 
 struct dentry *ovl_dentry_real(struct dentry *dentry)
@@ -248,26 +199,6 @@ struct inode *ovl_inode_real(struct inode *inode)
 	return ovl_inode_upper(inode) ?: ovl_inode_lower(inode);
 }
 
-/* Return inode which contains lower data. Do not return metacopy */
-struct inode *ovl_inode_lowerdata(struct inode *inode)
-{
-	if (WARN_ON(!S_ISREG(inode->i_mode)))
-		return NULL;
-
-	return OVL_I(inode)->lowerdata ?: ovl_inode_lower(inode);
-}
-
-/* Return real inode which contains data. Does not return metacopy inode */
-struct inode *ovl_inode_realdata(struct inode *inode)
-{
-	struct inode *upperinode;
-
-	upperinode = ovl_inode_upper(inode);
-	if (upperinode && ovl_has_upperdata(inode))
-		return upperinode;
-
-	return ovl_inode_lowerdata(inode);
-}
 
 struct ovl_dir_cache *ovl_dir_cache(struct inode *inode)
 {
@@ -325,62 +256,6 @@ void ovl_dentry_set_upper_alias(struct dentry *dentry)
 	ovl_dentry_set_flag(OVL_E_UPPER_ALIAS, dentry);
 }
 
-static bool ovl_should_check_upperdata(struct inode *inode)
-{
-	if (!S_ISREG(inode->i_mode))
-		return false;
-
-	if (!ovl_inode_lower(inode))
-		return false;
-
-	return true;
-}
-
-bool ovl_has_upperdata(struct inode *inode)
-{
-	if (!ovl_should_check_upperdata(inode))
-		return true;
-
-	if (!ovl_test_flag(OVL_UPPERDATA, inode))
-		return false;
-	/*
-	 * Pairs with smp_wmb() in ovl_set_upperdata(). Main user of
-	 * ovl_has_upperdata() is ovl_copy_up_meta_inode_data(). Make sure
-	 * if setting of OVL_UPPERDATA is visible, then effects of writes
-	 * before that are visible too.
-	 */
-	smp_rmb();
-	return true;
-}
-
-void ovl_set_upperdata(struct inode *inode)
-{
-	/*
-	 * Pairs with smp_rmb() in ovl_has_upperdata(). Make sure
-	 * if OVL_UPPERDATA flag is visible, then effects of write operations
-	 * before it are visible as well.
-	 */
-	smp_wmb();
-	ovl_set_flag(OVL_UPPERDATA, inode);
-}
-
-/* Caller should hold ovl_inode->lock */
-bool ovl_dentry_needs_data_copy_up_locked(struct dentry *dentry, int flags)
-{
-	if (!ovl_open_flags_need_copy_up(flags))
-		return false;
-
-	return !ovl_test_flag(OVL_UPPERDATA, d_inode(dentry));
-}
-
-bool ovl_dentry_needs_data_copy_up(struct dentry *dentry, int flags)
-{
-	if (!ovl_open_flags_need_copy_up(flags))
-		return false;
-
-	return !ovl_has_upperdata(d_inode(dentry));
-}
-
 bool ovl_redirect_dir(struct super_block *sb)
 {
 	struct ovl_fs *ofs = sb->s_fs_info;
@@ -402,21 +277,14 @@ void ovl_dentry_set_redirect(struct dentry *dentry, const char *redirect)
 }
 
 void ovl_inode_init(struct inode *inode, struct dentry *upperdentry,
-		    struct dentry *lowerdentry, struct dentry *lowerdata)
+		    struct dentry *lowerdentry)
 {
-	struct inode *realinode = d_inode(upperdentry ?: lowerdentry);
-
 	if (upperdentry)
 		OVL_I(inode)->__upperdentry = upperdentry;
 	if (lowerdentry)
 		OVL_I(inode)->lower = igrab(d_inode(lowerdentry));
-	if (lowerdata)
-		OVL_I(inode)->lowerdata = igrab(d_inode(lowerdata));
 
-	ovl_copyattr(realinode, inode);
-	ovl_copyflags(realinode, inode);
-	if (!inode->i_ino)
-		inode->i_ino = realinode->i_ino;
+	ovl_copyattr(d_inode(upperdentry ?: lowerdentry), inode);
 }
 
 void ovl_inode_update(struct inode *inode, struct dentry *upperdentry)
@@ -431,14 +299,12 @@ void ovl_inode_update(struct inode *inode, struct dentry *upperdentry)
 	smp_wmb();
 	OVL_I(inode)->__upperdentry = upperdentry;
 	if (inode_unhashed(inode)) {
-		if (!inode->i_ino)
-			inode->i_ino = upperinode->i_ino;
 		inode->i_private = upperinode;
 		__insert_inode_hash(inode, (unsigned long) upperinode);
 	}
 }
 
-static void ovl_dentry_version_inc(struct dentry *dentry, bool impurity)
+void ovl_dentry_version_inc(struct dentry *dentry, bool impurity)
 {
 	struct inode *inode = d_inode(dentry);
 
@@ -451,14 +317,6 @@ static void ovl_dentry_version_inc(struct dentry *dentry, bool impurity)
 	 */
 	if (OVL_TYPE_MERGE(ovl_path_type(dentry)) || impurity)
 		OVL_I(inode)->version++;
-}
-
-void ovl_dir_modified(struct dentry *dentry, bool impurity)
-{
-	/* Copy mtime/ctime */
-	ovl_copyattr(d_inode(ovl_dentry_upper(dentry)), d_inode(dentry));
-
-	ovl_dentry_version_inc(dentry, impurity);
 }
 
 u64 ovl_dentry_version_get(struct dentry *dentry)
@@ -481,53 +339,15 @@ struct file *ovl_path_open(struct path *path, int flags)
 	return dentry_open(path, flags | O_NOATIME, current_cred());
 }
 
-/* Caller should hold ovl_inode->lock */
-static bool ovl_already_copied_up_locked(struct dentry *dentry, int flags)
+int ovl_copy_up_start(struct dentry *dentry)
 {
-	bool disconnected = dentry->d_flags & DCACHE_DISCONNECTED;
-
-	if (ovl_dentry_upper(dentry) &&
-	    (ovl_dentry_has_upper_alias(dentry) || disconnected) &&
-	    !ovl_dentry_needs_data_copy_up_locked(dentry, flags))
-		return true;
-
-	return false;
-}
-
-bool ovl_already_copied_up(struct dentry *dentry, int flags)
-{
-	bool disconnected = dentry->d_flags & DCACHE_DISCONNECTED;
-
-	/*
-	 * Check if copy-up has happened as well as for upper alias (in
-	 * case of hard links) is there.
-	 *
-	 * Both checks are lockless:
-	 *  - false negatives: will recheck under oi->lock
-	 *  - false positives:
-	 *    + ovl_dentry_upper() uses memory barriers to ensure the
-	 *      upper dentry is up-to-date
-	 *    + ovl_dentry_has_upper_alias() relies on locking of
-	 *      upper parent i_rwsem to prevent reordering copy-up
-	 *      with rename.
-	 */
-	if (ovl_dentry_upper(dentry) &&
-	    (ovl_dentry_has_upper_alias(dentry) || disconnected) &&
-	    !ovl_dentry_needs_data_copy_up(dentry, flags))
-		return true;
-
-	return false;
-}
-
-int ovl_copy_up_start(struct dentry *dentry, int flags)
-{
-	struct inode *inode = d_inode(dentry);
+	struct ovl_inode *oi = OVL_I(d_inode(dentry));
 	int err;
 
-	err = ovl_inode_lock(inode);
-	if (!err && ovl_already_copied_up_locked(dentry, flags)) {
+	err = mutex_lock_interruptible(&oi->lock);
+	if (!err && ovl_dentry_has_upper_alias(dentry)) {
 		err = 1; /* Already copied up */
-		ovl_inode_unlock(inode);
+		mutex_unlock(&oi->lock);
 	}
 
 	return err;
@@ -535,7 +355,7 @@ int ovl_copy_up_start(struct dentry *dentry, int flags)
 
 void ovl_copy_up_end(struct dentry *dentry)
 {
-	ovl_inode_unlock(d_inode(dentry));
+	mutex_unlock(&OVL_I(d_inode(dentry))->lock);
 }
 
 bool ovl_check_origin_xattr(struct dentry *dentry)
@@ -682,7 +502,7 @@ static void ovl_cleanup_index(struct dentry *dentry)
 	struct dentry *upperdentry = ovl_dentry_upper(dentry);
 	struct dentry *index = NULL;
 	struct inode *inode;
-	struct qstr name = { };
+	struct qstr name;
 	int err;
 
 	err = ovl_get_index_name(lowerdentry, &name);
@@ -725,7 +545,6 @@ static void ovl_cleanup_index(struct dentry *dentry)
 		goto fail;
 
 out:
-	kfree(name.name);
 	dput(index);
 	return;
 
@@ -738,14 +557,14 @@ fail:
  * Operations that change overlay inode and upper inode nlink need to be
  * synchronized with copy up for persistent nlink accounting.
  */
-int ovl_nlink_start(struct dentry *dentry)
+int ovl_nlink_start(struct dentry *dentry, bool *locked)
 {
-	struct inode *inode = d_inode(dentry);
+	struct ovl_inode *oi = OVL_I(d_inode(dentry));
 	const struct cred *old_cred;
 	int err;
 
-	if (WARN_ON(!inode))
-		return -ENOENT;
+	if (!d_inode(dentry))
+		return 0;
 
 	/*
 	 * With inodes index is enabled, we store the union overlay nlink
@@ -767,11 +586,11 @@ int ovl_nlink_start(struct dentry *dentry)
 			return err;
 	}
 
-	err = ovl_inode_lock(inode);
+	err = mutex_lock_interruptible(&oi->lock);
 	if (err)
 		return err;
 
-	if (d_is_dir(dentry) || !ovl_test_flag(OVL_INDEX, inode))
+	if (d_is_dir(dentry) || !ovl_test_flag(OVL_INDEX, d_inode(dentry)))
 		goto out;
 
 	old_cred = ovl_override_creds(dentry->d_sb);
@@ -786,24 +605,27 @@ int ovl_nlink_start(struct dentry *dentry)
 
 out:
 	if (err)
-		ovl_inode_unlock(inode);
+		mutex_unlock(&oi->lock);
+	else
+		*locked = true;
 
 	return err;
 }
 
-void ovl_nlink_end(struct dentry *dentry)
+void ovl_nlink_end(struct dentry *dentry, bool locked)
 {
-	struct inode *inode = d_inode(dentry);
+	if (locked) {
+		if (ovl_test_flag(OVL_INDEX, d_inode(dentry)) &&
+		    d_inode(dentry)->i_nlink == 0) {
+			const struct cred *old_cred;
 
-	if (ovl_test_flag(OVL_INDEX, inode) && inode->i_nlink == 0) {
-		const struct cred *old_cred;
+			old_cred = ovl_override_creds(dentry->d_sb);
+			ovl_cleanup_index(dentry);
+			revert_creds(old_cred);
+		}
 
-		old_cred = ovl_override_creds(dentry->d_sb);
-		ovl_cleanup_index(dentry);
-		revert_creds(old_cred);
+		mutex_unlock(&OVL_I(d_inode(dentry))->lock);
 	}
-
-	ovl_inode_unlock(inode);
 }
 
 int ovl_lock_rename_workdir(struct dentry *workdir, struct dentry *upperdir)
@@ -823,92 +645,4 @@ err_unlock:
 err:
 	pr_err("overlayfs: failed to lock workdir+upperdir\n");
 	return -EIO;
-}
-
-/* err < 0, 0 if no metacopy xattr, 1 if metacopy xattr found */
-int ovl_check_metacopy_xattr(struct dentry *dentry)
-{
-	int res;
-
-	/* Only regular files can have metacopy xattr */
-	if (!S_ISREG(d_inode(dentry)->i_mode))
-		return 0;
-
-	res = vfs_getxattr(dentry, OVL_XATTR_METACOPY, NULL, 0);
-	if (res < 0) {
-		if (res == -ENODATA || res == -EOPNOTSUPP)
-			return 0;
-		goto out;
-	}
-
-	return 1;
-out:
-	pr_warn_ratelimited("overlayfs: failed to get metacopy (%i)\n", res);
-	return res;
-}
-
-bool ovl_is_metacopy_dentry(struct dentry *dentry)
-{
-	struct ovl_entry *oe = dentry->d_fsdata;
-
-	if (!d_is_reg(dentry))
-		return false;
-
-	if (ovl_dentry_upper(dentry)) {
-		if (!ovl_has_upperdata(d_inode(dentry)))
-			return true;
-		return false;
-	}
-
-	return (oe->numlower > 1);
-}
-
-char *ovl_get_redirect_xattr(struct dentry *dentry, int padding)
-{
-	int res;
-	char *s, *next, *buf = NULL;
-
-	res = vfs_getxattr(dentry, OVL_XATTR_REDIRECT, NULL, 0);
-	if (res < 0) {
-		if (res == -ENODATA || res == -EOPNOTSUPP)
-			return NULL;
-		goto fail;
-	}
-
-	buf = kzalloc(res + padding + 1, GFP_KERNEL);
-	if (!buf)
-		return ERR_PTR(-ENOMEM);
-
-	if (res == 0)
-		goto invalid;
-
-	res = vfs_getxattr(dentry, OVL_XATTR_REDIRECT, buf, res);
-	if (res < 0)
-		goto fail;
-	if (res == 0)
-		goto invalid;
-
-	if (buf[0] == '/') {
-		for (s = buf; *s++ == '/'; s = next) {
-			next = strchrnul(s, '/');
-			if (s == next)
-				goto invalid;
-		}
-	} else {
-		if (strchr(buf, '/') != NULL)
-			goto invalid;
-	}
-
-	return buf;
-
-err_free:
-	kfree(buf);
-	return ERR_PTR(res);
-fail:
-	pr_warn_ratelimited("overlayfs: failed to get redirect (%i)\n", res);
-	goto err_free;
-invalid:
-	pr_warn_ratelimited("overlayfs: invalid redirect (%s)\n", buf);
-	res = -EINVAL;
-	goto err_free;
 }

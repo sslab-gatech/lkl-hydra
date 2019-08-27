@@ -67,14 +67,12 @@ identifier lock,unlock;
 @@
 
 *lock(E1@p,...);
-... when != E1
-    when any
+<+... when != E1
 if (...) {
   ... when != E1
 *  return@r ...;
 }
-... when != E1
-    when any
+...+>
 *unlock@up(E1,...);
 
 @script:python depends on org@

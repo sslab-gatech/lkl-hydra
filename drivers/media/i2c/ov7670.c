@@ -20,9 +20,7 @@
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <media/v4l2-device.h>
-#include <media/v4l2-event.h>
 #include <media/v4l2-ctrls.h>
-#include <media/v4l2-fwnode.h>
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-image-sizes.h>
 #include <media/i2c/ov7670.h>
@@ -244,7 +242,6 @@ struct ov7670_info {
 	struct clk *clk;
 	struct gpio_desc *resetb_gpio;
 	struct gpio_desc *pwdn_gpio;
-	unsigned int mbus_config;	/* Media bus configuration flags */
 	int min_width;			/* Filter out smaller sizes */
 	int min_height;			/* Filter out smaller sizes */
 	int clock_speed;		/* External clock speed (MHz) */
@@ -1017,7 +1014,7 @@ static int ov7670_set_fmt(struct v4l2_subdev *sd,
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 	struct v4l2_mbus_framefmt *mbus_fmt;
 #endif
-	unsigned char com7, com10 = 0;
+	unsigned char com7;
 	int ret;
 
 	if (format->pad)
@@ -1037,6 +1034,7 @@ static int ov7670_set_fmt(struct v4l2_subdev *sd,
 	}
 
 	ret = ov7670_try_fmt_internal(sd, &format->format, &ovfmt, &wsize);
+
 	if (ret)
 		return ret;
 	/*
@@ -1047,41 +1045,16 @@ static int ov7670_set_fmt(struct v4l2_subdev *sd,
 	 */
 	com7 = ovfmt->regs[0].value;
 	com7 |= wsize->com7_bit;
-	ret = ov7670_write(sd, REG_COM7, com7);
-	if (ret)
-		return ret;
-
-	/*
-	 * Configure the media bus through COM10 register
-	 */
-	if (info->mbus_config & V4L2_MBUS_VSYNC_ACTIVE_LOW)
-		com10 |= COM10_VS_NEG;
-	if (info->mbus_config & V4L2_MBUS_HSYNC_ACTIVE_LOW)
-		com10 |= COM10_HREF_REV;
-	if (info->pclk_hb_disable)
-		com10 |= COM10_PCLK_HB;
-	ret = ov7670_write(sd, REG_COM10, com10);
-	if (ret)
-		return ret;
-
+	ov7670_write(sd, REG_COM7, com7);
 	/*
 	 * Now write the rest of the array.  Also store start/stops
 	 */
-	ret = ov7670_write_array(sd, ovfmt->regs + 1);
-	if (ret)
-		return ret;
-
-	ret = ov7670_set_hw(sd, wsize->hstart, wsize->hstop, wsize->vstart,
-			    wsize->vstop);
-	if (ret)
-		return ret;
-
-	if (wsize->regs) {
+	ov7670_write_array(sd, ovfmt->regs + 1);
+	ov7670_set_hw(sd, wsize->hstart, wsize->hstop, wsize->vstart,
+			wsize->vstop);
+	ret = 0;
+	if (wsize->regs)
 		ret = ov7670_write_array(sd, wsize->regs);
-		if (ret)
-			return ret;
-	}
-
 	info->fmt = ovfmt;
 
 	/*
@@ -1094,10 +1067,8 @@ static int ov7670_set_fmt(struct v4l2_subdev *sd,
 	 * to write it unconditionally, and that will make the frame
 	 * rate persistent too.
 	 */
-	ret = ov7670_write(sd, REG_CLKRC, info->clkrc);
-	if (ret)
-		return ret;
-
+	if (ret == 0)
+		ret = ov7670_write(sd, REG_CLKRC, info->clkrc);
 	return 0;
 }
 
@@ -1129,24 +1100,30 @@ static int ov7670_get_fmt(struct v4l2_subdev *sd,
  * Implement G/S_PARM.  There is a "high quality" mode we could try
  * to do someday; for now, we just do the frame rate tweak.
  */
-static int ov7670_g_frame_interval(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_frame_interval *ival)
+static int ov7670_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
+	struct v4l2_captureparm *cp = &parms->parm.capture;
 	struct ov7670_info *info = to_state(sd);
 
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
 
-	info->devtype->get_framerate(sd, &ival->interval);
+	cp->capability = V4L2_CAP_TIMEPERFRAME;
+	info->devtype->get_framerate(sd, &cp->timeperframe);
 
 	return 0;
 }
 
-static int ov7670_s_frame_interval(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_frame_interval *ival)
+static int ov7670_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
-	struct v4l2_fract *tpf = &ival->interval;
+	struct v4l2_captureparm *cp = &parms->parm.capture;
+	struct v4l2_fract *tpf = &cp->timeperframe;
 	struct ov7670_info *info = to_state(sd);
 
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
 
+	cp->capability = V4L2_CAP_TIMEPERFRAME;
 	return info->devtype->set_framerate(sd, tpf);
 }
 
@@ -1652,9 +1629,6 @@ static int ov7670_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 static const struct v4l2_subdev_core_ops ov7670_core_ops = {
 	.reset = ov7670_reset,
 	.init = ov7670_init,
-	.log_status = v4l2_ctrl_subdev_log_status,
-	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
-	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	.g_register = ov7670_g_register,
 	.s_register = ov7670_s_register,
@@ -1662,8 +1636,8 @@ static const struct v4l2_subdev_core_ops ov7670_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops ov7670_video_ops = {
-	.s_frame_interval = ov7670_s_frame_interval,
-	.g_frame_interval = ov7670_g_frame_interval,
+	.s_parm = ov7670_s_parm,
+	.g_parm = ov7670_g_parm,
 };
 
 static const struct v4l2_subdev_pad_ops ov7670_pad_ops = {
@@ -1724,43 +1698,6 @@ static int ov7670_init_gpio(struct i2c_client *client, struct ov7670_info *info)
 	return 0;
 }
 
-/*
- * ov7670_parse_dt() - Parse device tree to collect mbus configuration
- *			properties
- */
-static int ov7670_parse_dt(struct device *dev,
-			   struct ov7670_info *info)
-{
-	struct fwnode_handle *fwnode = dev_fwnode(dev);
-	struct v4l2_fwnode_endpoint bus_cfg = { .bus_type = 0 };
-	struct fwnode_handle *ep;
-	int ret;
-
-	if (!fwnode)
-		return -EINVAL;
-
-	info->pclk_hb_disable = false;
-	if (fwnode_property_present(fwnode, "ov7670,pclk-hb-disable"))
-		info->pclk_hb_disable = true;
-
-	ep = fwnode_graph_get_next_endpoint(fwnode, NULL);
-	if (!ep)
-		return -EINVAL;
-
-	ret = v4l2_fwnode_endpoint_parse(ep, &bus_cfg);
-	fwnode_handle_put(ep);
-	if (ret)
-		return ret;
-
-	if (bus_cfg.bus_type != V4L2_MBUS_PARALLEL) {
-		dev_err(dev, "Unsupported media bus type\n");
-		return ret;
-	}
-	info->mbus_config = bus_cfg.bus.parallel.flags;
-
-	return 0;
-}
-
 static int ov7670_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
@@ -1777,17 +1714,11 @@ static int ov7670_probe(struct i2c_client *client,
 
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 	sd->internal_ops = &ov7670_subdev_internal_ops;
-	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 #endif
 
 	info->clock_speed = 30; /* default: a guess */
-
-	if (dev_fwnode(&client->dev)) {
-		ret = ov7670_parse_dt(&client->dev, info);
-		if (ret)
-			return ret;
-
-	} else if (client->dev.platform_data) {
+	if (client->dev.platform_data) {
 		struct ov7670_config *config = client->dev.platform_data;
 
 		/*
@@ -1812,24 +1743,17 @@ static int ov7670_probe(struct i2c_client *client,
 			info->pclk_hb_disable = true;
 	}
 
-	info->clk = devm_clk_get(&client->dev, "xclk"); /* optional */
-	if (IS_ERR(info->clk)) {
-		ret = PTR_ERR(info->clk);
-		if (ret == -ENOENT)
-			info->clk = NULL;
-		else
-			return ret;
-	}
-	if (info->clk) {
-		ret = clk_prepare_enable(info->clk);
-		if (ret)
-			return ret;
+	info->clk = devm_clk_get(&client->dev, "xclk");
+	if (IS_ERR(info->clk))
+		return PTR_ERR(info->clk);
+	ret = clk_prepare_enable(info->clk);
+	if (ret)
+		return ret;
 
-		info->clock_speed = clk_get_rate(info->clk) / 1000000;
-		if (info->clock_speed < 10 || info->clock_speed > 48) {
-			ret = -EINVAL;
-			goto clk_disable;
-		}
+	info->clock_speed = clk_get_rate(info->clk) / 1000000;
+	if (info->clock_speed < 10 || info->clock_speed > 48) {
+		ret = -EINVAL;
+		goto clk_disable;
 	}
 
 	ret = ov7670_init_gpio(client, info);
@@ -1860,6 +1784,9 @@ static int ov7670_probe(struct i2c_client *client,
 	tpf.numerator = 1;
 	tpf.denominator = 30;
 	info->devtype->set_framerate(sd, &tpf);
+
+	if (info->pclk_hb_disable)
+		ov7670_write(sd, REG_COM10, COM10_PCLK_HB);
 
 	v4l2_ctrl_handler_init(&info->hdl, 10);
 	v4l2_ctrl_new_std(&info->hdl, &ov7670_ctrl_ops,

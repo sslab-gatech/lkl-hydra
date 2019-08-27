@@ -115,7 +115,7 @@
 				wm8904: codec@1a {
 					compatible = "wlf,wm8904";
 					reg = <0x1a>;
-					clocks = <&pmc PMC_TYPE_SYSTEM 10>;
+					clocks = <&pck2>;
 					clock-names = "mclk";
 				};
 
@@ -129,8 +129,8 @@
 					wakeup-source;
 				};
 
-				touchscreen@4c {
-					compatible = "atmel,maxtouch";
+				atmel_mxt_ts@4c {
+					compatible = "atmel,atmel_mxt_ts";
 					reg = <0x4c>;
 					interrupt-parent = <&pioE>;
 					interrupts = <24 0x0>;

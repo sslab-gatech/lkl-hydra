@@ -277,6 +277,10 @@ static int cavium_ptp_probe(struct pci_dev *pdev,
 	writeq(clock_comp, clock->reg_base + PTP_CLOCK_COMP);
 
 	clock->ptp_clock = ptp_clock_register(&clock->ptp_info, dev);
+	if (!clock->ptp_clock) {
+		err = -ENODEV;
+		goto error_stop;
+	}
 	if (IS_ERR(clock->ptp_clock)) {
 		err = PTR_ERR(clock->ptp_clock);
 		goto error_stop;
@@ -332,7 +336,18 @@ static struct pci_driver cavium_ptp_driver = {
 	.remove = cavium_ptp_remove,
 };
 
-module_pci_driver(cavium_ptp_driver);
+static int __init cavium_ptp_init_module(void)
+{
+	return pci_register_driver(&cavium_ptp_driver);
+}
+
+static void __exit cavium_ptp_cleanup_module(void)
+{
+	pci_unregister_driver(&cavium_ptp_driver);
+}
+
+module_init(cavium_ptp_init_module);
+module_exit(cavium_ptp_cleanup_module);
 
 MODULE_DESCRIPTION(DRV_NAME);
 MODULE_AUTHOR("Cavium Networks <support@cavium.com>");

@@ -31,6 +31,7 @@
 #include "wlcore.h"
 #include "debug.h"
 #include "wl12xx_80211.h"
+#include "ps.h"
 #include "hw_ops.h"
 
 int wl1271_acx_wake_up_conditions(struct wl1271 *wl, struct wl12xx_vif *wlvif,

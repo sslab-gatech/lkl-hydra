@@ -95,7 +95,8 @@ static void process_shutdown(void)
 		/* send kill signal */
 		if (kill_cad_pid(SIGINT, 1)) {
 			/* just in case killing init process failed */
-			machine_power_off();
+			if (pm_power_off)
+				pm_power_off();
 		}
 	}
 }

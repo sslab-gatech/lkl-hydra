@@ -1,6 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Copyright 2012 Sascha Hauer, Pengutronix
+/*
+ * Copyright 2012 Sascha Hauer, Pengutronix
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
+ */
 
 #include "imx27-pinfunc.h"
 
@@ -16,8 +23,10 @@
 	 * The decompressor and also some bootloaders rely on a
 	 * pre-existing /chosen node to be available to insert the
 	 * command line and merge other ATAGS info.
+	 * Also for U-Boot there must be a pre-existing /memory node.
 	 */
 	chosen {};
+	memory { device_type = "memory"; reg = <0 0>; };
 
 	aliases {
 		ethernet0 = &fec;
@@ -48,7 +57,10 @@
 	};
 
 	clocks {
-		clk_osc26m: osc26m {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		osc26m {
 			compatible = "fsl,imx-osc26m", "fixed-clock";
 			#clock-cells = <0>;
 			clock-frequency = <26000000>;
@@ -207,7 +219,7 @@
 				status = "disabled";
 			};
 
-			cspi1: spi@1000e000 {
+			cspi1: cspi@1000e000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
 				compatible = "fsl,imx27-cspi";
@@ -219,7 +231,7 @@
 				status = "disabled";
 			};
 
-			cspi2: spi@1000f000 {
+			cspi2: cspi@1000f000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
 				compatible = "fsl,imx27-cspi";
@@ -371,7 +383,7 @@
 				status = "disabled";
 			};
 
-			cspi3: spi@10017000 {
+			cspi3: cspi@10017000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
 				compatible = "fsl,imx27-cspi";

@@ -17,6 +17,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/rtc.h>
+#include <linux/math64.h>
 
 #include "ntp_internal.h"
 #include "timekeeping_internal.h"
@@ -30,7 +31,7 @@
 
 
 /* USER_HZ period (usecs): */
-unsigned long			tick_usec = USER_TICK_USEC;
+unsigned long			tick_usec = TICK_USEC;
 
 /* SHIFTED_HZ period (nsecs): */
 unsigned long			tick_nsec;
@@ -501,7 +502,7 @@ static void sched_sync_hw_clock(struct timespec64 now,
 {
 	struct timespec64 next;
 
-	ktime_get_real_ts64(&next);
+	getnstimeofday64(&next);
 	if (!fail)
 		next.tv_sec = 659;
 	else {
@@ -536,7 +537,7 @@ static void sync_rtc_clock(void)
 	if (!IS_ENABLED(CONFIG_RTC_SYSTOHC))
 		return;
 
-	ktime_get_real_ts64(&now);
+	getnstimeofday64(&now);
 
 	adjust = now;
 	if (persistent_clock_is_local)
@@ -554,9 +555,17 @@ static void sync_rtc_clock(void)
 }
 
 #ifdef CONFIG_GENERIC_CMOS_UPDATE
-int __weak update_persistent_clock64(struct timespec64 now64)
+int __weak update_persistent_clock(struct timespec now)
 {
 	return -ENODEV;
+}
+
+int __weak update_persistent_clock64(struct timespec64 now64)
+{
+	struct timespec now;
+
+	now = timespec64_to_timespec(now64);
+	return update_persistent_clock(now);
 }
 #endif
 
@@ -582,7 +591,7 @@ static bool sync_cmos_clock(void)
 	 * Architectures are strongly encouraged to use rtclib and not
 	 * implement this legacy API.
 	 */
-	ktime_get_real_ts64(&now);
+	getnstimeofday64(&now);
 	if (rtc_tv_nsec_ok(-1 * target_nsec, &adjust, &now)) {
 		if (persistent_clock_is_local)
 			adjust.tv_sec -= (sys_tz.tz_minuteswest * 60);
@@ -633,7 +642,7 @@ void ntp_notify_cmos_timer(void)
 /*
  * Propagate a new txc->status value into the NTP state:
  */
-static inline void process_adj_status(const struct timex *txc)
+static inline void process_adj_status(struct timex *txc, struct timespec64 *ts)
 {
 	if ((time_status & STA_PLL) && !(txc->status & STA_PLL)) {
 		time_state = TIME_OK;
@@ -656,10 +665,12 @@ static inline void process_adj_status(const struct timex *txc)
 }
 
 
-static inline void process_adjtimex_modes(const struct timex *txc, s32 *time_tai)
+static inline void process_adjtimex_modes(struct timex *txc,
+						struct timespec64 *ts,
+						s32 *time_tai)
 {
 	if (txc->modes & ADJ_STATUS)
-		process_adj_status(txc);
+		process_adj_status(txc, ts);
 
 	if (txc->modes & ADJ_NANO)
 		time_status |= STA_NANO;
@@ -707,7 +718,7 @@ static inline void process_adjtimex_modes(const struct timex *txc, s32 *time_tai
  * adjtimex mainly allows reading (and writing, if superuser) of
  * kernel time-keeping variables. used by xntpd.
  */
-int __do_adjtimex(struct timex *txc, const struct timespec64 *ts, s32 *time_tai)
+int __do_adjtimex(struct timex *txc, struct timespec64 *ts, s32 *time_tai)
 {
 	int result;
 
@@ -724,7 +735,7 @@ int __do_adjtimex(struct timex *txc, const struct timespec64 *ts, s32 *time_tai)
 
 		/* If there are input parameters, then process them: */
 		if (txc->modes)
-			process_adjtimex_modes(txc, time_tai);
+			process_adjtimex_modes(txc, ts, time_tai);
 
 		txc->offset = shift_right(time_offset * NTP_INTERVAL_FREQ,
 				  NTP_SCALE_SHIFT);
@@ -1011,11 +1022,12 @@ void __hardpps(const struct timespec64 *phase_ts, const struct timespec64 *raw_t
 
 static int __init ntp_tick_adj_setup(char *str)
 {
-	int rc = kstrtos64(str, 0, &ntp_tick_adj);
+	int rc = kstrtol(str, 0, (long *)&ntp_tick_adj);
+
 	if (rc)
 		return rc;
-
 	ntp_tick_adj <<= NTP_SCALE_SHIFT;
+
 	return 1;
 }
 

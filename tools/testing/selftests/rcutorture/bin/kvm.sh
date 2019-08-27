@@ -1,8 +1,10 @@
 #!/bin/bash
 #
-# Run a series of tests under KVM.  By default, this series is specified
-# by the relevant CFLIST file, but can be overridden by the --configs
-# command-line argument.
+# Run a series of 14 tests under KVM.  These are not particularly
+# well-selected or well-tuned, but are the current set.
+#
+# Edit the definitions below to set the locations of the various directories,
+# as well as the test duration.
 #
 # Usage: kvm.sh [ options ]
 #
@@ -42,7 +44,6 @@ TORTURE_BOOT_IMAGE=""
 TORTURE_INITRD="$KVM/initrd"; export TORTURE_INITRD
 TORTURE_KCONFIG_ARG=""
 TORTURE_KMAKE_ARG=""
-TORTURE_QEMU_MEM=512
 TORTURE_SHUTDOWN_GRACE=180
 TORTURE_SUITE=rcu
 resdir=""
@@ -69,7 +70,6 @@ usage () {
 	echo "       --kconfig Kconfig-options"
 	echo "       --kmake-arg kernel-make-arguments"
 	echo "       --mac nn:nn:nn:nn:nn:nn"
-	echo "       --memory megabytes | nnnG"
 	echo "       --no-initrd"
 	echo "       --qemu-args qemu-arguments"
 	echo "       --qemu-cmd qemu-system-..."
@@ -147,11 +147,6 @@ do
 		TORTURE_QEMU_MAC=$2
 		shift
 		;;
-	--memory)
-		checkarg --memory "(memory size)" $# "$2" '^[0-9]\+[MG]\?$' error
-		TORTURE_QEMU_MEM=$2
-		shift
-		;;
 	--no-initrd)
 		TORTURE_INITRD=""; export TORTURE_INITRD
 		;;
@@ -179,12 +174,6 @@ do
 		checkarg --torture "(suite name)" "$#" "$2" '^\(lock\|rcu\|rcuperf\)$' '^--'
 		TORTURE_SUITE=$2
 		shift
-		if test "$TORTURE_SUITE" = rcuperf
-		then
-			# If you really want jitter for rcuperf, specify
-			# it after specifying rcuperf.  (But why?)
-			jitter=0
-		fi
 		;;
 	*)
 		echo Unknown argument $1
@@ -193,14 +182,6 @@ do
 	esac
 	shift
 done
-
-if test -z "$TORTURE_INITRD" || tools/testing/selftests/rcutorture/bin/mkinitrd.sh
-then
-	:
-else
-	echo No initrd and unable to create one, aborting test >&2
-	exit 1
-fi
 
 CONFIGFRAG=${KVM}/configs/${TORTURE_SUITE}; export CONFIGFRAG
 
@@ -307,7 +288,6 @@ TORTURE_KMAKE_ARG="$TORTURE_KMAKE_ARG"; export TORTURE_KMAKE_ARG
 TORTURE_QEMU_CMD="$TORTURE_QEMU_CMD"; export TORTURE_QEMU_CMD
 TORTURE_QEMU_INTERACTIVE="$TORTURE_QEMU_INTERACTIVE"; export TORTURE_QEMU_INTERACTIVE
 TORTURE_QEMU_MAC="$TORTURE_QEMU_MAC"; export TORTURE_QEMU_MAC
-TORTURE_QEMU_MEM="$TORTURE_QEMU_MEM"; export TORTURE_QEMU_MEM
 TORTURE_SHUTDOWN_GRACE="$TORTURE_SHUTDOWN_GRACE"; export TORTURE_SHUTDOWN_GRACE
 TORTURE_SUITE="$TORTURE_SUITE"; export TORTURE_SUITE
 if ! test -e $resdir
@@ -355,7 +335,7 @@ function dump(first, pastlast, batchnum)
 	print "needqemurun="
 	jn=1
 	for (j = first; j < pastlast; j++) {
-		builddir=KVM "/b1"
+		builddir=KVM "/b" jn
 		cpusr[jn] = cpus[j];
 		if (cfrep[cf[j]] == "") {
 			cfr[jn] = cf[j];

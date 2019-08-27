@@ -68,6 +68,7 @@ static int bcm47xxsflash_poll(struct bcm47xxsflash *b47s, int timeout)
 static int bcm47xxsflash_erase(struct mtd_info *mtd, struct erase_info *erase)
 {
 	struct bcm47xxsflash *b47s = mtd->priv;
+	int err;
 
 	switch (b47s->type) {
 	case BCM47XXSFLASH_TYPE_ST:
@@ -88,7 +89,16 @@ static int bcm47xxsflash_erase(struct mtd_info *mtd, struct erase_info *erase)
 		break;
 	}
 
-	return bcm47xxsflash_poll(b47s, HZ);
+	err = bcm47xxsflash_poll(b47s, HZ);
+	if (err)
+		erase->state = MTD_ERASE_FAILED;
+	else
+		erase->state = MTD_ERASE_DONE;
+
+	if (erase->callback)
+		erase->callback(erase);
+
+	return err;
 }
 
 static int bcm47xxsflash_read(struct mtd_info *mtd, loff_t from, size_t len,

@@ -9,6 +9,7 @@
 
 #include <linux/capability.h>
 #include <linux/audit.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/lsm_hooks.h>
@@ -387,7 +388,7 @@ int cap_inode_getsecurity(struct inode *inode, const char *name, void **buffer,
 	if (strcmp(name, "capability") != 0)
 		return -EOPNOTSUPP;
 
-	dentry = d_find_any_alias(inode);
+	dentry = d_find_alias(inode);
 	if (!dentry)
 		return -EINVAL;
 
@@ -448,8 +449,6 @@ int cap_inode_getsecurity(struct inode *inode, const char *name, void **buffer,
 				magic |= VFS_CAP_FLAGS_EFFECTIVE;
 			memcpy(&cap->data, &nscap->data, sizeof(__le32) * 2 * VFS_CAP_U32);
 			cap->magic_etc = cpu_to_le32(magic);
-		} else {
-			size = -ENOMEM;
 		}
 	}
 	kfree(tmpbuf);
@@ -683,6 +682,9 @@ static int get_file_caps(struct linux_binprm *bprm, bool *effective, bool *has_f
 	}
 
 	rc = bprm_caps_from_vfs_caps(&vcaps, bprm, effective, has_fcap);
+	if (rc == -EINVAL)
+		printk(KERN_NOTICE "%s: cap_from_disk returned %d for %s\n",
+		       __func__, rc, bprm->filename);
 
 out:
 	if (rc)
@@ -915,8 +917,6 @@ int cap_bprm_set_creds(struct linux_binprm *bprm)
 int cap_inode_setxattr(struct dentry *dentry, const char *name,
 		       const void *value, size_t size, int flags)
 {
-	struct user_namespace *user_ns = dentry->d_sb->s_user_ns;
-
 	/* Ignore non-security xattrs */
 	if (strncmp(name, XATTR_SECURITY_PREFIX,
 			sizeof(XATTR_SECURITY_PREFIX) - 1) != 0)
@@ -929,7 +929,7 @@ int cap_inode_setxattr(struct dentry *dentry, const char *name,
 	if (strcmp(name, XATTR_NAME_CAPS) == 0)
 		return 0;
 
-	if (!ns_capable(user_ns, CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	return 0;
 }
@@ -947,8 +947,6 @@ int cap_inode_setxattr(struct dentry *dentry, const char *name,
  */
 int cap_inode_removexattr(struct dentry *dentry, const char *name)
 {
-	struct user_namespace *user_ns = dentry->d_sb->s_user_ns;
-
 	/* Ignore non-security xattrs */
 	if (strncmp(name, XATTR_SECURITY_PREFIX,
 			sizeof(XATTR_SECURITY_PREFIX) - 1) != 0)
@@ -964,7 +962,7 @@ int cap_inode_removexattr(struct dentry *dentry, const char *name)
 		return 0;
 	}
 
-	if (!ns_capable(user_ns, CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	return 0;
 }

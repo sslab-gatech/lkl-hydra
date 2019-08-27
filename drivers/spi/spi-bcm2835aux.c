@@ -184,11 +184,6 @@ static irqreturn_t bcm2835aux_spi_interrupt(int irq, void *dev_id)
 	struct bcm2835aux_spi *bs = spi_master_get_devdata(master);
 	irqreturn_t ret = IRQ_NONE;
 
-	/* IRQ may be shared, so return if our interrupts are disabled */
-	if (!(bcm2835aux_rd(bs, BCM2835_AUX_SPI_CNTL1) &
-	      (BCM2835_AUX_SPI_CNTL1_TXEMPTY | BCM2835_AUX_SPI_CNTL1_IDLE)))
-		return ret;
-
 	/* check if we have data to read */
 	while (bs->rx_len &&
 	       (!(bcm2835aux_rd(bs, BCM2835_AUX_SPI_STAT) &
@@ -326,6 +321,7 @@ static int bcm2835aux_spi_transfer_one(struct spi_master *master,
 	struct bcm2835aux_spi *bs = spi_master_get_devdata(master);
 	unsigned long spi_hz, clk_hz, speed;
 	unsigned long spi_used_hz;
+	unsigned long long xfer_time_us;
 
 	/* calculate the registers to handle
 	 *
@@ -362,21 +358,20 @@ static int bcm2835aux_spi_transfer_one(struct spi_master *master,
 	bs->rx_len = tfr->len;
 	bs->pending = 0;
 
-	/* Calculate the estimated time in us the transfer runs.  Note that
-	 * there are are 2 idle clocks cycles after each chunk getting
-	 * transferred - in our case the chunk size is 3 bytes, so we
-	 * approximate this by 9 cycles/byte.  This is used to find the number
-	 * of Hz per byte per polling limit.  E.g., we can transfer 1 byte in
-	 * 30 µs per 300,000 Hz of bus clock.
+	/* calculate the estimated time in us the transfer runs
+	 * note that there are are 2 idle clocks after each
+	 * chunk getting transferred - in our case the chunk size
+	 * is 3 bytes, so we approximate this by 9 bits/byte
 	 */
-#define HZ_PER_BYTE ((9 * 1000000) / BCM2835_AUX_SPI_POLLING_LIMIT_US)
+	xfer_time_us = tfr->len * 9 * 1000000;
+	do_div(xfer_time_us, spi_used_hz);
+
 	/* run in polling mode for short transfers */
-	if (tfr->len < spi_used_hz / HZ_PER_BYTE)
+	if (xfer_time_us < BCM2835_AUX_SPI_POLLING_LIMIT_US)
 		return bcm2835aux_spi_transfer_one_poll(master, spi, tfr);
 
 	/* run in interrupt mode for all others */
 	return bcm2835aux_spi_transfer_one_irq(master, spi, tfr);
-#undef HZ_PER_BYTE
 }
 
 static int bcm2835aux_spi_prepare_message(struct spi_master *master,
@@ -542,4 +537,4 @@ module_platform_driver(bcm2835aux_spi_driver);
 
 MODULE_DESCRIPTION("SPI controller driver for Broadcom BCM2835 aux");
 MODULE_AUTHOR("Martin Sperl <kernel@martin.sperl.org>");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

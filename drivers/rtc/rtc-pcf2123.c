@@ -289,7 +289,7 @@ static int pcf2123_rtc_read_time(struct device *dev, struct rtc_time *tm)
 			tm->tm_sec, tm->tm_min, tm->tm_hour,
 			tm->tm_mday, tm->tm_mon, tm->tm_year, tm->tm_wday);
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int pcf2123_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -453,7 +453,6 @@ static int pcf2123_remove(struct spi_device *spi)
 #ifdef CONFIG_OF
 static const struct of_device_id pcf2123_dt_ids[] = {
 	{ .compatible = "nxp,rtc-pcf2123", },
-	{ .compatible = "microcrystal,rv2123", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, pcf2123_dt_ids);

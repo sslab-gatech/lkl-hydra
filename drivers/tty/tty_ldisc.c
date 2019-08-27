@@ -176,11 +176,12 @@ static struct tty_ldisc *tty_ldisc_get(struct tty_struct *tty, int disc)
 			return ERR_CAST(ldops);
 	}
 
-	/*
-	 * There is no way to handle allocation failure of only 16 bytes.
-	 * Let's simplify error handling and save more memory.
-	 */
-	ld = kmalloc(sizeof(struct tty_ldisc), GFP_KERNEL | __GFP_NOFAIL);
+	ld = kmalloc(sizeof(struct tty_ldisc), GFP_KERNEL);
+	if (ld == NULL) {
+		put_ldops(ldops);
+		return ERR_PTR(-ENOMEM);
+	}
+
 	ld->ops = ldops;
 	ld->tty = tty;
 
@@ -229,11 +230,24 @@ static int tty_ldiscs_seq_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-const struct seq_operations tty_ldiscs_seq_ops = {
+static const struct seq_operations tty_ldiscs_seq_ops = {
 	.start	= tty_ldiscs_seq_start,
 	.next	= tty_ldiscs_seq_next,
 	.stop	= tty_ldiscs_seq_stop,
 	.show	= tty_ldiscs_seq_show,
+};
+
+static int proc_tty_ldiscs_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &tty_ldiscs_seq_ops);
+}
+
+const struct file_operations tty_ldiscs_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= proc_tty_ldiscs_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
 };
 
 /**
@@ -327,11 +341,6 @@ int tty_ldisc_lock(struct tty_struct *tty, unsigned long timeout)
 {
 	int ret;
 
-	/* Kindly asking blocked readers to release the read side */
-	set_bit(TTY_LDISC_CHANGING, &tty->flags);
-	wake_up_interruptible_all(&tty->read_wait);
-	wake_up_interruptible_all(&tty->write_wait);
-
 	ret = __tty_ldisc_lock(tty, timeout);
 	if (!ret)
 		return -EBUSY;
@@ -342,8 +351,6 @@ int tty_ldisc_lock(struct tty_struct *tty, unsigned long timeout)
 void tty_ldisc_unlock(struct tty_struct *tty)
 {
 	clear_bit(TTY_LDISC_HALTED, &tty->flags);
-	/* Can be cleared here - ldisc_unlock will wake up writers firstly */
-	clear_bit(TTY_LDISC_CHANGING, &tty->flags);
 	__tty_ldisc_unlock(tty);
 }
 
@@ -478,7 +485,6 @@ static int tty_ldisc_open(struct tty_struct *tty, struct tty_ldisc *ld)
 
 static void tty_ldisc_close(struct tty_struct *tty, struct tty_ldisc *ld)
 {
-	lockdep_assert_held_exclusive(&tty->ldisc_sem);
 	WARN_ON(!test_bit(TTY_LDISC_OPEN, &tty->flags));
 	clear_bit(TTY_LDISC_OPEN, &tty->flags);
 	if (ld->ops->close)
@@ -500,7 +506,6 @@ static int tty_ldisc_failto(struct tty_struct *tty, int ld)
 	struct tty_ldisc *disc = tty_ldisc_get(tty, ld);
 	int r;
 
-	lockdep_assert_held_exclusive(&tty->ldisc_sem);
 	if (IS_ERR(disc))
 		return PTR_ERR(disc);
 	tty->ldisc = disc;
@@ -522,16 +527,19 @@ static int tty_ldisc_failto(struct tty_struct *tty, int ld)
 static void tty_ldisc_restore(struct tty_struct *tty, struct tty_ldisc *old)
 {
 	/* There is an outstanding reference here so this is safe */
-	if (tty_ldisc_failto(tty, old->ops->num) < 0) {
-		const char *name = tty_name(tty);
-
-		pr_warn("Falling back ldisc for %s.\n", name);
+	old = tty_ldisc_get(tty, old->ops->num);
+	WARN_ON(IS_ERR(old));
+	tty->ldisc = old;
+	tty_set_termios_ldisc(tty, old->ops->num);
+	if (tty_ldisc_open(tty, old) < 0) {
+		tty_ldisc_put(old);
 		/* The traditional behaviour is to fall back to N_TTY, we
 		   want to avoid falling back to N_NULL unless we have no
 		   choice to avoid the risk of breaking anything */
 		if (tty_ldisc_failto(tty, N_TTY) < 0 &&
 		    tty_ldisc_failto(tty, N_NULL) < 0)
-			panic("Couldn't open N_NULL ldisc for %s.", name);
+			panic("Couldn't open N_NULL ldisc for %s.",
+			      tty_name(tty));
 	}
 }
 
@@ -624,7 +632,6 @@ EXPORT_SYMBOL_GPL(tty_set_ldisc);
  */
 static void tty_ldisc_kill(struct tty_struct *tty)
 {
-	lockdep_assert_held_exclusive(&tty->ldisc_sem);
 	if (!tty->ldisc)
 		return;
 	/*
@@ -672,7 +679,6 @@ int tty_ldisc_reinit(struct tty_struct *tty, int disc)
 	struct tty_ldisc *ld;
 	int retval;
 
-	lockdep_assert_held_exclusive(&tty->ldisc_sem);
 	ld = tty_ldisc_get(tty, disc);
 	if (IS_ERR(ld)) {
 		BUG_ON(disc == N_TTY);
@@ -771,10 +777,6 @@ int tty_ldisc_setup(struct tty_struct *tty, struct tty_struct *o_tty)
 		return retval;
 
 	if (o_tty) {
-		/*
-		 * Called without o_tty->ldisc_sem held, as o_tty has been
-		 * just allocated and no one has a reference to it.
-		 */
 		retval = tty_ldisc_open(o_tty, o_tty->ldisc);
 		if (retval) {
 			tty_ldisc_close(tty, tty->ldisc);
@@ -822,13 +824,12 @@ EXPORT_SYMBOL_GPL(tty_ldisc_release);
  *	the tty structure is not completely set up when this call is made.
  */
 
-int tty_ldisc_init(struct tty_struct *tty)
+void tty_ldisc_init(struct tty_struct *tty)
 {
 	struct tty_ldisc *ld = tty_ldisc_get(tty, N_TTY);
 	if (IS_ERR(ld))
-		return PTR_ERR(ld);
+		panic("n_tty: init_tty");
 	tty->ldisc = ld;
-	return 0;
 }
 
 /**
@@ -840,7 +841,6 @@ int tty_ldisc_init(struct tty_struct *tty)
  */
 void tty_ldisc_deinit(struct tty_struct *tty)
 {
-	/* no ldisc_sem, tty is being destroyed */
 	if (tty->ldisc)
 		tty_ldisc_put(tty->ldisc);
 	tty->ldisc = NULL;

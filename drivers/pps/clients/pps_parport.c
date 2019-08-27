@@ -49,7 +49,6 @@ MODULE_PARM_DESC(clear_wait,
 	" zero turns clear edge capture off entirely");
 module_param(clear_wait, uint, 0);
 
-static DEFINE_IDA(pps_client_index);
 
 /* internal per port structure */
 struct pps_client_pp {
@@ -57,7 +56,6 @@ struct pps_client_pp {
 	struct pps_device *pps;		/* PPS device */
 	unsigned int cw;		/* port clear timeout */
 	unsigned int cw_err;		/* number of timeouts */
-	int index;			/* device number */
 };
 
 static inline int signal_is_set(struct parport *port)
@@ -138,8 +136,6 @@ out_both:
 
 static void parport_attach(struct parport *port)
 {
-	struct pardev_cb pps_client_cb;
-	int index;
 	struct pps_client_pp *device;
 	struct pps_source_info info = {
 		.name		= KBUILD_MODNAME,
@@ -158,15 +154,8 @@ static void parport_attach(struct parport *port)
 		return;
 	}
 
-	index = ida_simple_get(&pps_client_index, 0, 0, GFP_KERNEL);
-	memset(&pps_client_cb, 0, sizeof(pps_client_cb));
-	pps_client_cb.private = device;
-	pps_client_cb.irq_func = parport_irq;
-	pps_client_cb.flags = PARPORT_FLAG_EXCL;
-	device->pardev = parport_register_dev_model(port,
-						    KBUILD_MODNAME,
-						    &pps_client_cb,
-						    index);
+	device->pardev = parport_register_device(port, KBUILD_MODNAME,
+			NULL, NULL, parport_irq, PARPORT_FLAG_EXCL, device);
 	if (!device->pardev) {
 		pr_err("couldn't register with %s\n", port->name);
 		goto err_free;
@@ -179,7 +168,7 @@ static void parport_attach(struct parport *port)
 
 	device->pps = pps_register_source(&info,
 			PPS_CAPTUREBOTH | PPS_OFFSETASSERT | PPS_OFFSETCLEAR);
-	if (IS_ERR(device->pps)) {
+	if (device->pps == NULL) {
 		pr_err("couldn't register PPS source\n");
 		goto err_release_dev;
 	}
@@ -187,7 +176,6 @@ static void parport_attach(struct parport *port)
 	device->cw = clear_wait;
 
 	port->ops->enable_irq(port);
-	device->index = index;
 
 	pr_info("attached to %s\n", port->name);
 
@@ -198,7 +186,6 @@ err_release_dev:
 err_unregister_dev:
 	parport_unregister_device(device->pardev);
 err_free:
-	ida_simple_remove(&pps_client_index, index);
 	kfree(device);
 }
 
@@ -218,15 +205,13 @@ static void parport_detach(struct parport *port)
 	pps_unregister_source(device->pps);
 	parport_release(pardev);
 	parport_unregister_device(pardev);
-	ida_simple_remove(&pps_client_index, device->index);
 	kfree(device);
 }
 
 static struct parport_driver pps_parport_driver = {
 	.name = KBUILD_MODNAME,
-	.match_port = parport_attach,
+	.attach = parport_attach,
 	.detach = parport_detach,
-	.devmodel = true,
 };
 
 /* module staff */

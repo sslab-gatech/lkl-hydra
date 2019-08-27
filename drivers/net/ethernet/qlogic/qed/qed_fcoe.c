@@ -147,8 +147,7 @@ qed_sp_fcoe_func_start(struct qed_hwfn *p_hwfn,
 		       "Cannot satisfy CQ amount. CQs requested %d, CQs available %d. Aborting function start\n",
 		       fcoe_pf_params->num_cqs,
 		       p_hwfn->hw_info.feat_num[QED_FCOE_CQ]);
-		rc = -EINVAL;
-		goto err;
+		return -EINVAL;
 	}
 
 	p_data->mtu = cpu_to_le16(fcoe_pf_params->mtu);
@@ -157,14 +156,14 @@ qed_sp_fcoe_func_start(struct qed_hwfn *p_hwfn,
 
 	rc = qed_cxt_acquire_cid(p_hwfn, PROTOCOLID_FCOE, &dummy_cid);
 	if (rc)
-		goto err;
+		return rc;
 
 	cxt_info.iid = dummy_cid;
 	rc = qed_cxt_get_cid_info(p_hwfn, &cxt_info);
 	if (rc) {
 		DP_NOTICE(p_hwfn, "Cannot find context info for dummy cid=%d\n",
 			  dummy_cid);
-		goto err;
+		return rc;
 	}
 	p_cxt = cxt_info.p_cxt;
 	SET_FIELD(p_cxt->tstorm_ag_context.flags3,
@@ -241,10 +240,6 @@ qed_sp_fcoe_func_start(struct qed_hwfn *p_hwfn,
 	rc = qed_spq_post(p_hwfn, p_ent, NULL);
 
 	return rc;
-
-err:
-	qed_sp_destroy_request(p_hwfn, p_ent);
-	return rc;
 }
 
 static int
@@ -318,9 +313,6 @@ qed_sp_fcoe_conn_offload(struct qed_hwfn *p_hwfn,
 	p_data->d_id.addr_mid = p_conn->d_id.addr_mid;
 	p_data->d_id.addr_lo = p_conn->d_id.addr_lo;
 	p_data->flags = p_conn->flags;
-	if (test_bit(QED_MF_UFP_SPECIFIC, &p_hwfn->cdev->mf_bits))
-		SET_FIELD(p_data->flags,
-			  FCOE_CONN_OFFLOAD_RAMROD_DATA_B_SINGLE_VLAN, 1);
 	p_data->def_q_idx = p_conn->def_q_idx;
 
 	return qed_spq_post(p_hwfn, p_ent, NULL);

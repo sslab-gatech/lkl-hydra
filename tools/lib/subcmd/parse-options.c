@@ -116,7 +116,6 @@ static int get_value(struct parse_opt_ctx_t *p,
 		case OPTION_INTEGER:
 		case OPTION_UINTEGER:
 		case OPTION_LONG:
-		case OPTION_ULONG:
 		case OPTION_U64:
 		default:
 			break;
@@ -167,7 +166,6 @@ static int get_value(struct parse_opt_ctx_t *p,
 		case OPTION_INTEGER:
 		case OPTION_UINTEGER:
 		case OPTION_LONG:
-		case OPTION_ULONG:
 		case OPTION_U64:
 		default:
 			break;
@@ -293,22 +291,6 @@ static int get_value(struct parse_opt_ctx_t *p,
 		if (get_arg(p, opt, flags, &arg))
 			return -1;
 		*(long *)opt->value = strtol(arg, (char **)&s, 10);
-		if (*s)
-			return opterror(opt, "expects a numerical value", flags);
-		return 0;
-
-	case OPTION_ULONG:
-		if (unset) {
-			*(unsigned long *)opt->value = 0;
-			return 0;
-		}
-		if (opt->flags & PARSE_OPT_OPTARG && !p->opt) {
-			*(unsigned long *)opt->value = opt->defval;
-			return 0;
-		}
-		if (get_arg(p, opt, flags, &arg))
-			return -1;
-		*(unsigned long *)opt->value = strtoul(arg, (char **)&s, 10);
 		if (*s)
 			return opterror(opt, "expects a numerical value", flags);
 		return 0;
@@ -451,7 +433,7 @@ match:
 
 	if (ambiguous_option) {
 		 fprintf(stderr,
-			 " Error: Ambiguous option: %s (could be --%s%s or --%s%s)\n",
+			 " Error: Ambiguous option: %s (could be --%s%s or --%s%s)",
 			 arg,
 			 (ambiguous_flags & OPT_UNSET) ?  "no-" : "",
 			 ambiguous_option->long_name,
@@ -476,7 +458,7 @@ static void check_typos(const char *arg, const struct option *options)
 		return;
 
 	if (strstarts(arg, "no-")) {
-		fprintf(stderr, " Error: did you mean `--%s` (with two dashes ?)\n", arg);
+		fprintf(stderr, " Error: did you mean `--%s` (with two dashes ?)", arg);
 		exit(129);
 	}
 
@@ -484,7 +466,7 @@ static void check_typos(const char *arg, const struct option *options)
 		if (!options->long_name)
 			continue;
 		if (strstarts(options->long_name, arg)) {
-			fprintf(stderr, " Error: did you mean `--%s` (with two dashes ?)\n", arg);
+			fprintf(stderr, " Error: did you mean `--%s` (with two dashes ?)", arg);
 			exit(129);
 		}
 	}
@@ -721,7 +703,6 @@ static void print_option_help(const struct option *opts, int full)
 	case OPTION_ARGUMENT:
 		break;
 	case OPTION_LONG:
-	case OPTION_ULONG:
 	case OPTION_U64:
 	case OPTION_INTEGER:
 	case OPTION_UINTEGER:

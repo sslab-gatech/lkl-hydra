@@ -177,6 +177,6 @@
 	};
 
 	chosen {
-		stdout-path = &console;
+		linux,stdout-path = &console;
 	};
 };

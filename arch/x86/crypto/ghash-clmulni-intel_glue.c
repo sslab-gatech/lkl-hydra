@@ -154,7 +154,8 @@ static struct shash_alg ghash_alg = {
 		.cra_name		= "__ghash",
 		.cra_driver_name	= "__ghash-pclmulqdqni",
 		.cra_priority		= 0,
-		.cra_flags		= CRYPTO_ALG_INTERNAL,
+		.cra_flags		= CRYPTO_ALG_TYPE_SHASH |
+					  CRYPTO_ALG_INTERNAL,
 		.cra_blocksize		= GHASH_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct ghash_ctx),
 		.cra_module		= THIS_MODULE,
@@ -314,8 +315,9 @@ static struct ahash_alg ghash_async_alg = {
 			.cra_driver_name	= "ghash-clmulni",
 			.cra_priority		= 400,
 			.cra_ctxsize		= sizeof(struct ghash_async_ctx),
-			.cra_flags		= CRYPTO_ALG_ASYNC,
+			.cra_flags		= CRYPTO_ALG_TYPE_AHASH | CRYPTO_ALG_ASYNC,
 			.cra_blocksize		= GHASH_BLOCK_SIZE,
+			.cra_type		= &crypto_ahash_type,
 			.cra_module		= THIS_MODULE,
 			.cra_init		= ghash_async_init_tfm,
 			.cra_exit		= ghash_async_exit_tfm,
@@ -362,5 +364,5 @@ module_exit(ghash_pclmulqdqni_mod_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("GHASH Message Digest Algorithm, "
-		   "accelerated by PCLMULQDQ-NI");
+		   "acclerated by PCLMULQDQ-NI");
 MODULE_ALIAS_CRYPTO("ghash");

@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Watchdog Device Driver for Xilinx axi/xps_timebase_wdt
  *
  * (C) Copyright 2013 - 2014 Xilinx, Inc.
  * (C) Copyright 2011 (Alejandro Cabrera <aldaya@gmail.com>)
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/clk.h>
@@ -268,7 +272,8 @@ static int xwdt_remove(struct platform_device *pdev)
  */
 static int __maybe_unused xwdt_suspend(struct device *dev)
 {
-	struct xwdt_device *xdev = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xwdt_device *xdev = platform_get_drvdata(pdev);
 
 	if (watchdog_active(&xdev->xilinx_wdt_wdd))
 		xilinx_wdt_stop(&xdev->xilinx_wdt_wdd);
@@ -284,7 +289,8 @@ static int __maybe_unused xwdt_suspend(struct device *dev)
  */
 static int __maybe_unused xwdt_resume(struct device *dev)
 {
-	struct xwdt_device *xdev = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xwdt_device *xdev = platform_get_drvdata(pdev);
 	int ret = 0;
 
 	if (watchdog_active(&xdev->xilinx_wdt_wdd))
@@ -317,4 +323,4 @@ module_platform_driver(xwdt_driver);
 
 MODULE_AUTHOR("Alejandro Cabrera <aldaya@gmail.com>");
 MODULE_DESCRIPTION("Xilinx Watchdog driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

@@ -68,7 +68,7 @@ static int l_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "%p", class->key);
 #ifdef CONFIG_DEBUG_LOCKDEP
-	seq_printf(m, " OPS:%8ld", debug_class_ops_read(class));
+	seq_printf(m, " OPS:%8ld", class->ops);
 #endif
 #ifdef CONFIG_PROVE_LOCKING
 	seq_printf(m, " FD:%5ld", lockdep_count_forward_deps(class));
@@ -99,6 +99,18 @@ static const struct seq_operations lockdep_ops = {
 	.next	= l_next,
 	.stop	= l_stop,
 	.show	= l_show,
+};
+
+static int lockdep_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &lockdep_ops);
+}
+
+static const struct file_operations proc_lockdep_operations = {
+	.open		= lockdep_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
 };
 
 #ifdef CONFIG_PROVE_LOCKING
@@ -157,6 +169,18 @@ static const struct seq_operations lockdep_chains_ops = {
 	.next	= lc_next,
 	.stop	= lc_stop,
 	.show	= lc_show,
+};
+
+static int lockdep_chains_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &lockdep_chains_ops);
+}
+
+static const struct file_operations proc_lockdep_chains_operations = {
+	.open		= lockdep_chains_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
 };
 #endif /* CONFIG_PROVE_LOCKING */
 
@@ -330,6 +354,18 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+
+static int lockdep_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, lockdep_stats_show, NULL);
+}
+
+static const struct file_operations proc_lockdep_stats_operations = {
+	.open		= lockdep_stats_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 #ifdef CONFIG_LOCK_STAT
 
@@ -646,11 +682,14 @@ static const struct file_operations proc_lock_stat_operations = {
 
 static int __init lockdep_proc_init(void)
 {
-	proc_create_seq("lockdep", S_IRUSR, NULL, &lockdep_ops);
+	proc_create("lockdep", S_IRUSR, NULL, &proc_lockdep_operations);
 #ifdef CONFIG_PROVE_LOCKING
-	proc_create_seq("lockdep_chains", S_IRUSR, NULL, &lockdep_chains_ops);
+	proc_create("lockdep_chains", S_IRUSR, NULL,
+		    &proc_lockdep_chains_operations);
 #endif
-	proc_create_single("lockdep_stats", S_IRUSR, NULL, lockdep_stats_show);
+	proc_create("lockdep_stats", S_IRUSR, NULL,
+		    &proc_lockdep_stats_operations);
+
 #ifdef CONFIG_LOCK_STAT
 	proc_create("lock_stat", S_IRUSR | S_IWUSR, NULL,
 		    &proc_lock_stat_operations);

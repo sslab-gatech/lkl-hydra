@@ -70,9 +70,10 @@ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 	free_page((unsigned long)pgd);
 }
 
-extern pte_t *pte_alloc_one_kernel(struct mm_struct *mm);
+extern pte_t *pte_alloc_one_kernel(struct mm_struct *mm, unsigned long address);
 
-static inline struct page *pte_alloc_one(struct mm_struct *mm)
+static inline struct page *pte_alloc_one(struct mm_struct *mm,
+					 unsigned long address)
 {
 	struct page *pte;
 	pte = alloc_pages(GFP_KERNEL, 0);
@@ -97,12 +98,8 @@ static inline void pte_free(struct mm_struct *mm, struct page *pte)
 	__free_page(pte);
 }
 
-#define __pte_free_tlb(tlb, pte, addr)	\
-do {					\
-	pgtable_page_dtor(pte);		\
-	tlb_remove_page((tlb), (pte));	\
-} while (0)
 
+#define __pte_free_tlb(tlb, pte, addr) tlb_remove_page((tlb), (pte))
 #define pmd_pgtable(pmd) pmd_page(pmd)
 
 #define check_pgt_cache()          do { } while (0)

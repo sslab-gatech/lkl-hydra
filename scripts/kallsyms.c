@@ -48,6 +48,8 @@ static unsigned long long relative_base;
 static struct addr_range text_ranges[] = {
 	{ "_stext",     "_etext"     },
 	{ "_sinittext", "_einittext" },
+	{ "_stext_l1",  "_etext_l1"  },	/* Blackfin on-chip L1 inst SRAM */
+	{ "_stext_l2",  "_etext_l2"  },	/* Blackfin on-chip L2 SRAM */
 };
 #define text_range_text     (&text_ranges[0])
 #define text_range_inittext (&text_ranges[1])
@@ -58,11 +60,11 @@ static struct addr_range percpu_range = {
 
 static struct sym_entry *table;
 static unsigned int table_size, table_cnt;
-static int all_symbols = 0;
-static int use_data_section = 0;
-static int absolute_percpu = 0;
+static int all_symbols;
+static int use_data_section;
+static int absolute_percpu;
 static char symbol_prefix_char = '\0';
-static int base_relative = 0;
+static int base_relative;
 
 int token_profit[0x10000];
 
@@ -221,7 +223,6 @@ static int symbol_valid(struct sym_entry *s)
 
 	static char *special_prefixes[] = {
 		"__crc_",		/* modversions */
-		"__efistub_",		/* arm64 EFI stub namespace */
 		NULL };
 
 	static char *special_suffixes[] = {
@@ -355,10 +356,10 @@ static void write_src(void)
 	printf("#include <asm/types.h>\n");
 	printf("#if BITS_PER_LONG == 64\n");
 	printf("#define PTR .quad\n");
-	printf("#define ALGN .balign 8\n");
+	printf("#define ALGN .align 8\n");
 	printf("#else\n");
 	printf("#define PTR .long\n");
-	printf("#define ALGN .balign 4\n");
+	printf("#define ALGN .align 4\n");
 	printf("#endif\n");
 
 	if (use_data_section)
@@ -427,7 +428,7 @@ static void write_src(void)
 	}
 
 	output_label("kallsyms_num_syms");
-	printf("\t.long\t%u\n", table_cnt);
+	printf("\tPTR\t%d\n", table_cnt);
 	printf("\n");
 
 	/* table of offset markers, that give the offset in the compressed stream
@@ -456,7 +457,7 @@ static void write_src(void)
 
 	output_label("kallsyms_markers");
 	for (i = 0; i < ((table_cnt + 255) >> 8); i++)
-		printf("\t.long\t%u\n", markers[i]);
+		printf("\tPTR\t%d\n", markers[i]);
 	printf("\n");
 
 	free(markers);

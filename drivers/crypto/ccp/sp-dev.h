@@ -44,12 +44,7 @@ struct ccp_vdata {
 };
 
 struct psp_vdata {
-	const unsigned int cmdresp_reg;
-	const unsigned int cmdbuff_addr_lo_reg;
-	const unsigned int cmdbuff_addr_hi_reg;
-	const unsigned int feature_reg;
-	const unsigned int inten_reg;
-	const unsigned int intsts_reg;
+	const unsigned int offset;
 };
 
 /* Structure to hold SP device data */

@@ -58,7 +58,6 @@ const struct dst_metrics dst_default_metrics = {
 	 */
 	.refcnt = REFCOUNT_INIT(1),
 };
-EXPORT_SYMBOL(dst_default_metrics);
 
 void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 	      struct net_device *dev, int initial_ref, int initial_obsolete,
@@ -307,7 +306,6 @@ void metadata_dst_free(struct metadata_dst *md_dst)
 #endif
 	kfree(md_dst);
 }
-EXPORT_SYMBOL_GPL(metadata_dst_free);
 
 struct metadata_dst __percpu *
 metadata_dst_alloc_percpu(u8 optslen, enum metadata_type type, gfp_t flags)

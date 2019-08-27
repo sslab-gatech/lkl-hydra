@@ -71,12 +71,12 @@ static int ath_wakeup_ar3k(struct tty_struct *tty)
 	/* Clear RTS first */
 	tty->driver->ops->tiocmget(tty);
 	tty->driver->ops->tiocmset(tty, 0x00, TIOCM_RTS);
-	msleep(20);
+	mdelay(20);
 
 	/* Set RTS, wake up board */
 	tty->driver->ops->tiocmget(tty);
 	tty->driver->ops->tiocmset(tty, TIOCM_RTS, 0x00);
-	msleep(20);
+	mdelay(20);
 
 	status = tty->driver->ops->tiocmget(tty);
 	return status;

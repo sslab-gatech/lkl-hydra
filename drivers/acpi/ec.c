@@ -1034,24 +1034,6 @@ void acpi_ec_unblock_transactions(void)
 		acpi_ec_start(first_ec, true);
 }
 
-void acpi_ec_mark_gpe_for_wake(void)
-{
-	if (first_ec && !ec_no_wakeup)
-		acpi_mark_gpe_for_wake(NULL, first_ec->gpe);
-}
-
-void acpi_ec_set_gpe_wake_mask(u8 action)
-{
-	if (first_ec && !ec_no_wakeup)
-		acpi_set_gpe_wake_mask(NULL, first_ec->gpe, action);
-}
-
-void acpi_ec_dispatch_gpe(void)
-{
-	if (first_ec)
-		acpi_dispatch_gpe(NULL, first_ec->gpe);
-}
-
 /* --------------------------------------------------------------------------
                                 Event Management
    -------------------------------------------------------------------------- */
@@ -2049,31 +2031,6 @@ static inline void acpi_ec_query_exit(void)
 	}
 }
 
-static const struct dmi_system_id acpi_ec_no_wakeup[] = {
-	{
-		.ident = "Thinkpad X1 Carbon 6th",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_FAMILY, "Thinkpad X1 Carbon 6th"),
-		},
-	},
-	{
-		.ident = "ThinkPad X1 Carbon 6th",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_FAMILY, "ThinkPad X1 Carbon 6th"),
-		},
-	},
-	{
-		.ident = "ThinkPad X1 Yoga 3rd",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_FAMILY, "ThinkPad X1 Yoga 3rd"),
-		},
-	},
-	{ },
-};
-
 int __init acpi_ec_init(void)
 {
 	int result;
@@ -2083,15 +2040,6 @@ int __init acpi_ec_init(void)
 	result = acpi_ec_query_init();
 	if (result)
 		return result;
-
-	/*
-	 * Disable EC wakeup on following systems to prevent periodic
-	 * wakeup from EC GPE.
-	 */
-	if (dmi_check_system(acpi_ec_no_wakeup)) {
-		ec_no_wakeup = true;
-		pr_debug("Disabling EC wakeup on suspend-to-idle\n");
-	}
 
 	/* Drivers must be started after acpi_ec_query_init() */
 	dsdt_fail = acpi_bus_register_driver(&acpi_ec_driver);

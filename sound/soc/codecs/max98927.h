@@ -258,7 +258,7 @@
 
 struct max98927_priv {
 	struct regmap *regmap;
-	struct snd_soc_component *component;
+	struct snd_soc_codec *codec;
 	struct max98927_pdata *pdata;
 	unsigned int spk_gain;
 	unsigned int sysclk;

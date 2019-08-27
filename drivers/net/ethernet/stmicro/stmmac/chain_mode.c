@@ -24,7 +24,7 @@
 
 #include "stmmac.h"
 
-static int jumbo_frm(void *p, struct sk_buff *skb, int csum)
+static int stmmac_jumbo_frm(void *p, struct sk_buff *skb, int csum)
 {
 	struct stmmac_tx_queue *tx_q = (struct stmmac_tx_queue *)p;
 	unsigned int nopaged_len = skb_headlen(skb);
@@ -51,8 +51,8 @@ static int jumbo_frm(void *p, struct sk_buff *skb, int csum)
 	tx_q->tx_skbuff_dma[entry].buf = des2;
 	tx_q->tx_skbuff_dma[entry].len = bmax;
 	/* do not close the descriptor and do not set own bit */
-	stmmac_prepare_tx_desc(priv, desc, 1, bmax, csum, STMMAC_CHAIN_MODE,
-			0, false, skb->len);
+	priv->hw->desc->prepare_tx_desc(desc, 1, bmax, csum, STMMAC_CHAIN_MODE,
+					0, false, skb->len);
 
 	while (len != 0) {
 		tx_q->tx_skbuff[entry] = NULL;
@@ -68,8 +68,9 @@ static int jumbo_frm(void *p, struct sk_buff *skb, int csum)
 				return -1;
 			tx_q->tx_skbuff_dma[entry].buf = des2;
 			tx_q->tx_skbuff_dma[entry].len = bmax;
-			stmmac_prepare_tx_desc(priv, desc, 0, bmax, csum,
-					STMMAC_CHAIN_MODE, 1, false, skb->len);
+			priv->hw->desc->prepare_tx_desc(desc, 0, bmax, csum,
+							STMMAC_CHAIN_MODE, 1,
+							false, skb->len);
 			len -= bmax;
 			i++;
 		} else {
@@ -82,8 +83,9 @@ static int jumbo_frm(void *p, struct sk_buff *skb, int csum)
 			tx_q->tx_skbuff_dma[entry].buf = des2;
 			tx_q->tx_skbuff_dma[entry].len = len;
 			/* last descriptor can be set now */
-			stmmac_prepare_tx_desc(priv, desc, 0, len, csum,
-					STMMAC_CHAIN_MODE, 1, true, skb->len);
+			priv->hw->desc->prepare_tx_desc(desc, 0, len, csum,
+							STMMAC_CHAIN_MODE, 1,
+							true, skb->len);
 			len = 0;
 		}
 	}
@@ -93,7 +95,7 @@ static int jumbo_frm(void *p, struct sk_buff *skb, int csum)
 	return entry;
 }
 
-static unsigned int is_jumbo_frm(int len, int enh_desc)
+static unsigned int stmmac_is_jumbo_frm(int len, int enh_desc)
 {
 	unsigned int ret = 0;
 
@@ -105,7 +107,7 @@ static unsigned int is_jumbo_frm(int len, int enh_desc)
 	return ret;
 }
 
-static void init_dma_chain(void *des, dma_addr_t phy_addr,
+static void stmmac_init_dma_chain(void *des, dma_addr_t phy_addr,
 				  unsigned int size, unsigned int extend_desc)
 {
 	/*
@@ -135,7 +137,7 @@ static void init_dma_chain(void *des, dma_addr_t phy_addr,
 	}
 }
 
-static void refill_desc3(void *priv_ptr, struct dma_desc *p)
+static void stmmac_refill_desc3(void *priv_ptr, struct dma_desc *p)
 {
 	struct stmmac_rx_queue *rx_q = (struct stmmac_rx_queue *)priv_ptr;
 	struct stmmac_priv *priv = rx_q->priv_data;
@@ -151,7 +153,7 @@ static void refill_desc3(void *priv_ptr, struct dma_desc *p)
 				      sizeof(struct dma_desc)));
 }
 
-static void clean_desc3(void *priv_ptr, struct dma_desc *p)
+static void stmmac_clean_desc3(void *priv_ptr, struct dma_desc *p)
 {
 	struct stmmac_tx_queue *tx_q = (struct stmmac_tx_queue *)priv_ptr;
 	struct stmmac_priv *priv = tx_q->priv_data;
@@ -169,9 +171,9 @@ static void clean_desc3(void *priv_ptr, struct dma_desc *p)
 }
 
 const struct stmmac_mode_ops chain_mode_ops = {
-	.init = init_dma_chain,
-	.is_jumbo_frm = is_jumbo_frm,
-	.jumbo_frm = jumbo_frm,
-	.refill_desc3 = refill_desc3,
-	.clean_desc3 = clean_desc3,
+	.init = stmmac_init_dma_chain,
+	.is_jumbo_frm = stmmac_is_jumbo_frm,
+	.jumbo_frm = stmmac_jumbo_frm,
+	.refill_desc3 = stmmac_refill_desc3,
+	.clean_desc3 = stmmac_clean_desc3,
 };

@@ -253,18 +253,18 @@ static int init_powernv_pstates(void)
 
 	if (of_property_read_u32(power_mgt, "ibm,pstate-min", &pstate_min)) {
 		pr_warn("ibm,pstate-min node not found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	if (of_property_read_u32(power_mgt, "ibm,pstate-max", &pstate_max)) {
 		pr_warn("ibm,pstate-max node not found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	if (of_property_read_u32(power_mgt, "ibm,pstate-nominal",
 				 &pstate_nominal)) {
 		pr_warn("ibm,pstate-nominal not found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	if (of_property_read_u32(power_mgt, "ibm,pstate-ultra-turbo",
@@ -293,14 +293,14 @@ next:
 	pstate_ids = of_get_property(power_mgt, "ibm,pstate-ids", &len_ids);
 	if (!pstate_ids) {
 		pr_warn("ibm,pstate-ids not found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	pstate_freqs = of_get_property(power_mgt, "ibm,pstate-frequencies-mhz",
 				      &len_freqs);
 	if (!pstate_freqs) {
 		pr_warn("ibm,pstate-frequencies-mhz not found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	if (len_ids != len_freqs) {
@@ -311,7 +311,7 @@ next:
 	nr_pstates = min(len_ids, len_freqs) / sizeof(u32);
 	if (!nr_pstates) {
 		pr_warn("No PStates found\n");
-		goto out;
+		return -ENODEV;
 	}
 
 	powernv_pstate_info.nr_pstates = nr_pstates;
@@ -352,12 +352,7 @@ next:
 
 	/* End of list marker entry */
 	powernv_freqs[i].frequency = CPUFREQ_TABLE_END;
-
-	of_node_put(power_mgt);
 	return 0;
-out:
-	of_node_put(power_mgt);
-	return -ENODEV;
 }
 
 /* Returns the CPU frequency corresponding to the pstate_id. */
@@ -684,16 +679,6 @@ void gpstate_timer_handler(struct timer_list *t)
 
 	if (!spin_trylock(&gpstates->gpstate_lock))
 		return;
-	/*
-	 * If the timer has migrated to the different cpu then bring
-	 * it back to one of the policy->cpus
-	 */
-	if (!cpumask_test_cpu(raw_smp_processor_id(), policy->cpus)) {
-		gpstates->timer.expires = jiffies + msecs_to_jiffies(1);
-		add_timer_on(&gpstates->timer, cpumask_first(policy->cpus));
-		spin_unlock(&gpstates->gpstate_lock);
-		return;
-	}
 
 	/*
 	 * If PMCR was last updated was using fast_swtich then
@@ -733,8 +718,10 @@ void gpstate_timer_handler(struct timer_list *t)
 	if (gpstate_idx != gpstates->last_lpstate_idx)
 		queue_gpstate_timer(gpstates);
 
-	set_pstate(&freq_data);
 	spin_unlock(&gpstates->gpstate_lock);
+
+	/* Timer may get migrated to a different cpu on cpu hot unplug */
+	smp_call_function_any(policy->cpus, set_pstate, &freq_data, 1);
 }
 
 /*
@@ -763,13 +750,8 @@ static int powernv_cpufreq_target_index(struct cpufreq_policy *policy,
 
 	cur_msec = jiffies_to_msecs(get_jiffies_64());
 
-	freq_data.pstate_id = idx_to_pstate(new_index);
-	if (!gpstates) {
-		freq_data.gpstate_id = freq_data.pstate_id;
-		goto no_gpstate;
-	}
-
 	spin_lock(&gpstates->gpstate_lock);
+	freq_data.pstate_id = idx_to_pstate(new_index);
 
 	if (!gpstates->last_sampled_time) {
 		gpstate_idx = new_index;
@@ -819,7 +801,6 @@ gpstates_done:
 
 	spin_unlock(&gpstates->gpstate_lock);
 
-no_gpstate:
 	/*
 	 * Use smp_call_function to send IPI and execute the
 	 * mtspr on target CPU.  We could do that without IPI
@@ -831,7 +812,7 @@ no_gpstate:
 
 static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
-	int base, i;
+	int base, i, ret;
 	struct kernfs_node *kn;
 	struct global_pstate_info *gpstates;
 
@@ -854,13 +835,6 @@ static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		kernfs_put(kn);
 	}
 
-	policy->freq_table = powernv_freqs;
-	policy->fast_switch_possible = true;
-
-	if (pvr_version_is(PVR_POWER9))
-		return 0;
-
-	/* Initialise Gpstate ramp-down timer only on POWER8 */
 	gpstates =  kzalloc(sizeof(*gpstates), GFP_KERNEL);
 	if (!gpstates)
 		return -ENOMEM;
@@ -874,8 +848,15 @@ static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	gpstates->timer.expires = jiffies +
 				msecs_to_jiffies(GPSTATE_TIMER_INTERVAL);
 	spin_lock_init(&gpstates->gpstate_lock);
+	ret = cpufreq_table_validate_and_show(policy, powernv_freqs);
 
-	return 0;
+	if (ret < 0) {
+		kfree(policy->driver_data);
+		return ret;
+	}
+
+	policy->fast_switch_possible = true;
+	return ret;
 }
 
 static int powernv_cpufreq_cpu_exit(struct cpufreq_policy *policy)
@@ -1014,8 +995,7 @@ static void powernv_cpufreq_stop_cpu(struct cpufreq_policy *policy)
 	freq_data.pstate_id = idx_to_pstate(powernv_pstate_info.min);
 	freq_data.gpstate_id = idx_to_pstate(powernv_pstate_info.min);
 	smp_call_function_single(policy->cpu, set_pstate, &freq_data, 1);
-	if (gpstates)
-		del_timer_sync(&gpstates->timer);
+	del_timer_sync(&gpstates->timer);
 }
 
 static unsigned int powernv_fast_switch(struct cpufreq_policy *policy,

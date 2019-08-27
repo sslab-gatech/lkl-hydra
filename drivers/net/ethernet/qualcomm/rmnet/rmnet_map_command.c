@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,12 +20,17 @@ static u8 rmnet_map_do_flow_control(struct sk_buff *skb,
 				    struct rmnet_port *port,
 				    int enable)
 {
+	struct rmnet_map_control_command *cmd;
 	struct rmnet_endpoint *ep;
 	struct net_device *vnd;
+	u16 ip_family;
+	u16 fc_seq;
+	u32 qos_id;
 	u8 mux_id;
 	int r;
 
 	mux_id = RMNET_MAP_GET_MUX_ID(skb);
+	cmd = RMNET_MAP_GET_CMD_START(skb);
 
 	if (mux_id >= RMNET_MAX_LOGICAL_EP) {
 		kfree_skb(skb);
@@ -39,6 +44,10 @@ static u8 rmnet_map_do_flow_control(struct sk_buff *skb,
 	}
 
 	vnd = ep->egress_dev;
+
+	ip_family = cmd->flow_control.ip_family;
+	fc_seq = ntohs(cmd->flow_control.flow_control_seq_num);
+	qos_id = ntohl(cmd->flow_control.qos_id);
 
 	/* Ignore the ip family and pass the sequence number for both v4 and v6
 	 * sequence. User space does not support creating dedicated flows for
@@ -58,20 +67,28 @@ static void rmnet_map_send_ack(struct sk_buff *skb,
 			       struct rmnet_port *port)
 {
 	struct rmnet_map_control_command *cmd;
-	struct net_device *dev = skb->dev;
+	int xmit_status;
 
-	if (port->data_format & RMNET_FLAGS_INGRESS_MAP_CKSUMV4)
-		skb_trim(skb,
-			 skb->len - sizeof(struct rmnet_map_dl_csum_trailer));
+	if (port->data_format & RMNET_INGRESS_FORMAT_MAP_CKSUMV4) {
+		if (skb->len < sizeof(struct rmnet_map_header) +
+		    RMNET_MAP_GET_LENGTH(skb) +
+		    sizeof(struct rmnet_map_dl_csum_trailer)) {
+			kfree_skb(skb);
+			return;
+		}
+
+		skb_trim(skb, skb->len -
+			 sizeof(struct rmnet_map_dl_csum_trailer));
+	}
 
 	skb->protocol = htons(ETH_P_MAP);
 
 	cmd = RMNET_MAP_GET_CMD_START(skb);
 	cmd->cmd_type = type & 0x03;
 
-	netif_tx_lock(dev);
-	dev->netdev_ops->ndo_start_xmit(skb, dev);
-	netif_tx_unlock(dev);
+	netif_tx_lock(skb->dev);
+	xmit_status = skb->dev->netdev_ops->ndo_start_xmit(skb, skb->dev);
+	netif_tx_unlock(skb->dev);
 }
 
 /* Process MAP command frame and send N/ACK message as appropriate. Message cmd

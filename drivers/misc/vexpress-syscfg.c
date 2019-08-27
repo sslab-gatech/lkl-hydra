@@ -61,7 +61,7 @@ static int vexpress_syscfg_exec(struct vexpress_syscfg_func *func,
 	int tries;
 	long timeout;
 
-	if (WARN_ON(index >= func->num_templates))
+	if (WARN_ON(index > func->num_templates))
 		return -EINVAL;
 
 	command = readl(syscfg->base + SYS_CFGCTRL);
@@ -182,7 +182,8 @@ static struct regmap *vexpress_syscfg_regmap_init(struct device *dev,
 		val = energy_quirk;
 	}
 
-	func = kzalloc(struct_size(func, template, num), GFP_KERNEL);
+	func = kzalloc(sizeof(*func) + sizeof(*func->template) * num,
+			GFP_KERNEL);
 	if (!func)
 		return ERR_PTR(-ENOMEM);
 
@@ -258,9 +259,13 @@ static int vexpress_syscfg_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&syscfg->funcs);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	syscfg->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(syscfg->base))
-		return PTR_ERR(syscfg->base);
+	if (!devm_request_mem_region(&pdev->dev, res->start,
+			resource_size(res), pdev->name))
+		return -EBUSY;
+
+	syscfg->base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!syscfg->base)
+		return -EFAULT;
 
 	/* Must use dev.parent (MFD), as that's where DT phandle points at... */
 	bridge = vexpress_config_bridge_register(pdev->dev.parent,

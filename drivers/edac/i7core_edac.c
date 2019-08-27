@@ -461,7 +461,7 @@ static struct i7core_dev *alloc_i7core_dev(u8 socket,
 	if (!i7core_dev)
 		return NULL;
 
-	i7core_dev->pdev = kcalloc(table->n_devs, sizeof(*i7core_dev->pdev),
+	i7core_dev->pdev = kzalloc(sizeof(*i7core_dev->pdev) * table->n_devs,
 				   GFP_KERNEL);
 	if (!i7core_dev->pdev) {
 		kfree(i7core_dev);
@@ -597,7 +597,7 @@ static int get_dimm_config(struct mem_ctl_info *mci)
 			/* DDR3 has 8 I/O banks */
 			size = (rows * cols * banks * ranks) >> (20 - 3);
 
-			edac_dbg(0, "\tdimm %d %d MiB offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
+			edac_dbg(0, "\tdimm %d %d Mb offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
 				 j, size,
 				 RANKOFFSET(dimm_dod[j]),
 				 banks, ranks, rows, cols);
@@ -724,7 +724,7 @@ static ssize_t i7core_inject_type_store(struct device *dev,
 					const char *data, size_t count)
 {
 	struct mem_ctl_info *mci = to_mci(dev);
-	struct i7core_pvt *pvt = mci->pvt_info;
+struct i7core_pvt *pvt = mci->pvt_info;
 	unsigned long value;
 	int rc;
 
@@ -1177,14 +1177,15 @@ static int i7core_create_sysfs_devices(struct mem_ctl_info *mci)
 
 	rc = device_add(pvt->addrmatch_dev);
 	if (rc < 0)
-		goto err_put_addrmatch;
+		return rc;
 
 	if (!pvt->is_registered) {
 		pvt->chancounts_dev = kzalloc(sizeof(*pvt->chancounts_dev),
 					      GFP_KERNEL);
 		if (!pvt->chancounts_dev) {
-			rc = -ENOMEM;
-			goto err_del_addrmatch;
+			put_device(pvt->addrmatch_dev);
+			device_del(pvt->addrmatch_dev);
+			return -ENOMEM;
 		}
 
 		pvt->chancounts_dev->type = &all_channel_counts_type;
@@ -1198,18 +1199,9 @@ static int i7core_create_sysfs_devices(struct mem_ctl_info *mci)
 
 		rc = device_add(pvt->chancounts_dev);
 		if (rc < 0)
-			goto err_put_chancounts;
+			return rc;
 	}
 	return 0;
-
-err_put_chancounts:
-	put_device(pvt->chancounts_dev);
-err_del_addrmatch:
-	device_del(pvt->addrmatch_dev);
-err_put_addrmatch:
-	put_device(pvt->addrmatch_dev);
-
-	return rc;
 }
 
 static void i7core_delete_sysfs_devices(struct mem_ctl_info *mci)
@@ -1219,11 +1211,11 @@ static void i7core_delete_sysfs_devices(struct mem_ctl_info *mci)
 	edac_dbg(1, "\n");
 
 	if (!pvt->is_registered) {
-		device_del(pvt->chancounts_dev);
 		put_device(pvt->chancounts_dev);
+		device_del(pvt->chancounts_dev);
 	}
-	device_del(pvt->addrmatch_dev);
 	put_device(pvt->addrmatch_dev);
+	device_del(pvt->addrmatch_dev);
 }
 
 /****************************************************************************
@@ -1711,7 +1703,6 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 	u32 errnum = find_first_bit(&error, 32);
 
 	if (uncorrected_error) {
-		core_err_cnt = 1;
 		if (ripv)
 			tp_event = HW_EVENT_ERR_FATAL;
 		else
@@ -1752,7 +1743,7 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 		err = "write parity error";
 		break;
 	case 19:
-		err = "redundancy loss";
+		err = "redundacy loss";
 		break;
 	case 20:
 		err = "reserved";
@@ -1816,12 +1807,14 @@ static int i7core_mce_check_error(struct notifier_block *nb, unsigned long val,
 	struct mce *mce = (struct mce *)data;
 	struct i7core_dev *i7_dev;
 	struct mem_ctl_info *mci;
+	struct i7core_pvt *pvt;
 
 	i7_dev = get_i7core_dev(mce->socketid);
 	if (!i7_dev)
 		return NOTIFY_DONE;
 
 	mci = i7_dev->mci;
+	pvt = mci->pvt_info;
 
 	/*
 	 * Just let mcelog handle it if the error is

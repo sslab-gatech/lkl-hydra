@@ -1,11 +1,4 @@
-.. Permission is granted to copy, distribute and/or modify this
-.. document under the terms of the GNU Free Documentation License,
-.. Version 1.1 or any later version published by the Free Software
-.. Foundation, with no Invariant Sections, no Front-Cover Texts
-.. and no Back-Cover Texts. A copy of the license is included at
-.. Documentation/media/uapi/fdl-appendix.rst.
-..
-.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
+.. -*- coding: utf-8; mode: rst -*-
 
 .. _VIDIOC_G_PARM:
 
@@ -49,9 +42,6 @@ side. This is especially useful when using the :ref:`read() <func-read>` or
 :ref:`write() <func-write>`, which are not augmented by timestamps or sequence
 counters, and to avoid unnecessary data copying.
 
-Changing the frame interval shall never change the format. Changing the
-format, on the other hand, may change the frame interval.
-
 Further these ioctls can be used to determine the number of buffers used
 internally by a driver in read/write mode. For implications see the
 section discussing the :ref:`read() <func-read>` function.
@@ -76,7 +66,7 @@ union holding separate parameters for input and output devices.
       -
       - The buffer (stream) type, same as struct
 	:c:type:`v4l2_format` ``type``, set by the
-	application. See :c:type:`v4l2_buf_type`.
+	application. See :c:type:`v4l2_buf_type`
     * - union
       - ``parm``
       -
@@ -85,13 +75,12 @@ union holding separate parameters for input and output devices.
       - struct :c:type:`v4l2_captureparm`
       - ``capture``
       - Parameters for capture devices, used when ``type`` is
-	``V4L2_BUF_TYPE_VIDEO_CAPTURE`` or
-	``V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE``.
+	``V4L2_BUF_TYPE_VIDEO_CAPTURE``.
     * -
       - struct :c:type:`v4l2_outputparm`
       - ``output``
       - Parameters for output devices, used when ``type`` is
-	``V4L2_BUF_TYPE_VIDEO_OUTPUT`` or ``V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE``.
+	``V4L2_BUF_TYPE_VIDEO_OUTPUT``.
     * -
       - __u8
       - ``raw_data``\ [200]

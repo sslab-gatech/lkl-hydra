@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Marvell Armada CP110 System Controller
  *
@@ -6,22 +5,26 @@
  *
  * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
  *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2.  This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 /*
  * CP110 has 6 core clocks:
  *
- *  - PLL0		(1 Ghz)
- *    - PPv2 core	(1/3 PLL0)
- *    - x2 Core		(1/2 PLL0)
- *	- Core		(1/2 x2 Core)
- *    - SDIO		(2/5 PLL0)
+ *  - APLL		(1 Ghz)
+ *    - PPv2 core	(1/3 APLL)
+ *    - EIP		(1/2 APLL)
+ *     - Core		(1/2 EIP)
+ *    - SDIO		(2/5 APLL)
  *
  *  - NAND clock, which is either:
  *    - Equal to SDIO clock
- *    - 2/5 PLL0
+ *    - 2/5 APLL
  *
- * CP110 has 32 gatable clocks, for the various peripherals in the IP.
+ * CP110 has 32 gatable clocks, for the various peripherals in the
+ * IP. They have fairly complicated parent/child relationships.
  */
 
 #define pr_fmt(fmt) "cp110-system-controller: " fmt
@@ -50,9 +53,9 @@ enum {
 #define CP110_CLK_NUM \
 	(CP110_MAX_CORE_CLOCKS + CP110_MAX_GATABLE_CLOCKS)
 
-#define CP110_CORE_PLL0			0
+#define CP110_CORE_APLL			0
 #define CP110_CORE_PPV2			1
-#define CP110_CORE_X2CORE		2
+#define CP110_CORE_EIP			2
 #define CP110_CORE_CORE			3
 #define CP110_CORE_NAND			4
 #define CP110_CORE_SDIO			5
@@ -200,11 +203,11 @@ static struct clk_hw *cp110_of_clk_get(struct of_phandle_args *clkspec,
 	unsigned int idx = clkspec->args[1];
 
 	if (type == CP110_CLK_TYPE_CORE) {
-		if (idx >= CP110_MAX_CORE_CLOCKS)
+		if (idx > CP110_MAX_CORE_CLOCKS)
 			return ERR_PTR(-EINVAL);
 		return clk_data->hws[idx];
 	} else if (type == CP110_CLK_TYPE_GATABLE) {
-		if (idx >= CP110_MAX_GATABLE_CLOCKS)
+		if (idx > CP110_MAX_GATABLE_CLOCKS)
 			return ERR_PTR(-EINVAL);
 		return clk_data->hws[CP110_MAX_CORE_CLOCKS + idx];
 	}
@@ -234,7 +237,7 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 	struct regmap *regmap;
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
-	const char *ppv2_name, *pll0_name, *core_name, *x2core_name, *nand_name,
+	const char *ppv2_name, *apll_name, *core_name, *eip_name, *nand_name,
 		*sdio_name;
 	struct clk_hw_onecell_data *cp110_clk_data;
 	struct clk_hw *hw, **cp110_clks;
@@ -260,20 +263,20 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 	cp110_clks = cp110_clk_data->hws;
 	cp110_clk_data->num = CP110_CLK_NUM;
 
-	/* Register the PLL0 which is the root of the hw tree */
-	pll0_name = cp110_unique_name(dev, syscon_node, "pll0");
-	hw = clk_hw_register_fixed_rate(NULL, pll0_name, NULL, 0,
+	/* Register the APLL which is the root of the hw tree */
+	apll_name = cp110_unique_name(dev, syscon_node, "apll");
+	hw = clk_hw_register_fixed_rate(NULL, apll_name, NULL, 0,
 					1000 * 1000 * 1000);
 	if (IS_ERR(hw)) {
 		ret = PTR_ERR(hw);
-		goto fail_pll0;
+		goto fail_apll;
 	}
 
-	cp110_clks[CP110_CORE_PLL0] = hw;
+	cp110_clks[CP110_CORE_APLL] = hw;
 
-	/* PPv2 is PLL0/3 */
+	/* PPv2 is APLL/3 */
 	ppv2_name = cp110_unique_name(dev, syscon_node, "ppv2-core");
-	hw = clk_hw_register_fixed_factor(NULL, ppv2_name, pll0_name, 0, 1, 3);
+	hw = clk_hw_register_fixed_factor(NULL, ppv2_name, apll_name, 0, 1, 3);
 	if (IS_ERR(hw)) {
 		ret = PTR_ERR(hw);
 		goto fail_ppv2;
@@ -281,32 +284,30 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 
 	cp110_clks[CP110_CORE_PPV2] = hw;
 
-	/* X2CORE clock is PLL0/2 */
-	x2core_name = cp110_unique_name(dev, syscon_node, "x2core");
-	hw = clk_hw_register_fixed_factor(NULL, x2core_name, pll0_name,
-					  0, 1, 2);
+	/* EIP clock is APLL/2 */
+	eip_name = cp110_unique_name(dev, syscon_node, "eip");
+	hw = clk_hw_register_fixed_factor(NULL, eip_name, apll_name, 0, 1, 2);
 	if (IS_ERR(hw)) {
 		ret = PTR_ERR(hw);
 		goto fail_eip;
 	}
 
-	cp110_clks[CP110_CORE_X2CORE] = hw;
+	cp110_clks[CP110_CORE_EIP] = hw;
 
-	/* Core clock is X2CORE/2 */
+	/* Core clock is EIP/2 */
 	core_name = cp110_unique_name(dev, syscon_node, "core");
-	hw = clk_hw_register_fixed_factor(NULL, core_name, x2core_name,
-					  0, 1, 2);
+	hw = clk_hw_register_fixed_factor(NULL, core_name, eip_name, 0, 1, 2);
 	if (IS_ERR(hw)) {
 		ret = PTR_ERR(hw);
 		goto fail_core;
 	}
 
 	cp110_clks[CP110_CORE_CORE] = hw;
-	/* NAND can be either PLL0/2.5 or core clock */
+	/* NAND can be either APLL/2.5 or core clock */
 	nand_name = cp110_unique_name(dev, syscon_node, "nand-core");
 	if (nand_clk_ctrl & NF_CLOCK_SEL_400_MASK)
 		hw = clk_hw_register_fixed_factor(NULL, nand_name,
-						   pll0_name, 0, 2, 5);
+						   apll_name, 0, 2, 5);
 	else
 		hw = clk_hw_register_fixed_factor(NULL, nand_name,
 						   core_name, 0, 1, 1);
@@ -317,10 +318,10 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 
 	cp110_clks[CP110_CORE_NAND] = hw;
 
-	/* SDIO clock is PLL0/2.5 */
+	/* SDIO clock is APLL/2.5 */
 	sdio_name = cp110_unique_name(dev, syscon_node, "sdio-core");
 	hw = clk_hw_register_fixed_factor(NULL, sdio_name,
-					  pll0_name, 0, 2, 5);
+					  apll_name, 0, 2, 5);
 	if (IS_ERR(hw)) {
 		ret = PTR_ERR(hw);
 		goto fail_sdio;
@@ -340,23 +341,40 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 			continue;
 
 		switch (i) {
+		case CP110_GATE_AUDIO:
+		case CP110_GATE_COMM_UNIT:
+		case CP110_GATE_EIP150:
+		case CP110_GATE_EIP197:
+		case CP110_GATE_SLOW_IO:
+			parent = gate_name[CP110_GATE_MAIN];
+			break;
+		case CP110_GATE_MG:
+			parent = gate_name[CP110_GATE_MG_CORE];
+			break;
 		case CP110_GATE_NAND:
 			parent = nand_name;
 			break;
-		case CP110_GATE_MG:
-		case CP110_GATE_GOP_DP:
 		case CP110_GATE_PPV2:
 			parent = ppv2_name;
 			break;
 		case CP110_GATE_SDIO:
 			parent = sdio_name;
 			break;
-		case CP110_GATE_MAIN:
-		case CP110_GATE_PCIE_XOR:
+		case CP110_GATE_GOP_DP:
+			parent = gate_name[CP110_GATE_SDMMC_GOP];
+			break;
+		case CP110_GATE_XOR1:
+		case CP110_GATE_XOR0:
+		case CP110_GATE_PCIE_X1_0:
+		case CP110_GATE_PCIE_X1_1:
 		case CP110_GATE_PCIE_X4:
-		case CP110_GATE_EIP150:
-		case CP110_GATE_EIP197:
-			parent = x2core_name;
+			parent = gate_name[CP110_GATE_PCIE_XOR];
+			break;
+		case CP110_GATE_SATA:
+		case CP110_GATE_USB3H0:
+		case CP110_GATE_USB3H1:
+		case CP110_GATE_USB3DEV:
+			parent = gate_name[CP110_GATE_SATA_USB];
 			break;
 		default:
 			parent = core_name;
@@ -395,12 +413,12 @@ fail_sdio:
 fail_nand:
 	clk_hw_unregister_fixed_factor(cp110_clks[CP110_CORE_CORE]);
 fail_core:
-	clk_hw_unregister_fixed_factor(cp110_clks[CP110_CORE_X2CORE]);
+	clk_hw_unregister_fixed_factor(cp110_clks[CP110_CORE_EIP]);
 fail_eip:
 	clk_hw_unregister_fixed_factor(cp110_clks[CP110_CORE_PPV2]);
 fail_ppv2:
-	clk_hw_unregister_fixed_rate(cp110_clks[CP110_CORE_PLL0]);
-fail_pll0:
+	clk_hw_unregister_fixed_rate(cp110_clks[CP110_CORE_APLL]);
+fail_apll:
 	return ret;
 }
 

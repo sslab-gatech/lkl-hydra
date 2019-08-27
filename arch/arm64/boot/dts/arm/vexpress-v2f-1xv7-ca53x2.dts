@@ -13,7 +13,6 @@
 /dts-v1/;
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
-#include "vexpress-v2m-rs1.dtsi"
 
 / {
 	model = "V2F-1XV7 Cortex-A53x2 SMM";
@@ -63,20 +62,6 @@
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0 0x80000000 0 0x80000000>; /* 2GB @ 2GB */
-	};
-
-	reserved-memory {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		/* Chipselect 2 is physically at 0x18000000 */
-		vram: vram@18000000 {
-			/* 8 MB of designated video RAM */
-			compatible = "shared-dma-pool";
-			reg = <0 0x18000000 0 0x00800000>;
-			no-map;
-		};
 	};
 
 	gic: interrupt-controller@2c001000 {
@@ -144,7 +129,7 @@
 		};
 	};
 
-	smb: smb@8000000 {
+	smb@8000000 {
 		compatible = "simple-bus";
 
 		#address-cells = <2>;
@@ -201,5 +186,7 @@
 				<0 0 40 &gic GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>,
 				<0 0 41 &gic GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>,
 				<0 0 42 &gic GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
+
+		/include/ "vexpress-v2m-rs1.dtsi"
 	};
 };

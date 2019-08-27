@@ -131,14 +131,16 @@ static void exynos_drm_plane_reset(struct drm_plane *plane)
 
 	if (plane->state) {
 		exynos_state = to_exynos_plane_state(plane->state);
-		__drm_atomic_helper_plane_destroy_state(plane->state);
+		if (exynos_state->base.fb)
+			drm_framebuffer_unreference(exynos_state->base.fb);
 		kfree(exynos_state);
 		plane->state = NULL;
 	}
 
 	exynos_state = kzalloc(sizeof(*exynos_state), GFP_KERNEL);
 	if (exynos_state) {
-		__drm_atomic_helper_plane_reset(plane, &exynos_state->base);
+		plane->state = &exynos_state->base;
+		plane->state->plane = plane;
 		plane->state->zpos = exynos_plane->config->zpos;
 	}
 }
@@ -261,6 +263,8 @@ static void exynos_plane_atomic_update(struct drm_plane *plane,
 	if (!state->crtc)
 		return;
 
+	plane->crtc = state->crtc;
+
 	if (exynos_crtc->ops->update_plane)
 		exynos_crtc->ops->update_plane(exynos_crtc, exynos_plane);
 }
@@ -285,12 +289,13 @@ static const struct drm_plane_helper_funcs plane_helper_funcs = {
 };
 
 static void exynos_plane_attach_zpos_property(struct drm_plane *plane,
-					      int zpos, bool immutable)
+					      bool immutable)
 {
+	/* FIXME */
 	if (immutable)
-		drm_plane_create_zpos_immutable_property(plane, zpos);
+		drm_plane_create_zpos_immutable_property(plane, 0);
 	else
-		drm_plane_create_zpos_property(plane, zpos, 0, MAX_PLANE - 1);
+		drm_plane_create_zpos_property(plane, 0, 0, MAX_PLANE - 1);
 }
 
 int exynos_plane_init(struct drm_device *dev,
@@ -298,10 +303,6 @@ int exynos_plane_init(struct drm_device *dev,
 		      const struct exynos_drm_plane_config *config)
 {
 	int err;
-	unsigned int supported_modes = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
-				       BIT(DRM_MODE_BLEND_PREMULTI) |
-				       BIT(DRM_MODE_BLEND_COVERAGE);
-	struct drm_plane *plane = &exynos_plane->base;
 
 	err = drm_universal_plane_init(dev, &exynos_plane->base,
 				       1 << dev->mode_config.num_crtc,
@@ -319,14 +320,8 @@ int exynos_plane_init(struct drm_device *dev,
 	exynos_plane->index = index;
 	exynos_plane->config = config;
 
-	exynos_plane_attach_zpos_property(&exynos_plane->base, config->zpos,
+	exynos_plane_attach_zpos_property(&exynos_plane->base,
 			   !(config->capabilities & EXYNOS_DRM_PLANE_CAP_ZPOS));
-
-	if (config->capabilities & EXYNOS_DRM_PLANE_CAP_PIX_BLEND)
-		drm_plane_create_blend_mode_property(plane, supported_modes);
-
-	if (config->capabilities & EXYNOS_DRM_PLANE_CAP_WIN_BLEND)
-		drm_plane_create_alpha_property(plane);
 
 	return 0;
 }

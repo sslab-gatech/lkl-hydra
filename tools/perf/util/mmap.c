@@ -64,6 +64,25 @@ static union perf_event *perf_mmap__read(struct perf_mmap *map,
 }
 
 /*
+ * legacy interface for mmap read.
+ * Don't use it. Use perf_mmap__read_event().
+ */
+union perf_event *perf_mmap__read_forward(struct perf_mmap *map)
+{
+	u64 head;
+
+	/*
+	 * Check if event was unmapped due to a POLLHUP/POLLERR.
+	 */
+	if (!refcount_read(&map->refcnt))
+		return NULL;
+
+	head = perf_mmap__read_head(map);
+
+	return perf_mmap__read(map, &map->prev, head);
+}
+
+/*
  * Read event from ring buffer one by one.
  * Return one event for each call.
  *
@@ -75,7 +94,9 @@ static union perf_event *perf_mmap__read(struct perf_mmap *map,
  * }
  * perf_mmap__read_done()
  */
-union perf_event *perf_mmap__read_event(struct perf_mmap *map)
+union perf_event *perf_mmap__read_event(struct perf_mmap *map,
+					bool overwrite,
+					u64 *startp, u64 end)
 {
 	union perf_event *event;
 
@@ -85,14 +106,17 @@ union perf_event *perf_mmap__read_event(struct perf_mmap *map)
 	if (!refcount_read(&map->refcnt))
 		return NULL;
 
+	if (startp == NULL)
+		return NULL;
+
 	/* non-overwirte doesn't pause the ringbuffer */
-	if (!map->overwrite)
-		map->end = perf_mmap__read_head(map);
+	if (!overwrite)
+		end = perf_mmap__read_head(map);
 
-	event = perf_mmap__read(map, &map->start, map->end);
+	event = perf_mmap__read(map, startp, end);
 
-	if (!map->overwrite)
-		map->prev = map->start;
+	if (!overwrite)
+		map->prev = *startp;
 
 	return event;
 }
@@ -115,9 +139,9 @@ void perf_mmap__put(struct perf_mmap *map)
 		perf_mmap__munmap(map);
 }
 
-void perf_mmap__consume(struct perf_mmap *map)
+void perf_mmap__consume(struct perf_mmap *map, bool overwrite)
 {
-	if (!map->overwrite) {
+	if (!overwrite) {
 		u64 old = map->prev;
 
 		perf_mmap__write_tail(map, old);
@@ -153,158 +177,8 @@ void __weak auxtrace_mmap_params__set_idx(struct auxtrace_mmap_params *mp __mayb
 {
 }
 
-#ifdef HAVE_AIO_SUPPORT
-static int perf_mmap__aio_mmap(struct perf_mmap *map, struct mmap_params *mp)
-{
-	int delta_max, i, prio;
-
-	map->aio.nr_cblocks = mp->nr_cblocks;
-	if (map->aio.nr_cblocks) {
-		map->aio.aiocb = calloc(map->aio.nr_cblocks, sizeof(struct aiocb *));
-		if (!map->aio.aiocb) {
-			pr_debug2("failed to allocate aiocb for data buffer, error %m\n");
-			return -1;
-		}
-		map->aio.cblocks = calloc(map->aio.nr_cblocks, sizeof(struct aiocb));
-		if (!map->aio.cblocks) {
-			pr_debug2("failed to allocate cblocks for data buffer, error %m\n");
-			return -1;
-		}
-		map->aio.data = calloc(map->aio.nr_cblocks, sizeof(void *));
-		if (!map->aio.data) {
-			pr_debug2("failed to allocate data buffer, error %m\n");
-			return -1;
-		}
-		delta_max = sysconf(_SC_AIO_PRIO_DELTA_MAX);
-		for (i = 0; i < map->aio.nr_cblocks; ++i) {
-			map->aio.data[i] = malloc(perf_mmap__mmap_len(map));
-			if (!map->aio.data[i]) {
-				pr_debug2("failed to allocate data buffer area, error %m");
-				return -1;
-			}
-			/*
-			 * Use cblock.aio_fildes value different from -1
-			 * to denote started aio write operation on the
-			 * cblock so it requires explicit record__aio_sync()
-			 * call prior the cblock may be reused again.
-			 */
-			map->aio.cblocks[i].aio_fildes = -1;
-			/*
-			 * Allocate cblocks with priority delta to have
-			 * faster aio write system calls because queued requests
-			 * are kept in separate per-prio queues and adding
-			 * a new request will iterate thru shorter per-prio
-			 * list. Blocks with numbers higher than
-			 *  _SC_AIO_PRIO_DELTA_MAX go with priority 0.
-			 */
-			prio = delta_max - i;
-			map->aio.cblocks[i].aio_reqprio = prio >= 0 ? prio : 0;
-		}
-	}
-
-	return 0;
-}
-
-static void perf_mmap__aio_munmap(struct perf_mmap *map)
-{
-	int i;
-
-	for (i = 0; i < map->aio.nr_cblocks; ++i)
-		zfree(&map->aio.data[i]);
-	if (map->aio.data)
-		zfree(&map->aio.data);
-	zfree(&map->aio.cblocks);
-	zfree(&map->aio.aiocb);
-}
-
-int perf_mmap__aio_push(struct perf_mmap *md, void *to, int idx,
-			int push(void *to, struct aiocb *cblock, void *buf, size_t size, off_t off),
-			off_t *off)
-{
-	u64 head = perf_mmap__read_head(md);
-	unsigned char *data = md->base + page_size;
-	unsigned long size, size0 = 0;
-	void *buf;
-	int rc = 0;
-
-	rc = perf_mmap__read_init(md);
-	if (rc < 0)
-		return (rc == -EAGAIN) ? 0 : -1;
-
-	/*
-	 * md->base data is copied into md->data[idx] buffer to
-	 * release space in the kernel buffer as fast as possible,
-	 * thru perf_mmap__consume() below.
-	 *
-	 * That lets the kernel to proceed with storing more
-	 * profiling data into the kernel buffer earlier than other
-	 * per-cpu kernel buffers are handled.
-	 *
-	 * Coping can be done in two steps in case the chunk of
-	 * profiling data crosses the upper bound of the kernel buffer.
-	 * In this case we first move part of data from md->start
-	 * till the upper bound and then the reminder from the
-	 * beginning of the kernel buffer till the end of
-	 * the data chunk.
-	 */
-
-	size = md->end - md->start;
-
-	if ((md->start & md->mask) + size != (md->end & md->mask)) {
-		buf = &data[md->start & md->mask];
-		size = md->mask + 1 - (md->start & md->mask);
-		md->start += size;
-		memcpy(md->aio.data[idx], buf, size);
-		size0 = size;
-	}
-
-	buf = &data[md->start & md->mask];
-	size = md->end - md->start;
-	md->start += size;
-	memcpy(md->aio.data[idx] + size0, buf, size);
-
-	/*
-	 * Increment md->refcount to guard md->data[idx] buffer
-	 * from premature deallocation because md object can be
-	 * released earlier than aio write request started
-	 * on mmap->data[idx] is complete.
-	 *
-	 * perf_mmap__put() is done at record__aio_complete()
-	 * after started request completion.
-	 */
-	perf_mmap__get(md);
-
-	md->prev = head;
-	perf_mmap__consume(md);
-
-	rc = push(to, &md->aio.cblocks[idx], md->aio.data[idx], size0 + size, *off);
-	if (!rc) {
-		*off += size0 + size;
-	} else {
-		/*
-		 * Decrement md->refcount back if aio write
-		 * operation failed to start.
-		 */
-		perf_mmap__put(md);
-	}
-
-	return rc;
-}
-#else
-static int perf_mmap__aio_mmap(struct perf_mmap *map __maybe_unused,
-			       struct mmap_params *mp __maybe_unused)
-{
-	return 0;
-}
-
-static void perf_mmap__aio_munmap(struct perf_mmap *map __maybe_unused)
-{
-}
-#endif
-
 void perf_mmap__munmap(struct perf_mmap *map)
 {
-	perf_mmap__aio_munmap(map);
 	if (map->base != NULL) {
 		munmap(map->base, perf_mmap__mmap_len(map));
 		map->base = NULL;
@@ -314,10 +188,10 @@ void perf_mmap__munmap(struct perf_mmap *map)
 	auxtrace_mmap__munmap(&map->auxtrace_mmap);
 }
 
-int perf_mmap__mmap(struct perf_mmap *map, struct mmap_params *mp, int fd, int cpu)
+int perf_mmap__mmap(struct perf_mmap *map, struct mmap_params *mp, int fd)
 {
 	/*
-	 * The last one will be done at perf_mmap__consume(), so that we
+	 * The last one will be done at perf_evlist__mmap_consume(), so that we
 	 * make sure we don't prevent tools from consuming every last event in
 	 * the ring buffer.
 	 *
@@ -341,27 +215,27 @@ int perf_mmap__mmap(struct perf_mmap *map, struct mmap_params *mp, int fd, int c
 		return -1;
 	}
 	map->fd = fd;
-	map->cpu = cpu;
 
 	if (auxtrace_mmap__mmap(&map->auxtrace_mmap,
 				&mp->auxtrace_mp, map->base, fd))
 		return -1;
 
-	return perf_mmap__aio_mmap(map, mp);
+	return 0;
 }
 
-static int overwrite_rb_find_range(void *buf, int mask, u64 *start, u64 *end)
+static int overwrite_rb_find_range(void *buf, int mask, u64 head, u64 *start, u64 *end)
 {
 	struct perf_event_header *pheader;
-	u64 evt_head = *start;
+	u64 evt_head = head;
 	int size = mask + 1;
 
-	pr_debug2("%s: buf=%p, start=%"PRIx64"\n", __func__, buf, *start);
-	pheader = (struct perf_event_header *)(buf + (*start & mask));
+	pr_debug2("overwrite_rb_find_range: buf=%p, head=%"PRIx64"\n", buf, head);
+	pheader = (struct perf_event_header *)(buf + (head & mask));
+	*start = head;
 	while (true) {
-		if (evt_head - *start >= (unsigned int)size) {
+		if (evt_head - head >= (unsigned int)size) {
 			pr_debug("Finished reading overwrite ring buffer: rewind\n");
-			if (evt_head - *start > (unsigned int)size)
+			if (evt_head - head > (unsigned int)size)
 				evt_head -= pheader->size;
 			*end = evt_head;
 			return 0;
@@ -385,26 +259,27 @@ static int overwrite_rb_find_range(void *buf, int mask, u64 *start, u64 *end)
 /*
  * Report the start and end of the available data in ringbuffer
  */
-static int __perf_mmap__read_init(struct perf_mmap *md)
+int perf_mmap__read_init(struct perf_mmap *md, bool overwrite,
+			 u64 *startp, u64 *endp)
 {
 	u64 head = perf_mmap__read_head(md);
 	u64 old = md->prev;
 	unsigned char *data = md->base + page_size;
 	unsigned long size;
 
-	md->start = md->overwrite ? head : old;
-	md->end = md->overwrite ? old : head;
+	*startp = overwrite ? head : old;
+	*endp = overwrite ? old : head;
 
-	if (md->start == md->end)
+	if (*startp == *endp)
 		return -EAGAIN;
 
-	size = md->end - md->start;
+	size = *endp - *startp;
 	if (size > (unsigned long)(md->mask) + 1) {
-		if (!md->overwrite) {
+		if (!overwrite) {
 			WARN_ONCE(1, "failed to keep up with mmap data. (warn only once)\n");
 
 			md->prev = head;
-			perf_mmap__consume(md);
+			perf_mmap__consume(md, overwrite);
 			return -EAGAIN;
 		}
 
@@ -412,61 +287,51 @@ static int __perf_mmap__read_init(struct perf_mmap *md)
 		 * Backward ring buffer is full. We still have a chance to read
 		 * most of data from it.
 		 */
-		if (overwrite_rb_find_range(data, md->mask, &md->start, &md->end))
+		if (overwrite_rb_find_range(data, md->mask, head, startp, endp))
 			return -EINVAL;
 	}
 
 	return 0;
 }
 
-int perf_mmap__read_init(struct perf_mmap *map)
-{
-	/*
-	 * Check if event was unmapped due to a POLLHUP/POLLERR.
-	 */
-	if (!refcount_read(&map->refcnt))
-		return -ENOENT;
-
-	return __perf_mmap__read_init(map);
-}
-
-int perf_mmap__push(struct perf_mmap *md, void *to,
-		    int push(struct perf_mmap *map, void *to, void *buf, size_t size))
+int perf_mmap__push(struct perf_mmap *md, bool overwrite,
+		    void *to, int push(void *to, void *buf, size_t size))
 {
 	u64 head = perf_mmap__read_head(md);
+	u64 end, start;
 	unsigned char *data = md->base + page_size;
 	unsigned long size;
 	void *buf;
 	int rc = 0;
 
-	rc = perf_mmap__read_init(md);
+	rc = perf_mmap__read_init(md, overwrite, &start, &end);
 	if (rc < 0)
 		return (rc == -EAGAIN) ? 0 : -1;
 
-	size = md->end - md->start;
+	size = end - start;
 
-	if ((md->start & md->mask) + size != (md->end & md->mask)) {
-		buf = &data[md->start & md->mask];
-		size = md->mask + 1 - (md->start & md->mask);
-		md->start += size;
+	if ((start & md->mask) + size != (end & md->mask)) {
+		buf = &data[start & md->mask];
+		size = md->mask + 1 - (start & md->mask);
+		start += size;
 
-		if (push(md, to, buf, size) < 0) {
+		if (push(to, buf, size) < 0) {
 			rc = -1;
 			goto out;
 		}
 	}
 
-	buf = &data[md->start & md->mask];
-	size = md->end - md->start;
-	md->start += size;
+	buf = &data[start & md->mask];
+	size = end - start;
+	start += size;
 
-	if (push(md, to, buf, size) < 0) {
+	if (push(to, buf, size) < 0) {
 		rc = -1;
 		goto out;
 	}
 
 	md->prev = head;
-	perf_mmap__consume(md);
+	perf_mmap__consume(md, overwrite);
 out:
 	return rc;
 }
@@ -479,11 +344,5 @@ out:
  */
 void perf_mmap__read_done(struct perf_mmap *map)
 {
-	/*
-	 * Check if event was unmapped due to a POLLHUP/POLLERR.
-	 */
-	if (!refcount_read(&map->refcnt))
-		return;
-
 	map->prev = perf_mmap__read_head(map);
 }

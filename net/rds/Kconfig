@@ -1,6 +1,6 @@
 
 config RDS
-	tristate "The Reliable Datagram Sockets Protocol"
+	tristate "The RDS Protocol"
 	depends on INET
 	---help---
 	  The RDS (Reliable Datagram Sockets) protocol provides reliable,
@@ -16,7 +16,6 @@ config RDS_RDMA
 config RDS_TCP
 	tristate "RDS over TCP"
 	depends on RDS
-	depends on IPV6 || !IPV6
 	---help---
 	  Allow RDS to use TCP as a transport.
 	  This transport does not support RDMA operations.
@@ -25,3 +24,4 @@ config RDS_DEBUG
         bool "RDS debugging messages"
 	depends on RDS
         default n
+

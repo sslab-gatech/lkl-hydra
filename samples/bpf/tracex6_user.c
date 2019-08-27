@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 #include "bpf_load.h"
-#include <bpf/bpf.h>
+#include "libbpf.h"
 #include "perf-sys.h"
 
 #define SAMPLE_PERIOD  0x7fffffffffffffffULL

@@ -10,7 +10,6 @@
 #include <linux/slab.h>
 #include <linux/cred.h>
 #include <linux/hash.h>
-#include <linux/kmemleak.h>
 #include <linux/user_namespace.h>
 
 #define UCOUNTS_HASHTABLE_BITS 10

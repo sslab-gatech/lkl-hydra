@@ -22,8 +22,8 @@ struct kmem_cache {
 	unsigned int size;	/* The aligned/padded/added on size  */
 	unsigned int align;	/* Alignment as calculated */
 	slab_flags_t flags;	/* Active flags on the slab */
-	unsigned int useroffset;/* Usercopy region offset */
-	unsigned int usersize;	/* Usercopy region size */
+	size_t useroffset;	/* Usercopy region offset */
+	size_t usersize;	/* Usercopy region size */
 	const char *name;	/* Slab name for sysfs */
 	int refcount;		/* Use counter */
 	void (*ctor)(void *);	/* Called on object slot creation */
@@ -77,7 +77,7 @@ extern struct kmem_cache *kmem_cache;
 /* A table of kmalloc cache names and sizes */
 extern const struct kmalloc_info_struct {
 	const char *name;
-	unsigned int size;
+	unsigned long size;
 } kmalloc_info[];
 
 #ifndef CONFIG_SLOB
@@ -93,31 +93,31 @@ struct kmem_cache *kmalloc_slab(size_t, gfp_t);
 /* Functions provided by the slab allocators */
 int __kmem_cache_create(struct kmem_cache *, slab_flags_t flags);
 
-struct kmem_cache *create_kmalloc_cache(const char *name, unsigned int size,
-			slab_flags_t flags, unsigned int useroffset,
-			unsigned int usersize);
+extern struct kmem_cache *create_kmalloc_cache(const char *name, size_t size,
+			slab_flags_t flags, size_t useroffset,
+			size_t usersize);
 extern void create_boot_cache(struct kmem_cache *, const char *name,
-			unsigned int size, slab_flags_t flags,
-			unsigned int useroffset, unsigned int usersize);
+			size_t size, slab_flags_t flags, size_t useroffset,
+			size_t usersize);
 
 int slab_unmergeable(struct kmem_cache *s);
-struct kmem_cache *find_mergeable(unsigned size, unsigned align,
+struct kmem_cache *find_mergeable(size_t size, size_t align,
 		slab_flags_t flags, const char *name, void (*ctor)(void *));
 #ifndef CONFIG_SLOB
 struct kmem_cache *
-__kmem_cache_alias(const char *name, unsigned int size, unsigned int align,
+__kmem_cache_alias(const char *name, size_t size, size_t align,
 		   slab_flags_t flags, void (*ctor)(void *));
 
-slab_flags_t kmem_cache_flags(unsigned int object_size,
+slab_flags_t kmem_cache_flags(unsigned long object_size,
 	slab_flags_t flags, const char *name,
 	void (*ctor)(void *));
 #else
 static inline struct kmem_cache *
-__kmem_cache_alias(const char *name, unsigned int size, unsigned int align,
+__kmem_cache_alias(const char *name, size_t size, size_t align,
 		   slab_flags_t flags, void (*ctor)(void *))
 { return NULL; }
 
-static inline slab_flags_t kmem_cache_flags(unsigned int object_size,
+static inline slab_flags_t kmem_cache_flags(unsigned long object_size,
 	slab_flags_t flags, const char *name,
 	void (*ctor)(void *))
 {
@@ -166,7 +166,6 @@ static inline slab_flags_t kmem_cache_flags(unsigned int object_size,
 			      SLAB_TEMPORARY | \
 			      SLAB_ACCOUNT)
 
-bool __kmem_cache_empty(struct kmem_cache *);
 int __kmem_cache_shutdown(struct kmem_cache *);
 void __kmem_cache_release(struct kmem_cache *);
 int __kmem_cache_shrink(struct kmem_cache *);
@@ -203,7 +202,7 @@ ssize_t slabinfo_write(struct file *file, const char __user *buffer,
 void __kmem_cache_free_bulk(struct kmem_cache *, size_t, void **);
 int __kmem_cache_alloc_bulk(struct kmem_cache *, gfp_t, size_t, void **);
 
-#ifdef CONFIG_MEMCG_KMEM
+#if defined(CONFIG_MEMCG) && !defined(CONFIG_SLOB)
 
 /* List of all root caches. */
 extern struct list_head		slab_root_caches;
@@ -296,7 +295,7 @@ extern void memcg_link_cache(struct kmem_cache *s);
 extern void slab_deactivate_memcg_cache_rcu_sched(struct kmem_cache *s,
 				void (*deact_fn)(struct kmem_cache *));
 
-#else /* CONFIG_MEMCG_KMEM */
+#else /* CONFIG_MEMCG && !CONFIG_SLOB */
 
 /* If !memcg, all caches are root. */
 #define slab_root_caches	slab_caches
@@ -351,7 +350,7 @@ static inline void memcg_link_cache(struct kmem_cache *s)
 {
 }
 
-#endif /* CONFIG_MEMCG_KMEM */
+#endif /* CONFIG_MEMCG && !CONFIG_SLOB */
 
 static inline struct kmem_cache *cache_from_obj(struct kmem_cache *s, void *x)
 {
@@ -437,10 +436,11 @@ static inline void slab_post_alloc_hook(struct kmem_cache *s, gfp_t flags,
 
 	flags &= gfp_allowed_mask;
 	for (i = 0; i < size; i++) {
-		p[i] = kasan_slab_alloc(s, p[i], flags);
-		/* As p[i] might get tagged, call kmemleak hook after KASAN. */
-		kmemleak_alloc_recursive(p[i], s->object_size, 1,
+		void *object = p[i];
+
+		kmemleak_alloc_recursive(object, s->object_size, 1,
 					 s->flags, flags);
+		kasan_slab_alloc(s, object, flags);
 	}
 
 	if (memcg_kmem_enabled())

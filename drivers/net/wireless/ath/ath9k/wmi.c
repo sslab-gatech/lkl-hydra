@@ -209,7 +209,6 @@ static void ath9k_wmi_ctrl_rx(void *priv, struct sk_buff *skb,
 {
 	struct wmi *wmi = priv;
 	struct wmi_cmd_hdr *hdr;
-	unsigned long flags;
 	u16 cmd_id;
 
 	if (unlikely(wmi->stopped))
@@ -219,20 +218,20 @@ static void ath9k_wmi_ctrl_rx(void *priv, struct sk_buff *skb,
 	cmd_id = be16_to_cpu(hdr->command_id);
 
 	if (cmd_id & 0x1000) {
-		spin_lock_irqsave(&wmi->wmi_lock, flags);
+		spin_lock(&wmi->wmi_lock);
 		__skb_queue_tail(&wmi->wmi_event_queue, skb);
-		spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+		spin_unlock(&wmi->wmi_lock);
 		tasklet_schedule(&wmi->wmi_event_tasklet);
 		return;
 	}
 
 	/* Check if there has been a timeout. */
-	spin_lock_irqsave(&wmi->wmi_lock, flags);
+	spin_lock(&wmi->wmi_lock);
 	if (be16_to_cpu(hdr->seq_no) != wmi->last_seq_id) {
-		spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+		spin_unlock(&wmi->wmi_lock);
 		goto free_skb;
 	}
-	spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+	spin_unlock(&wmi->wmi_lock);
 
 	/* WMI command response */
 	ath9k_wmi_rsp_callback(wmi, skb);

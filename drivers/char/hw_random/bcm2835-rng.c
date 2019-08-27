@@ -1,7 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
+/**
  * Copyright (c) 2010-2012 Broadcom. All rights reserved.
  * Copyright (c) 2013 Lubomir Rintel
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License ("GPL")
+ * version 2, as published by the Free Software Foundation.
  */
 
 #include <linux/hw_random.h>
@@ -160,8 +163,6 @@ static int bcm2835_rng_probe(struct platform_device *pdev)
 
 	/* Clock is optional on most platforms */
 	priv->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(priv->clk) && PTR_ERR(priv->clk) == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
 
 	priv->rng.name = pdev->name;
 	priv->rng.init = bcm2835_rng_init;

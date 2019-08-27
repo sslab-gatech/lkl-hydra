@@ -4,15 +4,14 @@
 
 #ifndef __ASSEMBLY__
 
-#define __PAGETABLE_P4D_FOLDED 1
+#define __PAGETABLE_P4D_FOLDED
 
 typedef struct { pgd_t pgd; } p4d_t;
 
-#define P4D_SHIFT		PGDIR_SHIFT
-#define MAX_PTRS_PER_P4D	1
-#define PTRS_PER_P4D		1
-#define P4D_SIZE		(1UL << P4D_SHIFT)
-#define P4D_MASK		(~(P4D_SIZE-1))
+#define P4D_SHIFT	PGDIR_SHIFT
+#define PTRS_PER_P4D	1
+#define P4D_SIZE	(1UL << P4D_SHIFT)
+#define P4D_MASK	(~(P4D_SIZE-1))
 
 /*
  * The "pgd_xxx()" functions here are trivial for a folded two-level
@@ -26,7 +25,6 @@ static inline void pgd_clear(pgd_t *pgd)	{ }
 #define p4d_ERROR(p4d)				(pgd_ERROR((p4d).pgd))
 
 #define pgd_populate(mm, pgd, p4d)		do { } while (0)
-#define pgd_populate_safe(mm, pgd, p4d)		do { } while (0)
 /*
  * (p4ds are folded into pgds so this doesn't get actually called,
  * but the define is needed for a generic inline function.)

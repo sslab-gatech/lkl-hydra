@@ -1,7 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2013 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -281,9 +292,11 @@ bool halbtc_send_bt_mp_operation(struct btc_coexist *btcoexist, u8 op_code,
 static void halbtc_leave_lps(struct btc_coexist *btcoexist)
 {
 	struct rtl_priv *rtlpriv;
+	struct rtl_ps_ctl *ppsc;
 	bool ap_enable = false;
 
 	rtlpriv = btcoexist->adapter;
+	ppsc = rtl_psc(rtlpriv);
 
 	btcoexist->btc_get(btcoexist, BTC_GET_BL_WIFI_AP_MODE_ENABLE,
 			   &ap_enable);
@@ -302,9 +315,11 @@ static void halbtc_leave_lps(struct btc_coexist *btcoexist)
 static void halbtc_enter_lps(struct btc_coexist *btcoexist)
 {
 	struct rtl_priv *rtlpriv;
+	struct rtl_ps_ctl *ppsc;
 	bool ap_enable = false;
 
 	rtlpriv = btcoexist->adapter;
+	ppsc = rtl_psc(rtlpriv);
 
 	btcoexist->btc_get(btcoexist, BTC_GET_BL_WIFI_AP_MODE_ENABLE,
 			   &ap_enable);
@@ -476,6 +491,17 @@ static u32 halbtc_get_wifi_link_status(struct btc_coexist *btcoexist)
 	return ret_val;
 }
 
+static s32 halbtc_get_wifi_rssi(struct rtl_priv *rtlpriv)
+{
+	int undec_sm_pwdb = 0;
+
+	if (rtlpriv->mac80211.link_state >= MAC80211_LINKED)
+		undec_sm_pwdb = rtlpriv->dm.undec_sm_pwdb;
+	else /* associated entry pwdb */
+		undec_sm_pwdb = rtlpriv->dm.undec_sm_pwdb;
+	return undec_sm_pwdb;
+}
+
 static bool halbtc_get(void *void_btcoexist, u8 get_type, void *out_buf)
 {
 	struct btc_coexist *btcoexist = (struct btc_coexist *)void_btcoexist;
@@ -574,7 +600,7 @@ static bool halbtc_get(void *void_btcoexist, u8 get_type, void *out_buf)
 		*bool_tmp = false;
 		break;
 	case BTC_GET_S4_WIFI_RSSI:
-		*s32_tmp = rtlpriv->dm.undec_sm_pwdb;
+		*s32_tmp = halbtc_get_wifi_rssi(rtlpriv);
 		break;
 	case BTC_GET_S4_HS_RSSI:
 		*s32_tmp = 0;
@@ -1246,13 +1272,13 @@ bool exhalbtc_initlize_variables_wifi_only(struct rtl_priv *rtlpriv)
 
 	switch (rtlpriv->rtlhal.interface) {
 	case INTF_PCI:
-		wifionly_cfg->chip_interface = WIFIONLY_INTF_PCI;
+		wifionly_cfg->chip_interface = BTC_INTF_PCI;
 		break;
 	case INTF_USB:
-		wifionly_cfg->chip_interface = WIFIONLY_INTF_USB;
+		wifionly_cfg->chip_interface = BTC_INTF_USB;
 		break;
 	default:
-		wifionly_cfg->chip_interface = WIFIONLY_INTF_UNKNOWN;
+		wifionly_cfg->chip_interface = BTC_INTF_UNKNOWN;
 		break;
 	}
 

@@ -657,22 +657,31 @@ static int vs6624_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int vs6624_g_frame_interval(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_frame_interval *ival)
+static int vs6624_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
 	struct vs6624 *sensor = to_vs6624(sd);
+	struct v4l2_captureparm *cp = &parms->parm.capture;
 
-	ival->interval.numerator = sensor->frame_rate.denominator;
-	ival->interval.denominator = sensor->frame_rate.numerator;
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	memset(cp, 0, sizeof(*cp));
+	cp->capability = V4L2_CAP_TIMEPERFRAME;
+	cp->timeperframe.numerator = sensor->frame_rate.denominator;
+	cp->timeperframe.denominator = sensor->frame_rate.numerator;
 	return 0;
 }
 
-static int vs6624_s_frame_interval(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_frame_interval *ival)
+static int vs6624_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
 	struct vs6624 *sensor = to_vs6624(sd);
-	struct v4l2_fract *tpf = &ival->interval;
+	struct v4l2_captureparm *cp = &parms->parm.capture;
+	struct v4l2_fract *tpf = &cp->timeperframe;
 
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+	if (cp->extendedmode != 0)
+		return -EINVAL;
 
 	if (tpf->numerator == 0 || tpf->denominator == 0
 		|| (tpf->denominator > tpf->numerator * MAX_FRAME_RATE)) {
@@ -729,8 +738,8 @@ static const struct v4l2_subdev_core_ops vs6624_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops vs6624_video_ops = {
-	.s_frame_interval = vs6624_s_frame_interval,
-	.g_frame_interval = vs6624_g_frame_interval,
+	.s_parm = vs6624_s_parm,
+	.g_parm = vs6624_g_parm,
 	.s_stream = vs6624_s_stream,
 };
 
@@ -770,7 +779,7 @@ static int vs6624_probe(struct i2c_client *client,
 		return ret;
 	}
 	/* wait 100ms before any further i2c writes are performed */
-	msleep(100);
+	mdelay(100);
 
 	sensor = devm_kzalloc(&client->dev, sizeof(*sensor), GFP_KERNEL);
 	if (sensor == NULL)
@@ -782,7 +791,7 @@ static int vs6624_probe(struct i2c_client *client,
 	vs6624_writeregs(sd, vs6624_p1);
 	vs6624_write(sd, VS6624_MICRO_EN, 0x2);
 	vs6624_write(sd, VS6624_DIO_EN, 0x1);
-	usleep_range(10000, 11000);
+	mdelay(10);
 	vs6624_writeregs(sd, vs6624_p2);
 
 	vs6624_writeregs(sd, vs6624_default);

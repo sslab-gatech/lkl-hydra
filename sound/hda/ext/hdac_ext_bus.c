@@ -87,10 +87,9 @@ static const struct hdac_io_ops hdac_ext_default_io = {
  *
  * Returns 0 if successful, or a negative error code.
  */
-int snd_hdac_ext_bus_init(struct hdac_bus *bus, struct device *dev,
+int snd_hdac_ext_bus_init(struct hdac_ext_bus *ebus, struct device *dev,
 			const struct hdac_bus_ops *ops,
-			const struct hdac_io_ops *io_ops,
-			const struct hdac_ext_bus_ops *ext_ops)
+			const struct hdac_io_ops *io_ops)
 {
 	int ret;
 	static int idx;
@@ -99,16 +98,15 @@ int snd_hdac_ext_bus_init(struct hdac_bus *bus, struct device *dev,
 	if (io_ops == NULL)
 		io_ops = &hdac_ext_default_io;
 
-	ret = snd_hdac_bus_init(bus, dev, ops, io_ops);
+	ret = snd_hdac_bus_init(&ebus->bus, dev, ops, io_ops);
 	if (ret < 0)
 		return ret;
 
-	bus->ext_ops = ext_ops;
-	INIT_LIST_HEAD(&bus->hlink_list);
-	bus->idx = idx++;
+	INIT_LIST_HEAD(&ebus->hlink_list);
+	ebus->idx = idx++;
 
-	mutex_init(&bus->lock);
-	bus->cmd_dma_state = true;
+	mutex_init(&ebus->lock);
+	ebus->cmd_dma_state = true;
 
 	return 0;
 }
@@ -118,10 +116,10 @@ EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_init);
  * snd_hdac_ext_bus_exit - clean up a HD-audio extended bus
  * @ebus: the pointer to extended bus object
  */
-void snd_hdac_ext_bus_exit(struct hdac_bus *bus)
+void snd_hdac_ext_bus_exit(struct hdac_ext_bus *ebus)
 {
-	snd_hdac_bus_exit(bus);
-	WARN_ON(!list_empty(&bus->hlink_list));
+	snd_hdac_bus_exit(&ebus->bus);
+	WARN_ON(!list_empty(&ebus->hlink_list));
 }
 EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_exit);
 
@@ -137,15 +135,21 @@ static void default_release(struct device *dev)
  *
  * Returns zero for success or a negative error code.
  */
-int snd_hdac_ext_bus_device_init(struct hdac_bus *bus, int addr,
-					struct hdac_device *hdev)
+int snd_hdac_ext_bus_device_init(struct hdac_ext_bus *ebus, int addr)
 {
+	struct hdac_ext_device *edev;
+	struct hdac_device *hdev = NULL;
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 	char name[15];
 	int ret;
 
-	hdev->bus = bus;
+	edev = kzalloc(sizeof(*edev), GFP_KERNEL);
+	if (!edev)
+		return -ENOMEM;
+	hdev = &edev->hdev;
+	edev->ebus = ebus;
 
-	snprintf(name, sizeof(name), "ehdaudio%dD%d", bus->idx, addr);
+	snprintf(name, sizeof(name), "ehdaudio%dD%d", ebus->idx, addr);
 
 	ret  = snd_hdac_device_init(hdev, bus, name, addr);
 	if (ret < 0) {
@@ -172,8 +176,10 @@ EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_device_init);
  */
 void snd_hdac_ext_bus_device_exit(struct hdac_device *hdev)
 {
+	struct hdac_ext_device *edev = to_ehdac_device(hdev);
+
 	snd_hdac_device_exit(hdev);
-	kfree(hdev);
+	kfree(edev);
 }
 EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_device_exit);
 
@@ -182,14 +188,14 @@ EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_device_exit);
  *
  * @ebus: HD-audio extended bus
  */
-void snd_hdac_ext_bus_device_remove(struct hdac_bus *bus)
+void snd_hdac_ext_bus_device_remove(struct hdac_ext_bus *ebus)
 {
 	struct hdac_device *codec, *__codec;
 	/*
 	 * we need to remove all the codec devices objects created in the
 	 * snd_hdac_ext_bus_device_init
 	 */
-	list_for_each_entry_safe(codec, __codec, &bus->codec_list, list) {
+	list_for_each_entry_safe(codec, __codec, &ebus->bus.codec_list, list) {
 		snd_hdac_device_unregister(codec);
 		put_device(&codec->dev);
 	}
@@ -198,31 +204,35 @@ EXPORT_SYMBOL_GPL(snd_hdac_ext_bus_device_remove);
 #define dev_to_hdac(dev) (container_of((dev), \
 			struct hdac_device, dev))
 
-static inline struct hdac_driver *get_hdrv(struct device *dev)
+static inline struct hdac_ext_driver *get_edrv(struct device *dev)
 {
 	struct hdac_driver *hdrv = drv_to_hdac_driver(dev->driver);
-	return hdrv;
+	struct hdac_ext_driver *edrv = to_ehdac_driver(hdrv);
+
+	return edrv;
 }
 
-static inline struct hdac_device *get_hdev(struct device *dev)
+static inline struct hdac_ext_device *get_edev(struct device *dev)
 {
 	struct hdac_device *hdev = dev_to_hdac_dev(dev);
-	return hdev;
+	struct hdac_ext_device *edev = to_ehdac_device(hdev);
+
+	return edev;
 }
 
 static int hda_ext_drv_probe(struct device *dev)
 {
-	return (get_hdrv(dev))->probe(get_hdev(dev));
+	return (get_edrv(dev))->probe(get_edev(dev));
 }
 
 static int hdac_ext_drv_remove(struct device *dev)
 {
-	return (get_hdrv(dev))->remove(get_hdev(dev));
+	return (get_edrv(dev))->remove(get_edev(dev));
 }
 
 static void hdac_ext_drv_shutdown(struct device *dev)
 {
-	return (get_hdrv(dev))->shutdown(get_hdev(dev));
+	return (get_edrv(dev))->shutdown(get_edev(dev));
 }
 
 /**
@@ -230,20 +240,20 @@ static void hdac_ext_drv_shutdown(struct device *dev)
  *
  * @drv: ext hda driver structure
  */
-int snd_hda_ext_driver_register(struct hdac_driver *drv)
+int snd_hda_ext_driver_register(struct hdac_ext_driver *drv)
 {
-	drv->type = HDA_DEV_ASOC;
-	drv->driver.bus = &snd_hda_bus_type;
+	drv->hdac.type = HDA_DEV_ASOC;
+	drv->hdac.driver.bus = &snd_hda_bus_type;
 	/* we use default match */
 
 	if (drv->probe)
-		drv->driver.probe = hda_ext_drv_probe;
+		drv->hdac.driver.probe = hda_ext_drv_probe;
 	if (drv->remove)
-		drv->driver.remove = hdac_ext_drv_remove;
+		drv->hdac.driver.remove = hdac_ext_drv_remove;
 	if (drv->shutdown)
-		drv->driver.shutdown = hdac_ext_drv_shutdown;
+		drv->hdac.driver.shutdown = hdac_ext_drv_shutdown;
 
-	return driver_register(&drv->driver);
+	return driver_register(&drv->hdac.driver);
 }
 EXPORT_SYMBOL_GPL(snd_hda_ext_driver_register);
 
@@ -252,8 +262,8 @@ EXPORT_SYMBOL_GPL(snd_hda_ext_driver_register);
  *
  * @drv: ext hda driver structure
  */
-void snd_hda_ext_driver_unregister(struct hdac_driver *drv)
+void snd_hda_ext_driver_unregister(struct hdac_ext_driver *drv)
 {
-	driver_unregister(&drv->driver);
+	driver_unregister(&drv->hdac.driver);
 }
 EXPORT_SYMBOL_GPL(snd_hda_ext_driver_unregister);

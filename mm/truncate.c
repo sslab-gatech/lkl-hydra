@@ -33,21 +33,24 @@
 static inline void __clear_shadow_entry(struct address_space *mapping,
 				pgoff_t index, void *entry)
 {
-	XA_STATE(xas, &mapping->i_pages, index);
+	struct radix_tree_node *node;
+	void **slot;
 
-	xas_set_update(&xas, workingset_update_node);
-	if (xas_load(&xas) != entry)
+	if (!__radix_tree_lookup(&mapping->page_tree, index, &node, &slot))
 		return;
-	xas_store(&xas, NULL);
+	if (*slot != entry)
+		return;
+	__radix_tree_replace(&mapping->page_tree, node, slot, NULL,
+			     workingset_update_node);
 	mapping->nrexceptional--;
 }
 
 static void clear_shadow_entry(struct address_space *mapping, pgoff_t index,
 			       void *entry)
 {
-	xa_lock_irq(&mapping->i_pages);
+	spin_lock_irq(&mapping->tree_lock);
 	__clear_shadow_entry(mapping, index, entry);
-	xa_unlock_irq(&mapping->i_pages);
+	spin_unlock_irq(&mapping->tree_lock);
 }
 
 /*
@@ -67,7 +70,7 @@ static void truncate_exceptional_pvec_entries(struct address_space *mapping,
 		return;
 
 	for (j = 0; j < pagevec_count(pvec); j++)
-		if (xa_is_value(pvec->pages[j]))
+		if (radix_tree_exceptional_entry(pvec->pages[j]))
 			break;
 
 	if (j == pagevec_count(pvec))
@@ -76,13 +79,13 @@ static void truncate_exceptional_pvec_entries(struct address_space *mapping,
 	dax = dax_mapping(mapping);
 	lock = !dax && indices[j] < end;
 	if (lock)
-		xa_lock_irq(&mapping->i_pages);
+		spin_lock_irq(&mapping->tree_lock);
 
 	for (i = j; i < pagevec_count(pvec); i++) {
 		struct page *page = pvec->pages[i];
 		pgoff_t index = indices[i];
 
-		if (!xa_is_value(page)) {
+		if (!radix_tree_exceptional_entry(page)) {
 			pvec->pages[j++] = page;
 			continue;
 		}
@@ -99,7 +102,7 @@ static void truncate_exceptional_pvec_entries(struct address_space *mapping,
 	}
 
 	if (lock)
-		xa_unlock_irq(&mapping->i_pages);
+		spin_unlock_irq(&mapping->tree_lock);
 	pvec->nr = j;
 }
 
@@ -344,7 +347,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 			if (index >= end)
 				break;
 
-			if (xa_is_value(page))
+			if (radix_tree_exceptional_entry(page))
 				continue;
 
 			if (!trylock_page(page))
@@ -439,7 +442,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 				break;
 			}
 
-			if (xa_is_value(page))
+			if (radix_tree_exceptional_entry(page))
 				continue;
 
 			lock_page(page);
@@ -515,15 +518,11 @@ void truncate_inode_pages_final(struct address_space *mapping)
 		 * modification that does not see AS_EXITING is
 		 * completed before starting the final truncate.
 		 */
-		xa_lock_irq(&mapping->i_pages);
-		xa_unlock_irq(&mapping->i_pages);
-	}
+		spin_lock_irq(&mapping->tree_lock);
+		spin_unlock_irq(&mapping->tree_lock);
 
-	/*
-	 * Cleancache needs notification even if there are no pages or shadow
-	 * entries.
-	 */
-	truncate_inode_pages(mapping, 0);
+		truncate_inode_pages(mapping, 0);
+	}
 }
 EXPORT_SYMBOL(truncate_inode_pages_final);
 
@@ -562,7 +561,7 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 			if (index > end)
 				break;
 
-			if (xa_is_value(page)) {
+			if (radix_tree_exceptional_entry(page)) {
 				invalidate_exceptional_entry(mapping, index,
 							     page);
 				continue;
@@ -628,13 +627,13 @@ invalidate_complete_page2(struct address_space *mapping, struct page *page)
 	if (page_has_private(page) && !try_to_release_page(page, GFP_KERNEL))
 		return 0;
 
-	xa_lock_irqsave(&mapping->i_pages, flags);
+	spin_lock_irqsave(&mapping->tree_lock, flags);
 	if (PageDirty(page))
 		goto failed;
 
 	BUG_ON(page_has_private(page));
 	__delete_from_page_cache(page, NULL);
-	xa_unlock_irqrestore(&mapping->i_pages, flags);
+	spin_unlock_irqrestore(&mapping->tree_lock, flags);
 
 	if (mapping->a_ops->freepage)
 		mapping->a_ops->freepage(page);
@@ -642,7 +641,7 @@ invalidate_complete_page2(struct address_space *mapping, struct page *page)
 	put_page(page);	/* pagecache ref */
 	return 1;
 failed:
-	xa_unlock_irqrestore(&mapping->i_pages, flags);
+	spin_unlock_irqrestore(&mapping->tree_lock, flags);
 	return 0;
 }
 
@@ -693,7 +692,7 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 			if (index > end)
 				break;
 
-			if (xa_is_value(page)) {
+			if (radix_tree_exceptional_entry(page)) {
 				if (!invalidate_exceptional_entry2(mapping,
 								   index, page))
 					ret = -EBUSY;
@@ -739,10 +738,10 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 		index++;
 	}
 	/*
-	 * For DAX we invalidate page tables after invalidating page cache.  We
+	 * For DAX we invalidate page tables after invalidating radix tree.  We
 	 * could invalidate page tables while invalidating each entry however
 	 * that would be expensive. And doing range unmapping before doesn't
-	 * work as we have no cheap way to find whether page cache entry didn't
+	 * work as we have no cheap way to find whether radix tree entry didn't
 	 * get remapped later.
 	 */
 	if (dax_mapping(mapping)) {

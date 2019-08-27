@@ -61,8 +61,6 @@ struct usb_ep;
  *	invalidated by the error may first be dequeued.
  * @context: For use by the completion callback
  * @list: For use by the gadget driver.
- * @frame_number: Reports the interval number in (micro)frame in which the
- *	isochronous transfer was transmitted or received.
  * @status: Reports completion code, zero or a negative errno.
  *	Normally, faults block the transfer queue from advancing until
  *	the completion callback returns.
@@ -114,8 +112,6 @@ struct usb_request {
 	void			*context;
 	struct list_head	list;
 
-	unsigned		frame_number;		/* ISO ONLY */
-
 	int			status;
 	unsigned		actual;
 };
@@ -133,7 +129,6 @@ struct usb_ep_ops {
 	int (*enable) (struct usb_ep *ep,
 		const struct usb_endpoint_descriptor *desc);
 	int (*disable) (struct usb_ep *ep);
-	void (*dispose) (struct usb_ep *ep);
 
 	struct usb_request *(*alloc_request) (struct usb_ep *ep,
 		gfp_t gfp_flags);
@@ -767,7 +762,7 @@ struct usb_gadget_string_container {
 };
 
 /* put descriptor for string with that id into buf (buflen >= 256) */
-int usb_gadget_get_string(const struct usb_gadget_strings *table, int id, u8 *buf);
+int usb_gadget_get_string(struct usb_gadget_strings *table, int id, u8 *buf);
 
 /*-------------------------------------------------------------------------*/
 
@@ -810,7 +805,6 @@ int usb_otg_descriptor_init(struct usb_gadget *gadget,
 
 /* utility to simplify map/unmap of usb_requests to/from DMA */
 
-#ifdef	CONFIG_HAS_DMA
 extern int usb_gadget_map_request_by_dev(struct device *dev,
 		struct usb_request *req, int is_in);
 extern int usb_gadget_map_request(struct usb_gadget *gadget,
@@ -820,17 +814,6 @@ extern void usb_gadget_unmap_request_by_dev(struct device *dev,
 		struct usb_request *req, int is_in);
 extern void usb_gadget_unmap_request(struct usb_gadget *gadget,
 		struct usb_request *req, int is_in);
-#else /* !CONFIG_HAS_DMA */
-static inline int usb_gadget_map_request_by_dev(struct device *dev,
-		struct usb_request *req, int is_in) { return -ENOSYS; }
-static inline int usb_gadget_map_request(struct usb_gadget *gadget,
-		struct usb_request *req, int is_in) { return -ENOSYS; }
-
-static inline void usb_gadget_unmap_request_by_dev(struct device *dev,
-		struct usb_request *req, int is_in) { }
-static inline void usb_gadget_unmap_request(struct usb_gadget *gadget,
-		struct usb_request *req, int is_in) { }
-#endif /* !CONFIG_HAS_DMA */
 
 /*-------------------------------------------------------------------------*/
 

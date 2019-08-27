@@ -358,7 +358,7 @@ static int do_set_sock_timeout(struct socket *sock, int level,
 
 	if (optlen < sizeof(*up))
 		return -EINVAL;
-	if (!access_ok(up, sizeof(*up)) ||
+	if (!access_ok(VERIFY_READ, up, sizeof(*up)) ||
 	    __get_user(ktime.tv_sec, &up->tv_sec) ||
 	    __get_user(ktime.tv_usec, &up->tv_usec))
 		return -EFAULT;
@@ -377,23 +377,18 @@ static int compat_sock_setsockopt(struct socket *sock, int level, int optname,
 	    optname == SO_ATTACH_REUSEPORT_CBPF)
 		return do_set_attach_filter(sock, level, optname,
 					    optval, optlen);
-	if (!COMPAT_USE_64BIT_TIME &&
-	    (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO))
+	if (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
 		return do_set_sock_timeout(sock, level, optname, optval, optlen);
 
 	return sock_setsockopt(sock, level, optname, optval, optlen);
 }
 
-static int __compat_sys_setsockopt(int fd, int level, int optname,
-				   char __user *optval, unsigned int optlen)
+COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+		       char __user *, optval, unsigned int, optlen)
 {
 	int err;
-	struct socket *sock;
+	struct socket *sock = sockfd_lookup(fd, &err);
 
-	if (optlen > INT_MAX)
-		return -EINVAL;
-
-	sock = sockfd_lookup(fd, &err);
 	if (sock) {
 		err = security_socket_setsockopt(sock, level, optname);
 		if (err) {
@@ -413,12 +408,6 @@ static int __compat_sys_setsockopt(int fd, int level, int optname,
 		sockfd_put(sock);
 	}
 	return err;
-}
-
-COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
-		       char __user *, optval, unsigned int, optlen)
-{
-	return __compat_sys_setsockopt(fd, level, optname, optval, optlen);
 }
 
 static int do_get_sock_timeout(struct socket *sock, int level, int optname,
@@ -442,7 +431,7 @@ static int do_get_sock_timeout(struct socket *sock, int level, int optname,
 
 	if (!err) {
 		if (put_user(sizeof(*up), optlen) ||
-		    !access_ok(up, sizeof(*up)) ||
+		    !access_ok(VERIFY_WRITE, up, sizeof(*up)) ||
 		    __put_user(ktime.tv_sec, &up->tv_sec) ||
 		    __put_user(ktime.tv_usec, &up->tv_usec))
 			err = -EFAULT;
@@ -453,8 +442,7 @@ static int do_get_sock_timeout(struct socket *sock, int level, int optname,
 static int compat_sock_getsockopt(struct socket *sock, int level, int optname,
 				char __user *optval, int __user *optlen)
 {
-	if (!COMPAT_USE_64BIT_TIME &&
-	    (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO))
+	if (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
 		return do_get_sock_timeout(sock, level, optname, optval, optlen);
 	return sock_getsockopt(sock, level, optname, optval, optlen);
 }
@@ -470,15 +458,14 @@ int compat_sock_get_timestamp(struct sock *sk, struct timeval __user *userstamp)
 
 	ctv = (struct compat_timeval __user *) userstamp;
 	err = -ENOENT;
-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
-	tv = ktime_to_timeval(sock_read_timestamp(sk));
-
+	if (!sock_flag(sk, SOCK_TIMESTAMP))
+		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
+	tv = ktime_to_timeval(sk->sk_stamp);
 	if (tv.tv_sec == -1)
 		return err;
 	if (tv.tv_sec == 0) {
-		ktime_t kt = ktime_get_real();
-		sock_write_timestamp(sk, kt);
-		tv = ktime_to_timeval(kt);
+		sk->sk_stamp = ktime_get_real();
+		tv = ktime_to_timeval(sk->sk_stamp);
 	}
 	err = 0;
 	if (put_user(tv.tv_sec, &ctv->tv_sec) ||
@@ -499,14 +486,14 @@ int compat_sock_get_timestampns(struct sock *sk, struct timespec __user *usersta
 
 	ctv = (struct compat_timespec __user *) userstamp;
 	err = -ENOENT;
-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
-	ts = ktime_to_timespec(sock_read_timestamp(sk));
+	if (!sock_flag(sk, SOCK_TIMESTAMP))
+		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
+	ts = ktime_to_timespec(sk->sk_stamp);
 	if (ts.tv_sec == -1)
 		return err;
 	if (ts.tv_sec == 0) {
-		ktime_t kt = ktime_get_real();
-		sock_write_timestamp(sk, kt);
-		ts = ktime_to_timespec(kt);
+		sk->sk_stamp = ktime_get_real();
+		ts = ktime_to_timespec(sk->sk_stamp);
 	}
 	err = 0;
 	if (put_user(ts.tv_sec, &ctv->tv_sec) ||
@@ -516,9 +503,8 @@ int compat_sock_get_timestampns(struct sock *sk, struct timespec __user *usersta
 }
 EXPORT_SYMBOL(compat_sock_get_timestampns);
 
-static int __compat_sys_getsockopt(int fd, int level, int optname,
-				   char __user *optval,
-				   int __user *optlen)
+COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+		       char __user *, optval, int __user *, optlen)
 {
 	int err;
 	struct socket *sock = sockfd_lookup(fd, &err);
@@ -542,12 +528,6 @@ static int __compat_sys_getsockopt(int fd, int level, int optname,
 		sockfd_put(sock);
 	}
 	return err;
-}
-
-COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
-		       char __user *, optval, int __user *, optlen)
-{
-	return __compat_sys_getsockopt(fd, level, optname, optval, optlen);
 }
 
 struct compat_group_req {
@@ -594,8 +574,8 @@ int compat_mc_setsockopt(struct sock *sock, int level, int optname,
 			compat_alloc_user_space(sizeof(struct group_req));
 		u32 interface;
 
-		if (!access_ok(gr32, sizeof(*gr32)) ||
-		    !access_ok(kgr, sizeof(struct group_req)) ||
+		if (!access_ok(VERIFY_READ, gr32, sizeof(*gr32)) ||
+		    !access_ok(VERIFY_WRITE, kgr, sizeof(struct group_req)) ||
 		    __get_user(interface, &gr32->gr_interface) ||
 		    __put_user(interface, &kgr->gr_interface) ||
 		    copy_in_user(&kgr->gr_group, &gr32->gr_group,
@@ -615,8 +595,8 @@ int compat_mc_setsockopt(struct sock *sock, int level, int optname,
 			sizeof(struct group_source_req));
 		u32 interface;
 
-		if (!access_ok(gsr32, sizeof(*gsr32)) ||
-		    !access_ok(kgsr,
+		if (!access_ok(VERIFY_READ, gsr32, sizeof(*gsr32)) ||
+		    !access_ok(VERIFY_WRITE, kgsr,
 			sizeof(struct group_source_req)) ||
 		    __get_user(interface, &gsr32->gsr_interface) ||
 		    __put_user(interface, &kgsr->gsr_interface) ||
@@ -635,7 +615,7 @@ int compat_mc_setsockopt(struct sock *sock, int level, int optname,
 		struct group_filter __user *kgf;
 		u32 interface, fmode, numsrc;
 
-		if (!access_ok(gf32, __COMPAT_GF0_SIZE) ||
+		if (!access_ok(VERIFY_READ, gf32, __COMPAT_GF0_SIZE) ||
 		    __get_user(interface, &gf32->gf_interface) ||
 		    __get_user(fmode, &gf32->gf_fmode) ||
 		    __get_user(numsrc, &gf32->gf_numsrc))
@@ -645,7 +625,7 @@ int compat_mc_setsockopt(struct sock *sock, int level, int optname,
 		if (koptlen < GROUP_FILTER_SIZE(numsrc))
 			return -EINVAL;
 		kgf = compat_alloc_user_space(koptlen);
-		if (!access_ok(kgf, koptlen) ||
+		if (!access_ok(VERIFY_WRITE, kgf, koptlen) ||
 		    __put_user(interface, &kgf->gf_interface) ||
 		    __put_user(fmode, &kgf->gf_fmode) ||
 		    __put_user(numsrc, &kgf->gf_numsrc) ||
@@ -679,7 +659,7 @@ int compat_mc_getsockopt(struct sock *sock, int level, int optname,
 		return getsockopt(sock, level, optname, optval, optlen);
 
 	koptlen = compat_alloc_user_space(sizeof(*koptlen));
-	if (!access_ok(optlen, sizeof(*optlen)) ||
+	if (!access_ok(VERIFY_READ, optlen, sizeof(*optlen)) ||
 	    __get_user(ulen, optlen))
 		return -EFAULT;
 
@@ -689,14 +669,14 @@ int compat_mc_getsockopt(struct sock *sock, int level, int optname,
 	if (klen < GROUP_FILTER_SIZE(0))
 		return -EINVAL;
 
-	if (!access_ok(koptlen, sizeof(*koptlen)) ||
+	if (!access_ok(VERIFY_WRITE, koptlen, sizeof(*koptlen)) ||
 	    __put_user(klen, koptlen))
 		return -EFAULT;
 
 	/* have to allow space for previous compat_alloc_user_space, too */
 	kgf = compat_alloc_user_space(klen+sizeof(*optlen));
 
-	if (!access_ok(gf32, __COMPAT_GF0_SIZE) ||
+	if (!access_ok(VERIFY_READ, gf32, __COMPAT_GF0_SIZE) ||
 	    __get_user(interface, &gf32->gf_interface) ||
 	    __get_user(fmode, &gf32->gf_fmode) ||
 	    __get_user(numsrc, &gf32->gf_numsrc) ||
@@ -710,18 +690,18 @@ int compat_mc_getsockopt(struct sock *sock, int level, int optname,
 	if (err)
 		return err;
 
-	if (!access_ok(koptlen, sizeof(*koptlen)) ||
+	if (!access_ok(VERIFY_READ, koptlen, sizeof(*koptlen)) ||
 	    __get_user(klen, koptlen))
 		return -EFAULT;
 
 	ulen = klen - (sizeof(*kgf)-sizeof(*gf32));
 
-	if (!access_ok(optlen, sizeof(*optlen)) ||
+	if (!access_ok(VERIFY_WRITE, optlen, sizeof(*optlen)) ||
 	    __put_user(ulen, optlen))
 		return -EFAULT;
 
-	if (!access_ok(kgf, klen) ||
-	    !access_ok(gf32, ulen) ||
+	if (!access_ok(VERIFY_READ, kgf, klen) ||
+	    !access_ok(VERIFY_WRITE, gf32, ulen) ||
 	    __get_user(interface, &kgf->gf_interface) ||
 	    __get_user(fmode, &kgf->gf_fmode) ||
 	    __get_user(numsrc, &kgf->gf_numsrc) ||
@@ -754,86 +734,56 @@ static unsigned char nas[21] = {
 };
 #undef AL
 
-static inline long __compat_sys_sendmsg(int fd,
-					struct compat_msghdr __user *msg,
-					unsigned int flags)
+COMPAT_SYSCALL_DEFINE3(sendmsg, int, fd, struct compat_msghdr __user *, msg, unsigned int, flags)
 {
-	return __sys_sendmsg(fd, (struct user_msghdr __user *)msg,
-			     flags | MSG_CMSG_COMPAT, false);
-}
-
-COMPAT_SYSCALL_DEFINE3(sendmsg, int, fd, struct compat_msghdr __user *, msg,
-		       unsigned int, flags)
-{
-	return __compat_sys_sendmsg(fd, msg, flags);
-}
-
-static inline long __compat_sys_sendmmsg(int fd,
-					 struct compat_mmsghdr __user *mmsg,
-					 unsigned int vlen, unsigned int flags)
-{
-	return __sys_sendmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
-			      flags | MSG_CMSG_COMPAT, false);
+	return __sys_sendmsg(fd, (struct user_msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
 }
 
 COMPAT_SYSCALL_DEFINE4(sendmmsg, int, fd, struct compat_mmsghdr __user *, mmsg,
 		       unsigned int, vlen, unsigned int, flags)
 {
-	return __compat_sys_sendmmsg(fd, mmsg, vlen, flags);
+	return __sys_sendmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
+			      flags | MSG_CMSG_COMPAT);
 }
 
-static inline long __compat_sys_recvmsg(int fd,
-					struct compat_msghdr __user *msg,
-					unsigned int flags)
+COMPAT_SYSCALL_DEFINE3(recvmsg, int, fd, struct compat_msghdr __user *, msg, unsigned int, flags)
 {
-	return __sys_recvmsg(fd, (struct user_msghdr __user *)msg,
-			     flags | MSG_CMSG_COMPAT, false);
-}
-
-COMPAT_SYSCALL_DEFINE3(recvmsg, int, fd, struct compat_msghdr __user *, msg,
-		       unsigned int, flags)
-{
-	return __compat_sys_recvmsg(fd, msg, flags);
-}
-
-static inline long __compat_sys_recvfrom(int fd, void __user *buf,
-					 compat_size_t len, unsigned int flags,
-					 struct sockaddr __user *addr,
-					 int __user *addrlen)
-{
-	return __sys_recvfrom(fd, buf, len, flags | MSG_CMSG_COMPAT, addr,
-			      addrlen);
+	return __sys_recvmsg(fd, (struct user_msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
 }
 
 COMPAT_SYSCALL_DEFINE4(recv, int, fd, void __user *, buf, compat_size_t, len, unsigned int, flags)
 {
-	return __compat_sys_recvfrom(fd, buf, len, flags, NULL, NULL);
+	return sys_recv(fd, buf, len, flags | MSG_CMSG_COMPAT);
 }
 
 COMPAT_SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, buf, compat_size_t, len,
 		       unsigned int, flags, struct sockaddr __user *, addr,
 		       int __user *, addrlen)
 {
-	return __compat_sys_recvfrom(fd, buf, len, flags, addr, addrlen);
+	return sys_recvfrom(fd, buf, len, flags | MSG_CMSG_COMPAT, addr, addrlen);
 }
 
-COMPAT_SYSCALL_DEFINE5(recvmmsg_time64, int, fd, struct compat_mmsghdr __user *, mmsg,
-		       unsigned int, vlen, unsigned int, flags,
-		       struct __kernel_timespec __user *, timeout)
-{
-	return __sys_recvmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
-			      flags | MSG_CMSG_COMPAT, timeout, NULL);
-}
-
-#ifdef CONFIG_COMPAT_32BIT_TIME
 COMPAT_SYSCALL_DEFINE5(recvmmsg, int, fd, struct compat_mmsghdr __user *, mmsg,
 		       unsigned int, vlen, unsigned int, flags,
-		       struct old_timespec32 __user *, timeout)
+		       struct compat_timespec __user *, timeout)
 {
-	return __sys_recvmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
-			      flags | MSG_CMSG_COMPAT, NULL, timeout);
+	int datagrams;
+	struct timespec ktspec;
+
+	if (timeout == NULL)
+		return __sys_recvmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
+				      flags | MSG_CMSG_COMPAT, NULL);
+
+	if (compat_get_timespec(&ktspec, timeout))
+		return -EFAULT;
+
+	datagrams = __sys_recvmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
+				   flags | MSG_CMSG_COMPAT, &ktspec);
+	if (datagrams > 0 && compat_put_timespec(&ktspec, timeout))
+		datagrams = -EFAULT;
+
+	return datagrams;
 }
-#endif
 
 COMPAT_SYSCALL_DEFINE2(socketcall, int, call, u32 __user *, args)
 {
@@ -860,73 +810,68 @@ COMPAT_SYSCALL_DEFINE2(socketcall, int, call, u32 __user *, args)
 
 	switch (call) {
 	case SYS_SOCKET:
-		ret = __sys_socket(a0, a1, a[2]);
+		ret = sys_socket(a0, a1, a[2]);
 		break;
 	case SYS_BIND:
-		ret = __sys_bind(a0, compat_ptr(a1), a[2]);
+		ret = sys_bind(a0, compat_ptr(a1), a[2]);
 		break;
 	case SYS_CONNECT:
-		ret = __sys_connect(a0, compat_ptr(a1), a[2]);
+		ret = sys_connect(a0, compat_ptr(a1), a[2]);
 		break;
 	case SYS_LISTEN:
-		ret = __sys_listen(a0, a1);
+		ret = sys_listen(a0, a1);
 		break;
 	case SYS_ACCEPT:
-		ret = __sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), 0);
+		ret = sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), 0);
 		break;
 	case SYS_GETSOCKNAME:
-		ret = __sys_getsockname(a0, compat_ptr(a1), compat_ptr(a[2]));
+		ret = sys_getsockname(a0, compat_ptr(a1), compat_ptr(a[2]));
 		break;
 	case SYS_GETPEERNAME:
-		ret = __sys_getpeername(a0, compat_ptr(a1), compat_ptr(a[2]));
+		ret = sys_getpeername(a0, compat_ptr(a1), compat_ptr(a[2]));
 		break;
 	case SYS_SOCKETPAIR:
-		ret = __sys_socketpair(a0, a1, a[2], compat_ptr(a[3]));
+		ret = sys_socketpair(a0, a1, a[2], compat_ptr(a[3]));
 		break;
 	case SYS_SEND:
-		ret = __sys_sendto(a0, compat_ptr(a1), a[2], a[3], NULL, 0);
+		ret = sys_send(a0, compat_ptr(a1), a[2], a[3]);
 		break;
 	case SYS_SENDTO:
-		ret = __sys_sendto(a0, compat_ptr(a1), a[2], a[3],
-				   compat_ptr(a[4]), a[5]);
+		ret = sys_sendto(a0, compat_ptr(a1), a[2], a[3], compat_ptr(a[4]), a[5]);
 		break;
 	case SYS_RECV:
-		ret = __compat_sys_recvfrom(a0, compat_ptr(a1), a[2], a[3],
-					    NULL, NULL);
+		ret = compat_sys_recv(a0, compat_ptr(a1), a[2], a[3]);
 		break;
 	case SYS_RECVFROM:
-		ret = __compat_sys_recvfrom(a0, compat_ptr(a1), a[2], a[3],
-					    compat_ptr(a[4]),
-					    compat_ptr(a[5]));
+		ret = compat_sys_recvfrom(a0, compat_ptr(a1), a[2], a[3],
+					  compat_ptr(a[4]), compat_ptr(a[5]));
 		break;
 	case SYS_SHUTDOWN:
-		ret = __sys_shutdown(a0, a1);
+		ret = sys_shutdown(a0, a1);
 		break;
 	case SYS_SETSOCKOPT:
-		ret = __compat_sys_setsockopt(a0, a1, a[2],
-					      compat_ptr(a[3]), a[4]);
+		ret = compat_sys_setsockopt(a0, a1, a[2],
+				compat_ptr(a[3]), a[4]);
 		break;
 	case SYS_GETSOCKOPT:
-		ret = __compat_sys_getsockopt(a0, a1, a[2],
-					      compat_ptr(a[3]),
-					      compat_ptr(a[4]));
+		ret = compat_sys_getsockopt(a0, a1, a[2],
+				compat_ptr(a[3]), compat_ptr(a[4]));
 		break;
 	case SYS_SENDMSG:
-		ret = __compat_sys_sendmsg(a0, compat_ptr(a1), a[2]);
+		ret = compat_sys_sendmsg(a0, compat_ptr(a1), a[2]);
 		break;
 	case SYS_SENDMMSG:
-		ret = __compat_sys_sendmmsg(a0, compat_ptr(a1), a[2], a[3]);
+		ret = compat_sys_sendmmsg(a0, compat_ptr(a1), a[2], a[3]);
 		break;
 	case SYS_RECVMSG:
-		ret = __compat_sys_recvmsg(a0, compat_ptr(a1), a[2]);
+		ret = compat_sys_recvmsg(a0, compat_ptr(a1), a[2]);
 		break;
 	case SYS_RECVMMSG:
-		ret = __sys_recvmmsg(a0, compat_ptr(a1), a[2],
-				     a[3] | MSG_CMSG_COMPAT, NULL,
-				     compat_ptr(a[4]));
+		ret = compat_sys_recvmmsg(a0, compat_ptr(a1), a[2], a[3],
+					  compat_ptr(a[4]));
 		break;
 	case SYS_ACCEPT4:
-		ret = __sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), a[3]);
+		ret = sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), a[3]);
 		break;
 	default:
 		ret = -EINVAL;

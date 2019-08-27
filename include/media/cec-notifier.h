@@ -1,9 +1,21 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * cec-notifier.h - notify CEC drivers of physical address changes
  *
  * Copyright 2016 Russell King <rmk+kernel@arm.linux.org.uk>
  * Copyright 2016-2017 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef LINUX_CEC_NOTIFIER_H
@@ -20,10 +32,8 @@ struct cec_notifier;
 #if IS_REACHABLE(CONFIG_CEC_CORE) && IS_ENABLED(CONFIG_CEC_NOTIFIER)
 
 /**
- * cec_notifier_get_conn - find or create a new cec_notifier for the given
- * device and connector tuple.
+ * cec_notifier_get - find or create a new cec_notifier for the given device.
  * @dev: device that sends the events.
- * @conn: the connector name from which the event occurs
  *
  * If a notifier for device @dev already exists, then increase the refcount
  * and return that notifier.
@@ -33,8 +43,7 @@ struct cec_notifier;
  *
  * Return NULL if the memory could not be allocated.
  */
-struct cec_notifier *cec_notifier_get_conn(struct device *dev,
-					   const char *conn);
+struct cec_notifier *cec_notifier_get(struct device *dev);
 
 /**
  * cec_notifier_put - decrease refcount and delete when the refcount reaches 0.
@@ -88,8 +97,7 @@ void cec_register_cec_notifier(struct cec_adapter *adap,
 			       struct cec_notifier *notifier);
 
 #else
-static inline struct cec_notifier *cec_notifier_get_conn(struct device *dev,
-							 const char *conn)
+static inline struct cec_notifier *cec_notifier_get(struct device *dev)
 {
 	/* A non-NULL pointer is expected on success */
 	return (struct cec_notifier *)0xdeadfeed;
@@ -123,23 +131,6 @@ static inline void cec_register_cec_notifier(struct cec_adapter *adap,
 {
 }
 #endif
-
-/**
- * cec_notifier_get - find or create a new cec_notifier for the given device.
- * @dev: device that sends the events.
- *
- * If a notifier for device @dev already exists, then increase the refcount
- * and return that notifier.
- *
- * If it doesn't exist, then allocate a new notifier struct and return a
- * pointer to that new struct.
- *
- * Return NULL if the memory could not be allocated.
- */
-static inline struct cec_notifier *cec_notifier_get(struct device *dev)
-{
-	return cec_notifier_get_conn(dev, NULL);
-}
 
 /**
  * cec_notifier_phys_addr_invalidate() - set the physical address to INVALID

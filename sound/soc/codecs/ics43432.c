@@ -37,18 +37,19 @@ static struct snd_soc_dai_driver ics43432_dai = {
 	},
 };
 
-static const struct snd_soc_component_driver ics43432_component_driver = {
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static const struct snd_soc_codec_driver ics43432_codec_driver = {
 };
 
 static int ics43432_probe(struct platform_device *pdev)
 {
-	return devm_snd_soc_register_component(&pdev->dev,
-			&ics43432_component_driver,
+	return snd_soc_register_codec(&pdev->dev, &ics43432_codec_driver,
 			&ics43432_dai, 1);
+}
+
+static int ics43432_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_codec(&pdev->dev);
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -65,6 +66,7 @@ static struct platform_driver ics43432_driver = {
 		.of_match_table = of_match_ptr(ics43432_ids),
 	},
 	.probe = ics43432_probe,
+	.remove = ics43432_remove,
 };
 
 module_platform_driver(ics43432_driver);

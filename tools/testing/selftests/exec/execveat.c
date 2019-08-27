@@ -20,8 +20,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../kselftest.h"
-
 static char longpath[2 * PATH_MAX] = "";
 static char *envp[] = { "IN_TEST=yes", NULL, NULL };
 static char *argv[] = { "execveat", "99", NULL };
@@ -251,8 +249,8 @@ static int run_tests(void)
 	errno = 0;
 	execveat_(-1, NULL, NULL, NULL, 0);
 	if (errno == ENOSYS) {
-		ksft_exit_skip(
-			"ENOSYS calling execveat - no kernel support?\n");
+		printf("[FAIL] ENOSYS calling execveat - no kernel support?\n");
+		return 1;
 	}
 
 	/* Change file position to confirm it doesn't affect anything */

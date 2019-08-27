@@ -59,7 +59,7 @@
 #define DWC2_UNRESERVE_DELAY (msecs_to_jiffies(5))
 
 /* If we get a NAK, wait this long before retrying */
-#define DWC2_RETRY_WAIT_DELAY 1*1E6L
+#define DWC2_RETRY_WAIT_DELAY (msecs_to_jiffies(1))
 
 /**
  * dwc2_periodic_channel_available() - Checks that a channel is available for a
@@ -383,7 +383,7 @@ static unsigned long *dwc2_get_ls_map(struct dwc2_hsotg *hsotg,
 	/* Get the map and adjust if this is a multi_tt hub */
 	map = qh->dwc_tt->periodic_bitmaps;
 	if (qh->dwc_tt->usb_tt->multi)
-		map += DWC2_ELEMENTS_PER_LS_BITMAP * (qh->ttport - 1);
+		map += DWC2_ELEMENTS_PER_LS_BITMAP * qh->ttport;
 
 	return map;
 }
@@ -679,7 +679,6 @@ static int dwc2_hs_pmap_schedule(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
  *
  * @hsotg:       The HCD state structure for the DWC OTG controller.
  * @qh:          QH for the periodic transfer.
- * @index:       Transfer index
  */
 static void dwc2_hs_pmap_unschedule(struct dwc2_hsotg *hsotg,
 				    struct dwc2_qh *qh, int index)
@@ -1277,7 +1276,7 @@ static void dwc2_do_unreserve(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
  * release the reservation.  This worker is called after the appropriate
  * delay.
  *
- * @t: Address to a qh unreserve_work.
+ * @work: Pointer to a qh unreserve_work.
  */
 static void dwc2_unreserve_timer_fn(struct timer_list *t)
 {
@@ -1464,12 +1463,10 @@ static void dwc2_deschedule_periodic(struct dwc2_hsotg *hsotg,
  * qh back to the "inactive" list, then queues transactions.
  *
  * @t: Pointer to wait_timer in a qh.
- *
- * Return: HRTIMER_NORESTART to not automatically restart this timer.
  */
-static enum hrtimer_restart dwc2_wait_timer_fn(struct hrtimer *t)
+static void dwc2_wait_timer_fn(struct timer_list *t)
 {
-	struct dwc2_qh *qh = container_of(t, struct dwc2_qh, wait_timer);
+	struct dwc2_qh *qh = from_timer(qh, t, wait_timer);
 	struct dwc2_hsotg *hsotg = qh->hsotg;
 	unsigned long flags;
 
@@ -1493,7 +1490,6 @@ static enum hrtimer_restart dwc2_wait_timer_fn(struct hrtimer *t)
 	}
 
 	spin_unlock_irqrestore(&hsotg->lock, flags);
-	return HRTIMER_NORESTART;
 }
 
 /**
@@ -1513,7 +1509,7 @@ static void dwc2_qh_init(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
 	bool ep_is_in = !!dwc2_hcd_is_pipe_in(&urb->pipe_info);
 	bool ep_is_isoc = (ep_type == USB_ENDPOINT_XFER_ISOC);
 	bool ep_is_int = (ep_type == USB_ENDPOINT_XFER_INT);
-	u32 hprt = dwc2_readl(hsotg, HPRT0);
+	u32 hprt = dwc2_readl(hsotg->regs + HPRT0);
 	u32 prtspd = (hprt & HPRT0_SPD_MASK) >> HPRT0_SPD_SHIFT;
 	bool do_split = (prtspd == HPRT0_SPD_HIGH_SPEED &&
 			 dev_speed != USB_SPEED_HIGH);
@@ -1524,8 +1520,7 @@ static void dwc2_qh_init(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
 	/* Initialize QH */
 	qh->hsotg = hsotg;
 	timer_setup(&qh->unreserve_timer, dwc2_unreserve_timer_fn, 0);
-	hrtimer_init(&qh->wait_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	qh->wait_timer.function = &dwc2_wait_timer_fn;
+	timer_setup(&qh->wait_timer, dwc2_wait_timer_fn, 0);
 	qh->ep_type = ep_type;
 	qh->ep_is_in = ep_is_in;
 
@@ -1636,7 +1631,7 @@ static void dwc2_qh_init(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
  * @hsotg:        The HCD state structure for the DWC OTG controller
  * @urb:          Holds the information about the device/endpoint needed
  *                to initialize the QH
- * @mem_flags:   Flags for allocating memory.
+ * @atomic_alloc: Flag to do atomic allocation if needed
  *
  * Return: Pointer to the newly allocated QH, or NULL on error
  */
@@ -1694,15 +1689,12 @@ void dwc2_hcd_qh_free(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
 	 * won't do anything anyway, but we want it to finish before we free
 	 * memory.
 	 */
-	hrtimer_cancel(&qh->wait_timer);
+	del_timer_sync(&qh->wait_timer);
 
 	dwc2_host_put_tt_info(hsotg, qh->dwc_tt);
 
 	if (qh->desc_list)
 		dwc2_hcd_qh_free_ddma(hsotg, qh);
-	else if (hsotg->unaligned_cache && qh->dw_align_buf)
-		kmem_cache_free(hsotg->unaligned_cache, qh->dw_align_buf);
-
 	kfree(qh);
 }
 
@@ -1720,7 +1712,6 @@ int dwc2_hcd_qh_add(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
 {
 	int status;
 	u32 intr_mask;
-	ktime_t delay;
 
 	if (dbg_qh(qh))
 		dev_vdbg(hsotg->dev, "%s()\n", __func__);
@@ -1739,8 +1730,8 @@ int dwc2_hcd_qh_add(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
 			list_add_tail(&qh->qh_list_entry,
 				      &hsotg->non_periodic_sched_waiting);
 			qh->wait_timer_cancel = false;
-			delay = ktime_set(0, DWC2_RETRY_WAIT_DELAY);
-			hrtimer_start(&qh->wait_timer, delay, HRTIMER_MODE_REL);
+			mod_timer(&qh->wait_timer,
+				  jiffies + DWC2_RETRY_WAIT_DELAY + 1);
 		} else {
 			list_add_tail(&qh->qh_list_entry,
 				      &hsotg->non_periodic_sched_inactive);
@@ -1752,9 +1743,9 @@ int dwc2_hcd_qh_add(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
 	if (status)
 		return status;
 	if (!hsotg->periodic_qh_count) {
-		intr_mask = dwc2_readl(hsotg, GINTMSK);
+		intr_mask = dwc2_readl(hsotg->regs + GINTMSK);
 		intr_mask |= GINTSTS_SOF;
-		dwc2_writel(hsotg, intr_mask, GINTMSK);
+		dwc2_writel(intr_mask, hsotg->regs + GINTMSK);
 	}
 	hsotg->periodic_qh_count++;
 
@@ -1793,9 +1784,9 @@ void dwc2_hcd_qh_unlink(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
 	hsotg->periodic_qh_count--;
 	if (!hsotg->periodic_qh_count &&
 	    !hsotg->params.dma_desc_enable) {
-		intr_mask = dwc2_readl(hsotg, GINTMSK);
+		intr_mask = dwc2_readl(hsotg->regs + GINTMSK);
 		intr_mask &= ~GINTSTS_SOF;
-		dwc2_writel(hsotg, intr_mask, GINTMSK);
+		dwc2_writel(intr_mask, hsotg->regs + GINTMSK);
 	}
 }
 

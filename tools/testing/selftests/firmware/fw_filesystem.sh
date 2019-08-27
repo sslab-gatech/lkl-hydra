@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 # This validates that the kernel will load firmware out of its list of
 # firmware locations on disk. Since the user helper does similar work,
@@ -6,15 +6,52 @@
 # know so we can be sure we're not accidentally testing the user helper.
 set -e
 
-TEST_REQS_FW_SYSFS_FALLBACK="no"
-TEST_REQS_FW_SET_CUSTOM_PATH="yes"
+DIR=/sys/devices/virtual/misc/test_firmware
 TEST_DIR=$(dirname $0)
-source $TEST_DIR/fw_lib.sh
 
-check_mods
-check_setup
-verify_reqs
-setup_tmp_file
+test_modprobe()
+{
+	if [ ! -d $DIR ]; then
+		echo "$0: $DIR not present"
+		echo "You must have the following enabled in your kernel:"
+		cat $TEST_DIR/config
+		exit 1
+	fi
+}
+
+trap "test_modprobe" EXIT
+
+if [ ! -d $DIR ]; then
+	modprobe test_firmware
+fi
+
+# CONFIG_FW_LOADER_USER_HELPER has a sysfs class under /sys/class/firmware/
+# These days most distros enable CONFIG_FW_LOADER_USER_HELPER but disable
+# CONFIG_FW_LOADER_USER_HELPER_FALLBACK. We use /sys/class/firmware/ as an
+# indicator for CONFIG_FW_LOADER_USER_HELPER.
+HAS_FW_LOADER_USER_HELPER=$(if [ -d /sys/class/firmware/ ]; then echo yes; else echo no; fi)
+
+if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
+	OLD_TIMEOUT=$(cat /sys/class/firmware/timeout)
+fi
+
+OLD_FWPATH=$(cat /sys/module/firmware_class/parameters/path)
+
+FWPATH=$(mktemp -d)
+FW="$FWPATH/test-firmware.bin"
+
+test_finish()
+{
+	if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
+		echo "$OLD_TIMEOUT" >/sys/class/firmware/timeout
+	fi
+	if [ "$OLD_FWPATH" = "" ]; then
+		OLD_FWPATH=" "
+	fi
+	echo -n "$OLD_FWPATH" >/sys/module/firmware_class/parameters/path
+	rm -f "$FW"
+	rmdir "$FWPATH"
+}
 
 trap "test_finish" EXIT
 
@@ -23,6 +60,14 @@ if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
 	echo 1 >/sys/class/firmware/timeout
 fi
 
+# Set the kernel search path.
+echo -n "$FWPATH" >/sys/module/firmware_class/parameters/path
+
+# This is an unlikely real-world firmware content. :)
+echo "ABCD0123" >"$FW"
+
+NAME=$(basename "$FW")
+
 if printf '\000' >"$DIR"/trigger_request 2> /dev/null; then
 	echo "$0: empty filename should not succeed" >&2
 	exit 1
@@ -30,7 +75,6 @@ fi
 
 if [ ! -e "$DIR"/trigger_async_request ]; then
 	echo "$0: empty filename: async trigger not present, ignoring test" >&2
-	exit $ksft_skip
 else
 	if printf '\000' >"$DIR"/trigger_async_request 2> /dev/null; then
 		echo "$0: empty filename should not succeed (async)" >&2
@@ -70,7 +114,6 @@ fi
 # Try the asynchronous version too
 if [ ! -e "$DIR"/trigger_async_request ]; then
 	echo "$0: firmware loading: async trigger not present, ignoring test" >&2
-	exit $ksft_skip
 else
 	if ! echo -n "$NAME" >"$DIR"/trigger_async_request ; then
 		echo "$0: could not trigger async request" >&2
@@ -91,7 +134,7 @@ test_config_present()
 {
 	if [ ! -f $DIR/reset ]; then
 		echo "Configuration triggers not present, ignoring test"
-		exit $ksft_skip
+		exit 0
 	fi
 }
 
@@ -155,8 +198,11 @@ read_firmwares()
 {
 	for i in $(seq 0 3); do
 		config_set_read_fw_idx $i
-		# Verify the contents match
-		if ! diff -q "$FW" $DIR/read_firmware 2>/dev/null ; then
+		# Verify the contents are what we expect.
+		# -Z required for now -- check for yourself, md5sum
+		# on $FW and DIR/read_firmware will yield the same. Even
+		# cmp agrees, so something is off.
+		if ! diff -q -Z "$FW" $DIR/read_firmware 2>/dev/null ; then
 			echo "request #$i: firmware was not loaded" >&2
 			exit 1
 		fi
@@ -168,7 +214,7 @@ read_firmwares_expect_nofile()
 	for i in $(seq 0 3); do
 		config_set_read_fw_idx $i
 		# Ensures contents differ
-		if diff -q "$FW" $DIR/read_firmware 2>/dev/null ; then
+		if diff -q -Z "$FW" $DIR/read_firmware 2>/dev/null ; then
 			echo "request $i: file was not expected to match" >&2
 			exit 1
 		fi
@@ -229,13 +275,10 @@ test_wait_and_cancel_custom_load()
 test_request_firmware_nowait_custom_nofile()
 {
 	echo -n "Batched request_firmware_nowait(uevent=false) nofile try #$1: "
-	config_reset
 	config_unset_uevent
-	RANDOM_FILE_PATH=$(setup_random_file_fake)
-	RANDOM_FILE="$(basename $RANDOM_FILE_PATH)"
-	config_set_name $RANDOM_FILE
+	config_set_name nope-test-firmware.bin
 	config_trigger_async &
-	test_wait_and_cancel_custom_load $RANDOM_FILE
+	test_wait_and_cancel_custom_load nope-test-firmware.bin
 	wait
 	release_all_firmware
 	echo "OK"
@@ -273,11 +316,7 @@ test_request_firmware_nowait_uevent()
 test_request_firmware_nowait_custom()
 {
 	echo -n "Batched request_firmware_nowait(uevent=false) try #$1: "
-	config_reset
 	config_unset_uevent
-	RANDOM_FILE_PATH=$(setup_random_file)
-	RANDOM_FILE="$(basename $RANDOM_FILE_PATH)"
-	config_set_name $RANDOM_FILE
 	config_trigger_async
 	release_all_firmware
 	echo "OK"

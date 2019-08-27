@@ -133,7 +133,6 @@ static int ice40_fpga_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
 	struct ice40_fpga_priv *priv;
-	struct fpga_manager *mgr;
 	int ret;
 
 	priv = devm_kzalloc(&spi->dev, sizeof(*priv), GFP_KERNEL);
@@ -175,22 +174,14 @@ static int ice40_fpga_probe(struct spi_device *spi)
 		return ret;
 	}
 
-	mgr = devm_fpga_mgr_create(dev, "Lattice iCE40 FPGA Manager",
-				   &ice40_fpga_ops, priv);
-	if (!mgr)
-		return -ENOMEM;
-
-	spi_set_drvdata(spi, mgr);
-
-	return fpga_mgr_register(mgr);
+	/* Register with the FPGA manager */
+	return fpga_mgr_register(dev, "Lattice iCE40 FPGA Manager",
+				 &ice40_fpga_ops, priv);
 }
 
 static int ice40_fpga_remove(struct spi_device *spi)
 {
-	struct fpga_manager *mgr = spi_get_drvdata(spi);
-
-	fpga_mgr_unregister(mgr);
-
+	fpga_mgr_unregister(&spi->dev);
 	return 0;
 }
 

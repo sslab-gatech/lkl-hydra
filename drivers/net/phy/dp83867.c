@@ -19,7 +19,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/phy.h>
-#include <linux/delay.h>
 
 #include <dt-bindings/net/ti-dp83867.h>
 
@@ -76,8 +75,6 @@
 
 #define DP83867_IO_MUX_CFG_IO_IMPEDANCE_MAX	0x0
 #define DP83867_IO_MUX_CFG_IO_IMPEDANCE_MIN	0x1f
-#define DP83867_IO_MUX_CFG_CLK_O_SEL_MASK	(0x1f << 8)
-#define DP83867_IO_MUX_CFG_CLK_O_SEL_SHIFT	8
 
 /* CFG4 bits */
 #define DP83867_CFG4_PORT_MIRROR_EN              BIT(0)
@@ -95,7 +92,6 @@ struct dp83867_private {
 	int io_impedance;
 	int port_mirroring;
 	bool rxctrl_strap_quirk;
-	int clk_output_sel;
 };
 
 static int dp83867_ack_interrupt(struct phy_device *phydev)
@@ -164,14 +160,6 @@ static int dp83867_of_init(struct phy_device *phydev)
 	dp83867->io_impedance = -EINVAL;
 
 	/* Optional configuration */
-	ret = of_property_read_u32(of_node, "ti,clk-output-sel",
-				   &dp83867->clk_output_sel);
-	if (ret || dp83867->clk_output_sel > DP83867_CLK_O_SEL_REF_CLK)
-		/* Keep the default value if ti,clk-output-sel is not set
-		 * or too high
-		 */
-		dp83867->clk_output_sel = DP83867_CLK_O_SEL_REF_CLK;
-
 	if (of_property_read_bool(of_node, "ti,max-output-impedance"))
 		dp83867->io_impedance = DP83867_IO_MUX_CFG_IO_IMPEDANCE_MAX;
 	else if (of_property_read_bool(of_node, "ti,min-output-impedance"))
@@ -307,14 +295,6 @@ static int dp83867_config_init(struct phy_device *phydev)
 	if (dp83867->port_mirroring != DP83867_PORT_MIRROING_KEEP)
 		dp83867_config_port_mirroring(phydev);
 
-	/* Clock output selection if muxing property is set */
-	if (dp83867->clk_output_sel != DP83867_CLK_O_SEL_REF_CLK) {
-		val = phy_read_mmd(phydev, DP83867_DEVADDR, DP83867_IO_MUX_CFG);
-		val &= ~DP83867_IO_MUX_CFG_CLK_O_SEL_MASK;
-		val |= (dp83867->clk_output_sel << DP83867_IO_MUX_CFG_CLK_O_SEL_SHIFT);
-		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_IO_MUX_CFG, val);
-	}
-
 	return 0;
 }
 
@@ -326,8 +306,6 @@ static int dp83867_phy_reset(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	usleep_range(10, 20);
-
 	return dp83867_config_init(phydev);
 }
 
@@ -337,6 +315,7 @@ static struct phy_driver dp83867_driver[] = {
 		.phy_id_mask	= 0xfffffff0,
 		.name		= "TI DP83867",
 		.features	= PHY_GBIT_FEATURES,
+		.flags		= PHY_HAS_INTERRUPT,
 
 		.config_init	= dp83867_config_init,
 		.soft_reset	= dp83867_phy_reset,

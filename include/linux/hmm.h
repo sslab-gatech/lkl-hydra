@@ -11,12 +11,12 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * Authors: Jérôme Glisse <jglisse@redhat.com>
+ * Authors: JÃ©rÃ´me Glisse <jglisse@redhat.com>
  */
 /*
  * Heterogeneous Memory Management (HMM)
  *
- * See Documentation/vm/hmm.rst for reasons and overview of what HMM is and it
+ * See Documentation/vm/hmm.txt for reasons and overview of what HMM is and it
  * is for. Here we focus on the HMM API description, with some explanation of
  * the underlying implementation.
  *
@@ -69,7 +69,6 @@
 #define LINUX_HMM_H
 
 #include <linux/kconfig.h>
-#include <asm/pgtable.h>
 
 #if IS_ENABLED(CONFIG_HMM)
 
@@ -81,145 +80,76 @@
 struct hmm;
 
 /*
- * hmm_pfn_flag_e - HMM flag enums
+ * hmm_pfn_t - HMM uses its own pfn type to keep several flags per page
  *
  * Flags:
- * HMM_PFN_VALID: pfn is valid. It has, at least, read permission.
+ * HMM_PFN_VALID: pfn is valid
+ * HMM_PFN_READ:  CPU page table has read permission set
  * HMM_PFN_WRITE: CPU page table has write permission set
- * HMM_PFN_DEVICE_PRIVATE: private device memory (ZONE_DEVICE)
- *
- * The driver provide a flags array, if driver valid bit for an entry is bit
- * 3 ie (entry & (1 << 3)) is true if entry is valid then driver must provide
- * an array in hmm_range.flags with hmm_range.flags[HMM_PFN_VALID] == 1 << 3.
- * Same logic apply to all flags. This is same idea as vm_page_prot in vma
- * except that this is per device driver rather than per architecture.
- */
-enum hmm_pfn_flag_e {
-	HMM_PFN_VALID = 0,
-	HMM_PFN_WRITE,
-	HMM_PFN_DEVICE_PRIVATE,
-	HMM_PFN_FLAG_MAX
-};
-
-/*
- * hmm_pfn_value_e - HMM pfn special value
- *
- * Flags:
  * HMM_PFN_ERROR: corresponding CPU page table entry points to poisoned memory
- * HMM_PFN_NONE: corresponding CPU page table entry is pte_none()
+ * HMM_PFN_EMPTY: corresponding CPU page table entry is pte_none()
  * HMM_PFN_SPECIAL: corresponding CPU page table entry is special; i.e., the
- *      result of vmf_insert_pfn() or vm_insert_page(). Therefore, it should not
+ *      result of vm_insert_pfn() or vm_insert_page(). Therefore, it should not
  *      be mirrored by a device, because the entry will never have HMM_PFN_VALID
  *      set and the pfn value is undefined.
- *
- * Driver provide entry value for none entry, error entry and special entry,
- * driver can alias (ie use same value for error and special for instance). It
- * should not alias none and error or special.
- *
- * HMM pfn value returned by hmm_vma_get_pfns() or hmm_vma_fault() will be:
- * hmm_range.values[HMM_PFN_ERROR] if CPU page table entry is poisonous,
- * hmm_range.values[HMM_PFN_NONE] if there is no CPU page table
- * hmm_range.values[HMM_PFN_SPECIAL] if CPU page table entry is a special one
+ * HMM_PFN_DEVICE_UNADDRESSABLE: unaddressable device memory (ZONE_DEVICE)
  */
-enum hmm_pfn_value_e {
-	HMM_PFN_ERROR,
-	HMM_PFN_NONE,
-	HMM_PFN_SPECIAL,
-	HMM_PFN_VALUE_MAX
-};
+typedef unsigned long hmm_pfn_t;
+
+#define HMM_PFN_VALID (1 << 0)
+#define HMM_PFN_READ (1 << 1)
+#define HMM_PFN_WRITE (1 << 2)
+#define HMM_PFN_ERROR (1 << 3)
+#define HMM_PFN_EMPTY (1 << 4)
+#define HMM_PFN_SPECIAL (1 << 5)
+#define HMM_PFN_DEVICE_UNADDRESSABLE (1 << 6)
+#define HMM_PFN_SHIFT 7
 
 /*
- * struct hmm_range - track invalidation lock on virtual address range
+ * hmm_pfn_t_to_page() - return struct page pointed to by a valid hmm_pfn_t
+ * @pfn: hmm_pfn_t to convert to struct page
+ * Returns: struct page pointer if pfn is a valid hmm_pfn_t, NULL otherwise
  *
- * @vma: the vm area struct for the range
- * @list: all range lock are on a list
- * @start: range virtual start address (inclusive)
- * @end: range virtual end address (exclusive)
- * @pfns: array of pfns (big enough for the range)
- * @flags: pfn flags to match device driver page table
- * @values: pfn value for some special case (none, special, error, ...)
- * @pfn_shifts: pfn shift value (should be <= PAGE_SHIFT)
- * @valid: pfns array did not change since it has been fill by an HMM function
+ * If the hmm_pfn_t is valid (ie valid flag set) then return the struct page
+ * matching the pfn value stored in the hmm_pfn_t. Otherwise return NULL.
  */
-struct hmm_range {
-	struct vm_area_struct	*vma;
-	struct list_head	list;
-	unsigned long		start;
-	unsigned long		end;
-	uint64_t		*pfns;
-	const uint64_t		*flags;
-	const uint64_t		*values;
-	uint8_t			pfn_shift;
-	bool			valid;
-};
-
-/*
- * hmm_pfn_to_page() - return struct page pointed to by a valid HMM pfn
- * @range: range use to decode HMM pfn value
- * @pfn: HMM pfn value to get corresponding struct page from
- * Returns: struct page pointer if pfn is a valid HMM pfn, NULL otherwise
- *
- * If the HMM pfn is valid (ie valid flag set) then return the struct page
- * matching the pfn value stored in the HMM pfn. Otherwise return NULL.
- */
-static inline struct page *hmm_pfn_to_page(const struct hmm_range *range,
-					   uint64_t pfn)
+static inline struct page *hmm_pfn_t_to_page(hmm_pfn_t pfn)
 {
-	if (pfn == range->values[HMM_PFN_NONE])
+	if (!(pfn & HMM_PFN_VALID))
 		return NULL;
-	if (pfn == range->values[HMM_PFN_ERROR])
-		return NULL;
-	if (pfn == range->values[HMM_PFN_SPECIAL])
-		return NULL;
-	if (!(pfn & range->flags[HMM_PFN_VALID]))
-		return NULL;
-	return pfn_to_page(pfn >> range->pfn_shift);
+	return pfn_to_page(pfn >> HMM_PFN_SHIFT);
 }
 
 /*
- * hmm_pfn_to_pfn() - return pfn value store in a HMM pfn
- * @range: range use to decode HMM pfn value
- * @pfn: HMM pfn value to extract pfn from
- * Returns: pfn value if HMM pfn is valid, -1UL otherwise
+ * hmm_pfn_t_to_pfn() - return pfn value store in a hmm_pfn_t
+ * @pfn: hmm_pfn_t to extract pfn from
+ * Returns: pfn value if hmm_pfn_t is valid, -1UL otherwise
  */
-static inline unsigned long hmm_pfn_to_pfn(const struct hmm_range *range,
-					   uint64_t pfn)
+static inline unsigned long hmm_pfn_t_to_pfn(hmm_pfn_t pfn)
 {
-	if (pfn == range->values[HMM_PFN_NONE])
+	if (!(pfn & HMM_PFN_VALID))
 		return -1UL;
-	if (pfn == range->values[HMM_PFN_ERROR])
-		return -1UL;
-	if (pfn == range->values[HMM_PFN_SPECIAL])
-		return -1UL;
-	if (!(pfn & range->flags[HMM_PFN_VALID]))
-		return -1UL;
-	return (pfn >> range->pfn_shift);
+	return (pfn >> HMM_PFN_SHIFT);
 }
 
 /*
- * hmm_pfn_from_page() - create a valid HMM pfn value from struct page
- * @range: range use to encode HMM pfn value
- * @page: struct page pointer for which to create the HMM pfn
- * Returns: valid HMM pfn for the page
+ * hmm_pfn_t_from_page() - create a valid hmm_pfn_t value from struct page
+ * @page: struct page pointer for which to create the hmm_pfn_t
+ * Returns: valid hmm_pfn_t for the page
  */
-static inline uint64_t hmm_pfn_from_page(const struct hmm_range *range,
-					 struct page *page)
+static inline hmm_pfn_t hmm_pfn_t_from_page(struct page *page)
 {
-	return (page_to_pfn(page) << range->pfn_shift) |
-		range->flags[HMM_PFN_VALID];
+	return (page_to_pfn(page) << HMM_PFN_SHIFT) | HMM_PFN_VALID;
 }
 
 /*
- * hmm_pfn_from_pfn() - create a valid HMM pfn value from pfn
- * @range: range use to encode HMM pfn value
- * @pfn: pfn value for which to create the HMM pfn
- * Returns: valid HMM pfn for the pfn
+ * hmm_pfn_t_from_pfn() - create a valid hmm_pfn_t value from pfn
+ * @pfn: pfn value for which to create the hmm_pfn_t
+ * Returns: valid hmm_pfn_t for the pfn
  */
-static inline uint64_t hmm_pfn_from_pfn(const struct hmm_range *range,
-					unsigned long pfn)
+static inline hmm_pfn_t hmm_pfn_t_from_pfn(unsigned long pfn)
 {
-	return (pfn << range->pfn_shift) |
-		range->flags[HMM_PFN_VALID];
+	return (pfn << HMM_PFN_SHIFT) | HMM_PFN_VALID;
 }
 
 
@@ -275,26 +205,11 @@ static inline uint64_t hmm_pfn_from_pfn(const struct hmm_range *range,
 struct hmm_mirror;
 
 /*
- * enum hmm_update_event - type of update
+ * enum hmm_update_type - type of update
  * @HMM_UPDATE_INVALIDATE: invalidate range (no indication as to why)
  */
-enum hmm_update_event {
+enum hmm_update_type {
 	HMM_UPDATE_INVALIDATE,
-};
-
-/*
- * struct hmm_update - HMM update informations for callback
- *
- * @start: virtual start address of the range to update
- * @end: virtual end address of the range to update
- * @event: event triggering the update (what is happening)
- * @blockable: can the callback block/sleep ?
- */
-struct hmm_update {
-	unsigned long start;
-	unsigned long end;
-	enum hmm_update_event event;
-	bool blockable;
 };
 
 /*
@@ -303,22 +218,12 @@ struct hmm_update {
  * @update: callback to update range on a device
  */
 struct hmm_mirror_ops {
-	/* release() - release hmm_mirror
-	 *
-	 * @mirror: pointer to struct hmm_mirror
-	 *
-	 * This is called when the mm_struct is being released.
-	 * The callback should make sure no references to the mirror occur
-	 * after the callback returns.
-	 */
-	void (*release)(struct hmm_mirror *mirror);
-
 	/* sync_cpu_device_pagetables() - synchronize page tables
 	 *
 	 * @mirror: pointer to struct hmm_mirror
-	 * @update: update informations (see struct hmm_update)
-	 * Returns: -EAGAIN if update.blockable false and callback need to
-	 *          block, 0 otherwise.
+	 * @update_type: type of update that occurred to the CPU page table
+	 * @start: virtual start address of the range to update
+	 * @end: virtual end address of the range to update
 	 *
 	 * This callback ultimately originates from mmu_notifiers when the CPU
 	 * page table is updated. The device driver must update its page table
@@ -329,8 +234,10 @@ struct hmm_mirror_ops {
 	 * page tables are completely updated (TLBs flushed, etc); this is a
 	 * synchronous call.
 	 */
-	int (*sync_cpu_device_pagetables)(struct hmm_mirror *mirror,
-					  const struct hmm_update *update);
+	void (*sync_cpu_device_pagetables)(struct hmm_mirror *mirror,
+					   enum hmm_update_type update_type,
+					   unsigned long start,
+					   unsigned long end);
 };
 
 /*
@@ -355,6 +262,23 @@ void hmm_mirror_unregister(struct hmm_mirror *mirror);
 
 
 /*
+ * struct hmm_range - track invalidation lock on virtual address range
+ *
+ * @list: all range lock are on a list
+ * @start: range virtual start address (inclusive)
+ * @end: range virtual end address (exclusive)
+ * @pfns: array of pfns (big enough for the range)
+ * @valid: pfns array did not change since it has been fill by an HMM function
+ */
+struct hmm_range {
+	struct list_head	list;
+	unsigned long		start;
+	unsigned long		end;
+	hmm_pfn_t		*pfns;
+	bool			valid;
+};
+
+/*
  * To snapshot the CPU page table, call hmm_vma_get_pfns(), then take a device
  * driver lock that serializes device page table updates, then call
  * hmm_vma_range_done(), to check if the snapshot is still valid. The same
@@ -367,13 +291,17 @@ void hmm_mirror_unregister(struct hmm_mirror *mirror);
  *
  * IF YOU DO NOT FOLLOW THE ABOVE RULE THE SNAPSHOT CONTENT MIGHT BE INVALID !
  */
-int hmm_vma_get_pfns(struct hmm_range *range);
-bool hmm_vma_range_done(struct hmm_range *range);
+int hmm_vma_get_pfns(struct vm_area_struct *vma,
+		     struct hmm_range *range,
+		     unsigned long start,
+		     unsigned long end,
+		     hmm_pfn_t *pfns);
+bool hmm_vma_range_done(struct vm_area_struct *vma, struct hmm_range *range);
 
 
 /*
  * Fault memory on behalf of device driver. Unlike handle_mm_fault(), this will
- * not migrate any device memory back to system memory. The HMM pfn array will
+ * not migrate any device memory back to system memory. The hmm_pfn_t array will
  * be updated with the fault result and current snapshot of the CPU page table
  * for the range.
  *
@@ -382,26 +310,22 @@ bool hmm_vma_range_done(struct hmm_range *range);
  * function returns -EAGAIN.
  *
  * Return value does not reflect if the fault was successful for every single
- * address or not. Therefore, the caller must to inspect the HMM pfn array to
+ * address or not. Therefore, the caller must to inspect the hmm_pfn_t array to
  * determine fault status for each address.
  *
  * Trying to fault inside an invalid vma will result in -EINVAL.
  *
  * See the function description in mm/hmm.c for further documentation.
  */
-int hmm_vma_fault(struct hmm_range *range, bool block);
-
-/* Below are for HMM internal use only! Not to be used by device driver! */
-void hmm_mm_destroy(struct mm_struct *mm);
-
-static inline void hmm_mm_init(struct mm_struct *mm)
-{
-	mm->hmm = NULL;
-}
-#else /* IS_ENABLED(CONFIG_HMM_MIRROR) */
-static inline void hmm_mm_destroy(struct mm_struct *mm) {}
-static inline void hmm_mm_init(struct mm_struct *mm) {}
+int hmm_vma_fault(struct vm_area_struct *vma,
+		  struct hmm_range *range,
+		  unsigned long start,
+		  unsigned long end,
+		  hmm_pfn_t *pfns,
+		  bool write,
+		  bool block);
 #endif /* IS_ENABLED(CONFIG_HMM_MIRROR) */
+
 
 #if IS_ENABLED(CONFIG_DEVICE_PRIVATE) ||  IS_ENABLED(CONFIG_DEVICE_PUBLIC)
 struct hmm_devmem;
@@ -487,7 +411,6 @@ struct hmm_devmem_ops {
  * @device: device to bind resource to
  * @ops: memory operations callback
  * @ref: per CPU refcount
- * @page_fault: callback when CPU fault on an unaddressable device page
  *
  * This an helper structure for device drivers that do not wish to implement
  * the gory details related to hotplugging new memoy and allocating struct
@@ -495,28 +418,7 @@ struct hmm_devmem_ops {
  *
  * Device drivers can directly use ZONE_DEVICE memory on their own if they
  * wish to do so.
- *
- * The page_fault() callback must migrate page back, from device memory to
- * system memory, so that the CPU can access it. This might fail for various
- * reasons (device issues,  device have been unplugged, ...). When such error
- * conditions happen, the page_fault() callback must return VM_FAULT_SIGBUS and
- * set the CPU page table entry to "poisoned".
- *
- * Note that because memory cgroup charges are transferred to the device memory,
- * this should never fail due to memory restrictions. However, allocation
- * of a regular system page might still fail because we are out of memory. If
- * that happens, the page_fault() callback must return VM_FAULT_OOM.
- *
- * The page_fault() callback can also try to migrate back multiple pages in one
- * chunk, as an optimization. It must, however, prioritize the faulting address
- * over all the others.
  */
-typedef int (*dev_page_fault_t)(struct vm_area_struct *vma,
-				unsigned long addr,
-				const struct page *page,
-				unsigned int flags,
-				pmd_t *pmdp);
-
 struct hmm_devmem {
 	struct completion		completion;
 	unsigned long			pfn_first;
@@ -526,7 +428,6 @@ struct hmm_devmem {
 	struct dev_pagemap		pagemap;
 	const struct hmm_devmem_ops	*ops;
 	struct percpu_ref		ref;
-	dev_page_fault_t		page_fault;
 };
 
 /*
@@ -536,7 +437,8 @@ struct hmm_devmem {
  * enough and allocate struct page for it.
  *
  * The device driver can wrap the hmm_devmem struct inside a private device
- * driver struct.
+ * driver struct. The device driver must call hmm_devmem_remove() before the
+ * device goes away and before freeing the hmm_devmem struct memory.
  */
 struct hmm_devmem *hmm_devmem_add(const struct hmm_devmem_ops *ops,
 				  struct device *device,
@@ -544,6 +446,7 @@ struct hmm_devmem *hmm_devmem_add(const struct hmm_devmem_ops *ops,
 struct hmm_devmem *hmm_devmem_add_resource(const struct hmm_devmem_ops *ops,
 					   struct device *device,
 					   struct resource *res);
+void hmm_devmem_remove(struct hmm_devmem *devmem);
 
 /*
  * hmm_devmem_page_set_drvdata - set per-page driver data field
@@ -557,7 +460,9 @@ struct hmm_devmem *hmm_devmem_add_resource(const struct hmm_devmem_ops *ops,
 static inline void hmm_devmem_page_set_drvdata(struct page *page,
 					       unsigned long data)
 {
-	page->hmm_data = data;
+	unsigned long *drvdata = (unsigned long *)&page->pgmap;
+
+	drvdata[1] = data;
 }
 
 /*
@@ -568,7 +473,9 @@ static inline void hmm_devmem_page_set_drvdata(struct page *page,
  */
 static inline unsigned long hmm_devmem_page_get_drvdata(const struct page *page)
 {
-	return page->hmm_data;
+	const unsigned long *drvdata = (const unsigned long *)&page->pgmap;
+
+	return drvdata[1];
 }
 
 
@@ -591,9 +498,23 @@ struct hmm_device {
 struct hmm_device *hmm_device_new(void *drvdata);
 void hmm_device_put(struct hmm_device *hmm_device);
 #endif /* CONFIG_DEVICE_PRIVATE || CONFIG_DEVICE_PUBLIC */
+#endif /* IS_ENABLED(CONFIG_HMM) */
+
+/* Below are for HMM internal use only! Not to be used by device driver! */
+#if IS_ENABLED(CONFIG_HMM_MIRROR)
+void hmm_mm_destroy(struct mm_struct *mm);
+
+static inline void hmm_mm_init(struct mm_struct *mm)
+{
+	mm->hmm = NULL;
+}
+#else /* IS_ENABLED(CONFIG_HMM_MIRROR) */
+static inline void hmm_mm_destroy(struct mm_struct *mm) {}
+static inline void hmm_mm_init(struct mm_struct *mm) {}
+#endif /* IS_ENABLED(CONFIG_HMM_MIRROR) */
+
+
 #else /* IS_ENABLED(CONFIG_HMM) */
 static inline void hmm_mm_destroy(struct mm_struct *mm) {}
 static inline void hmm_mm_init(struct mm_struct *mm) {}
-#endif /* IS_ENABLED(CONFIG_HMM) */
-
 #endif /* LINUX_HMM_H */

@@ -122,9 +122,8 @@ static void rmi_f30_report_button(struct rmi_function *fn,
 	}
 }
 
-static irqreturn_t rmi_f30_attention(int irq, void *ctx)
+static int rmi_f30_attention(struct rmi_function *fn, unsigned long *irq_bits)
 {
-	struct rmi_function *fn = ctx;
 	struct f30_data *f30 = dev_get_drvdata(&fn->dev);
 	struct rmi_driver_data *drvdata = dev_get_drvdata(&fn->rmi_dev->dev);
 	int error;
@@ -135,7 +134,7 @@ static irqreturn_t rmi_f30_attention(int irq, void *ctx)
 		if (drvdata->attn_data.size < f30->register_count) {
 			dev_warn(&fn->dev,
 				 "F30 interrupted, but data is missing\n");
-			return IRQ_HANDLED;
+			return 0;
 		}
 		memcpy(f30->data_regs, drvdata->attn_data.data,
 			f30->register_count);
@@ -148,7 +147,7 @@ static irqreturn_t rmi_f30_attention(int irq, void *ctx)
 			dev_err(&fn->dev,
 				"%s: Failed to read F30 data registers: %d\n",
 				__func__, error);
-			return IRQ_RETVAL(error);
+			return error;
 		}
 	}
 
@@ -160,7 +159,7 @@ static irqreturn_t rmi_f30_attention(int irq, void *ctx)
 			rmi_f03_commit_buttons(f30->f03);
 	}
 
-	return IRQ_HANDLED;
+	return 0;
 }
 
 static int rmi_f30_config(struct rmi_function *fn)

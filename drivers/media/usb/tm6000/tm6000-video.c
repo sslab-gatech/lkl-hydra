@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // tm6000-video.c - driver for TM5600/TM6000/TM6010 USB video capture devices
 //
-// Copyright (c) 2006-2007 Mauro Carvalho Chehab <mchehab@kernel.org>
+// Copyright (c) 2006-2007 Mauro Carvalho Chehab <mchehab@infradead.org>
 //
 // Copyright (c) 2007 Michel Ludwig <michel.ludwig@gmail.com>
 //	- Fixed module load/unload
@@ -419,7 +419,6 @@ static void tm6000_irq_callback(struct urb *urb)
 {
 	struct tm6000_dmaqueue  *dma_q = urb->context;
 	struct tm6000_core *dev = container_of(dma_q, struct tm6000_core, vidq);
-	unsigned long flags;
 	int i;
 
 	switch (urb->status) {
@@ -437,9 +436,9 @@ static void tm6000_irq_callback(struct urb *urb)
 		break;
 	}
 
-	spin_lock_irqsave(&dev->slock, flags);
+	spin_lock(&dev->slock);
 	tm6000_isoc_copy(urb);
-	spin_unlock_irqrestore(&dev->slock, flags);
+	spin_unlock(&dev->slock);
 
 	/* Reset urb buffers */
 	for (i = 0; i < urb->number_of_packets; i++) {
@@ -464,12 +463,11 @@ static int tm6000_alloc_urb_buffers(struct tm6000_core *dev)
 	if (dev->urb_buffer)
 		return 0;
 
-	dev->urb_buffer = kmalloc_array(num_bufs, sizeof(void *), GFP_KERNEL);
+	dev->urb_buffer = kmalloc(sizeof(void *)*num_bufs, GFP_KERNEL);
 	if (!dev->urb_buffer)
 		return -ENOMEM;
 
-	dev->urb_dma = kmalloc_array(num_bufs, sizeof(dma_addr_t *),
-				     GFP_KERNEL);
+	dev->urb_dma = kmalloc(sizeof(dma_addr_t *)*num_bufs, GFP_KERNEL);
 	if (!dev->urb_dma)
 		return -ENOMEM;
 
@@ -585,14 +583,12 @@ static int tm6000_prepare_isoc(struct tm6000_core *dev)
 
 	dev->isoc_ctl.num_bufs = num_bufs;
 
-	dev->isoc_ctl.urb = kmalloc_array(num_bufs, sizeof(void *),
-					  GFP_KERNEL);
+	dev->isoc_ctl.urb = kmalloc(sizeof(void *)*num_bufs, GFP_KERNEL);
 	if (!dev->isoc_ctl.urb)
 		return -ENOMEM;
 
-	dev->isoc_ctl.transfer_buffer = kmalloc_array(num_bufs,
-						      sizeof(void *),
-						      GFP_KERNEL);
+	dev->isoc_ctl.transfer_buffer = kmalloc(sizeof(void *)*num_bufs,
+				   GFP_KERNEL);
 	if (!dev->isoc_ctl.transfer_buffer) {
 		kfree(dev->isoc_ctl.urb);
 		return -ENOMEM;
@@ -856,9 +852,8 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	struct tm6000_core *dev = ((struct tm6000_fh *)priv)->dev;
 	struct video_device *vdev = video_devdata(file);
 
-	strscpy(cap->driver, "tm6000", sizeof(cap->driver));
-	strscpy(cap->card, "Trident TVMaster TM5600/6000/6010",
-		sizeof(cap->card));
+	strlcpy(cap->driver, "tm6000", sizeof(cap->driver));
+	strlcpy(cap->card, "Trident TVMaster TM5600/6000/6010", sizeof(cap->card));
 	usb_make_path(dev->udev, cap->bus_info, sizeof(cap->bus_info));
 	if (dev->tuner_type != TUNER_ABSENT)
 		cap->device_caps |= V4L2_CAP_TUNER;
@@ -880,7 +875,7 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 	if (f->index >= ARRAY_SIZE(format))
 		return -EINVAL;
 
-	strscpy(f->description, format[f->index].name, sizeof(f->description));
+	strlcpy(f->description, format[f->index].name, sizeof(f->description));
 	f->pixelformat = format[f->index].fourcc;
 	return 0;
 }
@@ -1092,7 +1087,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 	else
 		i->type = V4L2_INPUT_TYPE_CAMERA;
 
-	strscpy(i->name, iname[dev->vinput[n].type], sizeof(i->name));
+	strcpy(i->name, iname[dev->vinput[n].type]);
 
 	i->std = TM6000_STD;
 
@@ -1189,7 +1184,7 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 	if (0 != t->index)
 		return -EINVAL;
 
-	strscpy(t->name, "Television", sizeof(t->name));
+	strcpy(t->name, "Television");
 	t->type       = V4L2_TUNER_ANALOG_TV;
 	t->capability = V4L2_TUNER_CAP_NORM | V4L2_TUNER_CAP_STEREO;
 	t->rangehigh  = 0xffffffffUL;
@@ -1269,7 +1264,7 @@ static int radio_g_tuner(struct file *file, void *priv,
 		return -EINVAL;
 
 	memset(t, 0, sizeof(*t));
-	strscpy(t->name, "Radio", sizeof(t->name));
+	strcpy(t->name, "Radio");
 	t->type = V4L2_TUNER_RADIO;
 	t->capability = V4L2_TUNER_CAP_LOW | V4L2_TUNER_CAP_STEREO;
 	t->rxsubchans = V4L2_TUNER_SUB_STEREO;
@@ -1351,8 +1346,9 @@ static int __tm6000_open(struct file *file)
 	fh->width = dev->width;
 	fh->height = dev->height;
 
-	dprintk(dev, V4L2_DEBUG_OPEN, "Open: fh=%p, dev=%p, dev->vidq=%p\n",
-		fh, dev, &dev->vidq);
+	dprintk(dev, V4L2_DEBUG_OPEN, "Open: fh=0x%08lx, dev=0x%08lx, dev->vidq=0x%08lx\n",
+			(unsigned long)fh, (unsigned long)dev,
+			(unsigned long)&dev->vidq);
 	dprintk(dev, V4L2_DEBUG_OPEN, "Open: list_empty queued=%d\n",
 		list_empty(&dev->vidq.queued));
 	dprintk(dev, V4L2_DEBUG_OPEN, "Open: list_empty active=%d\n",
@@ -1627,7 +1623,7 @@ int tm6000_v4l2_register(struct tm6000_core *dev)
 	v4l2_ctrl_new_std(&dev->ctrl_handler, &tm6000_ctrl_ops,
 			V4L2_CID_HUE, -128, 127, 1, 0);
 	v4l2_ctrl_add_handler(&dev->ctrl_handler,
-			&dev->radio_ctrl_handler, NULL, false);
+			&dev->radio_ctrl_handler, NULL);
 
 	if (dev->radio_ctrl_handler.error)
 		ret = dev->radio_ctrl_handler.error;

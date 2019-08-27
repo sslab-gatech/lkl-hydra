@@ -62,7 +62,6 @@ void zx_vou_config_dividers(struct drm_crtc *crtc,
 			    struct vou_div_config *configs, int num);
 
 void zx_vou_layer_enable(struct drm_plane *plane);
-void zx_vou_layer_disable(struct drm_plane *plane,
-			  struct drm_plane_state *old_state);
+void zx_vou_layer_disable(struct drm_plane *plane);
 
 #endif /* __ZX_VOU_H__ */

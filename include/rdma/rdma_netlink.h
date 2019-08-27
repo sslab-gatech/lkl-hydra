@@ -96,7 +96,7 @@ int rdma_nl_multicast(struct sk_buff *skb, unsigned int group, gfp_t flags);
 /**
  * Check if there are any listeners to the netlink group
  * @group: the netlink group ID
- * Returns true on success or false if no listeners.
+ * Returns 0 on success or a negative for no listeners.
  */
-bool rdma_nl_chk_listeners(unsigned int group);
+int rdma_nl_chk_listeners(unsigned int group);
 #endif /* _RDMA_NETLINK_H */

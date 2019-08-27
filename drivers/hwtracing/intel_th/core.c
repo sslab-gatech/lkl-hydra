@@ -1,8 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel(R) Trace Hub driver core
  *
  * Copyright (C) 2014-2015 Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -139,8 +147,7 @@ static int intel_th_remove(struct device *dev)
 			th->thdev[i] = NULL;
 		}
 
-		if (lowest >= 0)
-			th->num_thdevs = lowest;
+		th->num_thdevs = lowest;
 	}
 
 	if (thdrv->attr_group)
@@ -488,7 +495,7 @@ static const struct intel_th_subdevice {
 				.flags	= IORESOURCE_MEM,
 			},
 			{
-				.start	= 1, /* use resource[1] */
+				.start	= TH_MMIO_SW,
 				.end	= 0,
 				.flags	= IORESOURCE_MEM,
 			},
@@ -581,7 +588,6 @@ intel_th_subdevice_alloc(struct intel_th *th,
 	struct intel_th_device *thdev;
 	struct resource res[3];
 	unsigned int req = 0;
-	bool is64bit = false;
 	int r, err;
 
 	thdev = intel_th_device_alloc(th, subdev->type, subdev->name,
@@ -591,18 +597,12 @@ intel_th_subdevice_alloc(struct intel_th *th,
 
 	thdev->drvdata = th->drvdata;
 
-	for (r = 0; r < th->num_resources; r++)
-		if (th->resource[r].flags & IORESOURCE_MEM_64) {
-			is64bit = true;
-			break;
-		}
-
 	memcpy(res, subdev->res,
 	       sizeof(struct resource) * subdev->nres);
 
 	for (r = 0; r < subdev->nres; r++) {
 		struct resource *devres = th->resource;
-		int bar = 0; /* cut subdevices' MMIO from resource[0] */
+		int bar = TH_MMIO_CONFIG;
 
 		/*
 		 * Take .end == 0 to mean 'take the whole bar',
@@ -611,8 +611,6 @@ intel_th_subdevice_alloc(struct intel_th *th,
 		 */
 		if (!res[r].end && res[r].flags == IORESOURCE_MEM) {
 			bar = res[r].start;
-			if (is64bit)
-				bar *= 2;
 			res[r].start = 0;
 			res[r].end = resource_size(&devres[bar]) - 1;
 		}
@@ -640,8 +638,7 @@ intel_th_subdevice_alloc(struct intel_th *th,
 		thdev->output.port = -1;
 		thdev->output.scratchpad = subdev->scrpd;
 	} else if (subdev->type == INTEL_TH_SWITCH) {
-		thdev->host_mode =
-			INTEL_TH_CAP(th, host_mode_only) ? true : host_mode;
+		thdev->host_mode = host_mode;
 		th->hub = thdev;
 	}
 
@@ -740,8 +737,7 @@ static int intel_th_populate(struct intel_th *th)
 		struct intel_th_device *thdev;
 
 		/* only allow SOURCE and SWITCH devices in host mode */
-		if ((INTEL_TH_CAP(th, host_mode_only) || host_mode) &&
-		    subdev->type == INTEL_TH_OUTPUT)
+		if (host_mode && subdev->type == INTEL_TH_OUTPUT)
 			continue;
 
 		/*
@@ -817,14 +813,7 @@ intel_th_alloc(struct device *dev, struct intel_th_drvdata *drvdata,
 	       struct resource *devres, unsigned int ndevres, int irq)
 {
 	struct intel_th *th;
-	int err, r;
-
-	if (irq == -1)
-		for (r = 0; r < ndevres; r++)
-			if (devres[r].flags & IORESOURCE_IRQ) {
-				irq = devres[r].start;
-				break;
-			}
+	int err;
 
 	th = kzalloc(sizeof(*th), GFP_KERNEL);
 	if (!th)
@@ -946,12 +935,8 @@ EXPORT_SYMBOL_GPL(intel_th_trace_disable);
 int intel_th_set_output(struct intel_th_device *thdev,
 			unsigned int master)
 {
-	struct intel_th_device *hub = to_intel_th_hub(thdev);
+	struct intel_th_device *hub = to_intel_th_device(thdev->dev.parent);
 	struct intel_th_driver *hubdrv = to_intel_th_driver(hub->dev.driver);
-
-	/* In host mode, this is up to the external debugger, do nothing. */
-	if (hub->host_mode)
-		return 0;
 
 	if (!hubdrv->set_output)
 		return -ENOTSUPP;

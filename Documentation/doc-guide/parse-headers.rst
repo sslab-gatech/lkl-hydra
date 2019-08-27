@@ -32,7 +32,7 @@ SYNOPSIS
 
 \ **parse_headers.pl**\  [<options>] <C_FILE> <OUT_FILE> [<EXCEPTIONS_FILE>]
 
-Where <options> can be: --debug, --help or --usage.
+Where <options> can be: --debug, --help or --man.
 
 
 OPTIONS
@@ -133,7 +133,7 @@ For both statements, \ **type**\  can be either one of the following:
 
 \ **symbol**\
 
- The ignore or replace statement will apply to the name of enum value
+ The ignore or replace statement will apply to the name of enum statements
  at C_FILE.
 
  For replace statements, \ **new_value**\  will automatically use :c:type:
@@ -177,14 +177,14 @@ BUGS
 ****
 
 
-Report bugs to Mauro Carvalho Chehab <mchehab@kernel.org>
+Report bugs to Mauro Carvalho Chehab <mchehab@s-opensource.com>
 
 
 COPYRIGHT
 *********
 
 
-Copyright (c) 2016 by Mauro Carvalho Chehab <mchehab+samsung@kernel.org>.
+Copyright (c) 2016 by Mauro Carvalho Chehab <mchehab@s-opensource.com>.
 
 License GPLv2: GNU GPL version 2 <http://gnu.org/licenses/gpl.html>.
 

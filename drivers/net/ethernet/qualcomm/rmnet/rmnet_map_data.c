@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -48,8 +48,7 @@ static __sum16 *rmnet_map_get_csum_field(unsigned char protocol,
 
 static int
 rmnet_map_ipv4_dl_csum_trailer(struct sk_buff *skb,
-			       struct rmnet_map_dl_csum_trailer *csum_trailer,
-			       struct rmnet_priv *priv)
+			       struct rmnet_map_dl_csum_trailer *csum_trailer)
 {
 	__sum16 *csum_field, csum_temp, pseudo_csum, hdr_csum, ip_payload_csum;
 	u16 csum_value, csum_value_final;
@@ -59,25 +58,19 @@ rmnet_map_ipv4_dl_csum_trailer(struct sk_buff *skb,
 
 	ip4h = (struct iphdr *)(skb->data);
 	if ((ntohs(ip4h->frag_off) & IP_MF) ||
-	    ((ntohs(ip4h->frag_off) & IP_OFFSET) > 0)) {
-		priv->stats.csum_fragmented_pkt++;
+	    ((ntohs(ip4h->frag_off) & IP_OFFSET) > 0))
 		return -EOPNOTSUPP;
-	}
 
 	txporthdr = skb->data + ip4h->ihl * 4;
 
 	csum_field = rmnet_map_get_csum_field(ip4h->protocol, txporthdr);
 
-	if (!csum_field) {
-		priv->stats.csum_err_invalid_transport++;
+	if (!csum_field)
 		return -EPROTONOSUPPORT;
-	}
 
 	/* RFC 768 - Skip IPv4 UDP packets where sender checksum field is 0 */
-	if (*csum_field == 0 && ip4h->protocol == IPPROTO_UDP) {
-		priv->stats.csum_skipped++;
+	if (*csum_field == 0 && ip4h->protocol == IPPROTO_UDP)
 		return 0;
-	}
 
 	csum_value = ~ntohs(csum_trailer->csum_value);
 	hdr_csum = ~ip_fast_csum(ip4h, (int)ip4h->ihl);
@@ -109,20 +102,16 @@ rmnet_map_ipv4_dl_csum_trailer(struct sk_buff *skb,
 		}
 	}
 
-	if (csum_value_final == ntohs((__force __be16)*csum_field)) {
-		priv->stats.csum_ok++;
+	if (csum_value_final == ntohs((__force __be16)*csum_field))
 		return 0;
-	} else {
-		priv->stats.csum_validation_failed++;
+	else
 		return -EINVAL;
-	}
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
 static int
 rmnet_map_ipv6_dl_csum_trailer(struct sk_buff *skb,
-			       struct rmnet_map_dl_csum_trailer *csum_trailer,
-			       struct rmnet_priv *priv)
+			       struct rmnet_map_dl_csum_trailer *csum_trailer)
 {
 	__sum16 *csum_field, ip6_payload_csum, pseudo_csum, csum_temp;
 	u16 csum_value, csum_value_final;
@@ -136,10 +125,8 @@ rmnet_map_ipv6_dl_csum_trailer(struct sk_buff *skb,
 	txporthdr = skb->data + sizeof(struct ipv6hdr);
 	csum_field = rmnet_map_get_csum_field(ip6h->nexthdr, txporthdr);
 
-	if (!csum_field) {
-		priv->stats.csum_err_invalid_transport++;
+	if (!csum_field)
 		return -EPROTONOSUPPORT;
-	}
 
 	csum_value = ~ntohs(csum_trailer->csum_value);
 	ip6_hdr_csum = (__force __be16)
@@ -177,13 +164,10 @@ rmnet_map_ipv6_dl_csum_trailer(struct sk_buff *skb,
 		}
 	}
 
-	if (csum_value_final == ntohs((__force __be16)*csum_field)) {
-		priv->stats.csum_ok++;
+	if (csum_value_final == ntohs((__force __be16)*csum_field))
 		return 0;
-	} else {
-		priv->stats.csum_validation_failed++;
+	else
 		return -EINVAL;
-	}
 }
 #endif
 
@@ -325,7 +309,7 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
 	maph = (struct rmnet_map_header *)skb->data;
 	packet_len = ntohs(maph->pkt_len) + sizeof(struct rmnet_map_header);
 
-	if (port->data_format & RMNET_FLAGS_INGRESS_MAP_CKSUMV4)
+	if (port->data_format & RMNET_INGRESS_FORMAT_MAP_CKSUMV4)
 		packet_len += sizeof(struct rmnet_map_dl_csum_trailer);
 
 	if (((int)skb->len - (int)packet_len) < 0)
@@ -339,6 +323,7 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
 	if (!skbn)
 		return NULL;
 
+	skbn->dev = skb->dev;
 	skb_reserve(skbn, RMNET_MAP_DEAGGR_HEADROOM);
 	skb_put(skbn, packet_len);
 	memcpy(skbn->data, skb->data, packet_len);
@@ -355,34 +340,24 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
  */
 int rmnet_map_checksum_downlink_packet(struct sk_buff *skb, u16 len)
 {
-	struct rmnet_priv *priv = netdev_priv(skb->dev);
 	struct rmnet_map_dl_csum_trailer *csum_trailer;
 
-	if (unlikely(!(skb->dev->features & NETIF_F_RXCSUM))) {
-		priv->stats.csum_sw++;
+	if (unlikely(!(skb->dev->features & NETIF_F_RXCSUM)))
 		return -EOPNOTSUPP;
-	}
 
 	csum_trailer = (struct rmnet_map_dl_csum_trailer *)(skb->data + len);
 
-	if (!csum_trailer->valid) {
-		priv->stats.csum_valid_unset++;
+	if (!csum_trailer->valid)
 		return -EINVAL;
-	}
 
-	if (skb->protocol == htons(ETH_P_IP)) {
-		return rmnet_map_ipv4_dl_csum_trailer(skb, csum_trailer, priv);
-	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+	if (skb->protocol == htons(ETH_P_IP))
+		return rmnet_map_ipv4_dl_csum_trailer(skb, csum_trailer);
+	else if (skb->protocol == htons(ETH_P_IPV6))
 #if IS_ENABLED(CONFIG_IPV6)
-		return rmnet_map_ipv6_dl_csum_trailer(skb, csum_trailer, priv);
+		return rmnet_map_ipv6_dl_csum_trailer(skb, csum_trailer);
 #else
-		priv->stats.csum_err_invalid_ip_version++;
 		return -EPROTONOSUPPORT;
 #endif
-	} else {
-		priv->stats.csum_err_invalid_ip_version++;
-		return -EPROTONOSUPPORT;
-	}
 
 	return 0;
 }
@@ -393,7 +368,6 @@ int rmnet_map_checksum_downlink_packet(struct sk_buff *skb, u16 len)
 void rmnet_map_checksum_uplink_packet(struct sk_buff *skb,
 				      struct net_device *orig_dev)
 {
-	struct rmnet_priv *priv = netdev_priv(orig_dev);
 	struct rmnet_map_ul_csum_header *ul_header;
 	void *iphdr;
 
@@ -416,11 +390,8 @@ void rmnet_map_checksum_uplink_packet(struct sk_buff *skb,
 			rmnet_map_ipv6_ul_csum_header(iphdr, ul_header, skb);
 			return;
 #else
-			priv->stats.csum_err_invalid_ip_version++;
 			goto sw_csum;
 #endif
-		} else {
-			priv->stats.csum_err_invalid_ip_version++;
 		}
 	}
 
@@ -429,6 +400,4 @@ sw_csum:
 	ul_header->csum_insert_offset = 0;
 	ul_header->csum_enabled = 0;
 	ul_header->udp_ip4_ind = 0;
-
-	priv->stats.csum_sw++;
 }

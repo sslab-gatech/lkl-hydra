@@ -25,7 +25,6 @@
 #include <linux/gpio.h>
 #include <linux/seqlock.h>
 #include <linux/idr.h>
-#include <linux/netdevice.h>
 
 #include "swphy.h"
 
@@ -39,7 +38,6 @@ struct fixed_phy {
 	struct phy_device *phydev;
 	seqcount_t seqcount;
 	struct fixed_phy_status status;
-	bool no_carrier;
 	int (*link_update)(struct net_device *, struct fixed_phy_status *);
 	struct list_head node;
 	int link_gpio;
@@ -50,28 +48,9 @@ static struct fixed_mdio_bus platform_fmb = {
 	.phys = LIST_HEAD_INIT(platform_fmb.phys),
 };
 
-int fixed_phy_change_carrier(struct net_device *dev, bool new_carrier)
-{
-	struct fixed_mdio_bus *fmb = &platform_fmb;
-	struct phy_device *phydev = dev->phydev;
-	struct fixed_phy *fp;
-
-	if (!phydev || !phydev->mdio.bus)
-		return -EINVAL;
-
-	list_for_each_entry(fp, &fmb->phys, node) {
-		if (fp->addr == phydev->mdio.addr) {
-			fp->no_carrier = !new_carrier;
-			return 0;
-		}
-	}
-	return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(fixed_phy_change_carrier);
-
 static void fixed_phy_update(struct fixed_phy *fp)
 {
-	if (!fp->no_carrier && gpio_is_valid(fp->link_gpio))
+	if (gpio_is_valid(fp->link_gpio))
 		fp->status.link = !!gpio_get_value_cansleep(fp->link_gpio);
 }
 
@@ -87,7 +66,6 @@ static int fixed_mdio_read(struct mii_bus *bus, int phy_addr, int reg_num)
 
 			do {
 				s = read_seqcount_begin(&fp->seqcount);
-				fp->status.link = !fp->no_carrier;
 				/* Issue callback if user registered it. */
 				if (fp->link_update) {
 					fp->link_update(fp->phydev->attached_dev,
@@ -245,23 +223,14 @@ struct phy_device *fixed_phy_register(unsigned int irq,
 
 	switch (status->speed) {
 	case SPEED_1000:
-		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Half_BIT,
-				 phy->supported);
-		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
-				 phy->supported);
-		/* fall through */
+		phy->supported = PHY_1000BT_FEATURES;
+		break;
 	case SPEED_100:
-		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT,
-				 phy->supported);
-		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
-				 phy->supported);
-		/* fall through */
+		phy->supported = PHY_100BT_FEATURES;
+		break;
 	case SPEED_10:
 	default:
-		linkmode_set_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT,
-				 phy->supported);
-		linkmode_set_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT,
-				 phy->supported);
+		phy->supported = PHY_10BT_FEATURES;
 	}
 
 	ret = phy_device_register(phy);
@@ -290,8 +259,10 @@ static int __init fixed_mdio_bus_init(void)
 	int ret;
 
 	pdev = platform_device_register_simple("Fixed MDIO bus", 0, NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
+	if (IS_ERR(pdev)) {
+		ret = PTR_ERR(pdev);
+		goto err_pdev;
+	}
 
 	fmb->mii_bus = mdiobus_alloc();
 	if (fmb->mii_bus == NULL) {
@@ -316,6 +287,7 @@ err_mdiobus_alloc:
 	mdiobus_free(fmb->mii_bus);
 err_mdiobus_reg:
 	platform_device_unregister(pdev);
+err_pdev:
 	return ret;
 }
 module_init(fixed_mdio_bus_init);

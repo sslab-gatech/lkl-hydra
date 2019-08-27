@@ -488,11 +488,10 @@ long machine_check_early(struct pt_regs *regs)
 {
 	long handled = 0;
 
-	/*
-	 * See if platform is capable of handling machine check.
-	 */
-	if (ppc_md.machine_check_early)
-		handled = ppc_md.machine_check_early(regs);
+	__this_cpu_inc(irq_stat.mce_exceptions);
+
+	if (cur_cpu_spec && cur_cpu_spec->machine_check_early)
+		handled = cur_cpu_spec->machine_check_early(regs);
 	return handled;
 }
 

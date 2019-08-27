@@ -1216,7 +1216,8 @@ static umode_t samsung_sysfs_is_visible(struct kobject *kobj,
 					struct attribute *attr, int idx)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
-	struct samsung_laptop *samsung = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct samsung_laptop *samsung = platform_get_drvdata(pdev);
 	bool ok = true;
 
 	if (attr == &dev_attr_performance_level.attr)

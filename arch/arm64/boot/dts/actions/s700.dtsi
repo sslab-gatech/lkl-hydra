@@ -3,7 +3,6 @@
  * Copyright (c) 2017 Andreas Färber
  */
 
-#include <dt-bindings/clock/actions,s700-cmu.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 / {
@@ -88,12 +87,6 @@
 		#clock-cells = <0>;
 	};
 
-	losc: losc {
-		compatible = "fixed-clock";
-		clock-frequency = <32768>;
-		#clock-cells = <0>;
-	};
-
 	soc {
 		compatible = "simple-bus";
 		#address-cells = <2>;
@@ -114,7 +107,6 @@
 		uart0: serial@e0120000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe0120000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART0>;
 			interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -122,7 +114,6 @@
 		uart1: serial@e0122000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe0122000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART1>;
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -130,7 +121,6 @@
 		uart2: serial@e0124000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe0124000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART2>;
 			interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -138,7 +128,6 @@
 		uart3: serial@e0126000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe0126000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART3>;
 			interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -146,7 +135,6 @@
 		uart4: serial@e0128000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe0128000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART4>;
 			interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -154,7 +142,6 @@
 		uart5: serial@e012a000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe012a000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART5>;
 			interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 		};
@@ -162,16 +149,8 @@
 		uart6: serial@e012c000 {
 			compatible = "actions,s900-uart", "actions,owl-uart";
 			reg = <0x0 0xe012c000 0x0 0x2000>;
-			clocks = <&cmu CLK_UART6>;
 			interrupts = <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-		};
-
-		cmu: clock-controller@e0168000 {
-			compatible = "actions,s700-cmu";
-			reg = <0x0 0xe0168000 0x0 0x1000>;
-			clocks = <&hosc>, <&losc>;
-			#clock-cells = <1>;
 		};
 
 		sps: power-controller@e01b0100 {

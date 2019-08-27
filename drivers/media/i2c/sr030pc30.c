@@ -511,16 +511,13 @@ static int sr030pc30_get_fmt(struct v4l2_subdev *sd,
 static const struct sr030pc30_format *try_fmt(struct v4l2_subdev *sd,
 					      struct v4l2_mbus_framefmt *mf)
 {
-	int i;
+	int i = ARRAY_SIZE(sr030pc30_formats);
 
 	sr030pc30_try_frame_size(mf);
 
-	for (i = 0; i < ARRAY_SIZE(sr030pc30_formats); i++) {
+	while (i--)
 		if (mf->code == sr030pc30_formats[i].code)
 			break;
-	}
-	if (i == ARRAY_SIZE(sr030pc30_formats))
-		i = 0;
 
 	mf->code = sr030pc30_formats[i].code;
 
@@ -569,7 +566,7 @@ static int sr030pc30_base_config(struct v4l2_subdev *sd)
 	if (!ret)
 		ret = sr030pc30_pwr_ctrl(sd, false, false);
 
-	if (ret)
+	if (!ret && !info->pdata)
 		return ret;
 
 	expmin = EXPOS_MIN_MS * info->pdata->clk_rate / (8 * 1000);
@@ -703,6 +700,7 @@ static int sr030pc30_probe(struct i2c_client *client,
 		return -ENOMEM;
 
 	sd = &info->sd;
+	strcpy(sd->name, MODULE_NAME);
 	info->pdata = client->dev.platform_data;
 
 	v4l2_i2c_subdev_init(sd, client, &sr030pc30_ops);

@@ -66,7 +66,6 @@ struct kfd_event {
 	/* type specific data */
 	union {
 		struct kfd_hsa_memory_exception_data memory_exception_data;
-		struct kfd_hsa_hw_exception_data hw_exception_data;
 	};
 };
 

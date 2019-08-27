@@ -100,12 +100,13 @@ int udl_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	return ret;
 }
 
-vm_fault_t udl_gem_fault(struct vm_fault *vmf)
+int udl_gem_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct udl_gem_object *obj = to_udl_bo(vma->vm_private_data);
 	struct page *page;
 	unsigned int page_offset;
+	int ret = 0;
 
 	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
@@ -113,7 +114,17 @@ vm_fault_t udl_gem_fault(struct vm_fault *vmf)
 		return VM_FAULT_SIGBUS;
 
 	page = obj->pages[page_offset];
-	return vmf_insert_page(vma, vmf->address, page);
+	ret = vm_insert_page(vma, vmf->address, page);
+	switch (ret) {
+	case -EAGAIN:
+	case 0:
+	case -ERESTARTSYS:
+		return VM_FAULT_NOPAGE;
+	case -ENOMEM:
+		return VM_FAULT_OOM;
+	default:
+		return VM_FAULT_SIGBUS;
+	}
 }
 
 int udl_gem_get_pages(struct udl_gem_object *obj)
@@ -203,10 +214,9 @@ int udl_gem_mmap(struct drm_file *file, struct drm_device *dev,
 {
 	struct udl_gem_object *gobj;
 	struct drm_gem_object *obj;
-	struct udl_device *udl = dev->dev_private;
 	int ret = 0;
 
-	mutex_lock(&udl->gem_lock);
+	mutex_lock(&dev->struct_mutex);
 	obj = drm_gem_object_lookup(file, handle);
 	if (obj == NULL) {
 		ret = -ENOENT;
@@ -226,6 +236,6 @@ int udl_gem_mmap(struct drm_file *file, struct drm_device *dev,
 out:
 	drm_gem_object_put(&gobj->base);
 unlock:
-	mutex_unlock(&udl->gem_lock);
+	mutex_unlock(&dev->struct_mutex);
 	return ret;
 }

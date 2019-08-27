@@ -166,8 +166,8 @@ static void exec_syscall(Program *prog, Syscall *syscall) {
         cnt++;
     }
 
-    /* ret = lkl_syscall(lkl_syscall_nr[syscall->nr], params); */
-    ret = handle_syscalls(syscall->nr, params);
+    ret = lkl_syscall(lkl_syscall_nr[syscall->nr], params);
+    //ret = handle_syscalls(syscall->nr, params);
     if (syscall->ret_index != -1)
         prog->variables[syscall->ret_index]->value = reinterpret_cast<uint8_t*>(ret);
 
@@ -706,6 +706,7 @@ int main(int argc, char **argv)
             );
     if (cla.emul_verbose)
         std::cout << "emulator command: " << emul_command << std::endl;
+
     std::string res = check_output(emul_command);
     if (cla.emul_verbose)
         std::cout << res << std::endl;

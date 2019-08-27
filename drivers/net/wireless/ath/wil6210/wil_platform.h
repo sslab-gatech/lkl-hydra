@@ -29,7 +29,6 @@ enum wil_platform_event {
 
 enum wil_platform_features {
 	WIL_PLATFORM_FEATURE_FW_EXT_CLK_CONTROL = 0,
-	WIL_PLATFORM_FEATURE_TRIPLE_MSI = 1,
 	WIL_PLATFORM_FEATURE_MAX,
 };
 

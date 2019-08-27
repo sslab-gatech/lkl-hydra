@@ -56,7 +56,6 @@
 #include "intel-pt.h"
 #include "intel-bts.h"
 #include "arm-spe.h"
-#include "s390-cpumsf.h"
 
 #include "sane_ctype.h"
 #include "symbol/kallsyms.h"
@@ -203,9 +202,6 @@ static int auxtrace_queues__grow(struct auxtrace_queues *queues,
 	for (i = 0; i < queues->nr_queues; i++) {
 		list_splice_tail(&queues->queue_array[i].head,
 				 &queue_array[i].head);
-		queue_array[i].tid = queues->queue_array[i].tid;
-		queue_array[i].cpu = queues->queue_array[i].cpu;
-		queue_array[i].set = queues->queue_array[i].set;
 		queue_array[i].priv = queues->queue_array[i].priv;
 	}
 
@@ -237,9 +233,9 @@ static void *auxtrace_copy_data(u64 size, struct perf_session *session)
 	return p;
 }
 
-static int auxtrace_queues__queue_buffer(struct auxtrace_queues *queues,
-					 unsigned int idx,
-					 struct auxtrace_buffer *buffer)
+static int auxtrace_queues__add_buffer(struct auxtrace_queues *queues,
+				       unsigned int idx,
+				       struct auxtrace_buffer *buffer)
 {
 	struct auxtrace_queue *queue;
 	int err;
@@ -290,7 +286,7 @@ static int auxtrace_queues__split_buffer(struct auxtrace_queues *queues,
 			return -ENOMEM;
 		b->size = BUFFER_LIMIT_FOR_32_BIT;
 		b->consecutive = consecutive;
-		err = auxtrace_queues__queue_buffer(queues, idx, b);
+		err = auxtrace_queues__add_buffer(queues, idx, b);
 		if (err) {
 			auxtrace_buffer__free(b);
 			return err;
@@ -306,6 +302,31 @@ static int auxtrace_queues__split_buffer(struct auxtrace_queues *queues,
 	return 0;
 }
 
+static int auxtrace_queues__add_event_buffer(struct auxtrace_queues *queues,
+					     struct perf_session *session,
+					     unsigned int idx,
+					     struct auxtrace_buffer *buffer)
+{
+	if (session->one_mmap) {
+		buffer->data = buffer->data_offset - session->one_mmap_offset +
+			       session->one_mmap_addr;
+	} else if (perf_data__is_pipe(session->data)) {
+		buffer->data = auxtrace_copy_data(buffer->size, session);
+		if (!buffer->data)
+			return -ENOMEM;
+		buffer->data_needs_freeing = true;
+	} else if (BITS_PER_LONG == 32 &&
+		   buffer->size > BUFFER_LIMIT_FOR_32_BIT) {
+		int err;
+
+		err = auxtrace_queues__split_buffer(queues, idx, buffer);
+		if (err)
+			return err;
+	}
+
+	return auxtrace_queues__add_buffer(queues, idx, buffer);
+}
+
 static bool filter_cpu(struct perf_session *session, int cpu)
 {
 	unsigned long *cpu_bitmap = session->itrace_synth_opts->cpu_bitmap;
@@ -313,69 +334,43 @@ static bool filter_cpu(struct perf_session *session, int cpu)
 	return cpu_bitmap && cpu != -1 && !test_bit(cpu, cpu_bitmap);
 }
 
-static int auxtrace_queues__add_buffer(struct auxtrace_queues *queues,
-				       struct perf_session *session,
-				       unsigned int idx,
-				       struct auxtrace_buffer *buffer,
-				       struct auxtrace_buffer **buffer_ptr)
-{
-	int err = -ENOMEM;
-
-	if (filter_cpu(session, buffer->cpu))
-		return 0;
-
-	buffer = memdup(buffer, sizeof(*buffer));
-	if (!buffer)
-		return -ENOMEM;
-
-	if (session->one_mmap) {
-		buffer->data = buffer->data_offset - session->one_mmap_offset +
-			       session->one_mmap_addr;
-	} else if (perf_data__is_pipe(session->data)) {
-		buffer->data = auxtrace_copy_data(buffer->size, session);
-		if (!buffer->data)
-			goto out_free;
-		buffer->data_needs_freeing = true;
-	} else if (BITS_PER_LONG == 32 &&
-		   buffer->size > BUFFER_LIMIT_FOR_32_BIT) {
-		err = auxtrace_queues__split_buffer(queues, idx, buffer);
-		if (err)
-			goto out_free;
-	}
-
-	err = auxtrace_queues__queue_buffer(queues, idx, buffer);
-	if (err)
-		goto out_free;
-
-	/* FIXME: Doesn't work for split buffer */
-	if (buffer_ptr)
-		*buffer_ptr = buffer;
-
-	return 0;
-
-out_free:
-	auxtrace_buffer__free(buffer);
-	return err;
-}
-
 int auxtrace_queues__add_event(struct auxtrace_queues *queues,
 			       struct perf_session *session,
 			       union perf_event *event, off_t data_offset,
 			       struct auxtrace_buffer **buffer_ptr)
 {
-	struct auxtrace_buffer buffer = {
-		.pid = -1,
-		.tid = event->auxtrace.tid,
-		.cpu = event->auxtrace.cpu,
-		.data_offset = data_offset,
-		.offset = event->auxtrace.offset,
-		.reference = event->auxtrace.reference,
-		.size = event->auxtrace.size,
-	};
-	unsigned int idx = event->auxtrace.idx;
+	struct auxtrace_buffer *buffer;
+	unsigned int idx;
+	int err;
 
-	return auxtrace_queues__add_buffer(queues, session, idx, &buffer,
-					   buffer_ptr);
+	if (filter_cpu(session, event->auxtrace.cpu))
+		return 0;
+
+	buffer = zalloc(sizeof(struct auxtrace_buffer));
+	if (!buffer)
+		return -ENOMEM;
+
+	buffer->pid = -1;
+	buffer->tid = event->auxtrace.tid;
+	buffer->cpu = event->auxtrace.cpu;
+	buffer->data_offset = data_offset;
+	buffer->offset = event->auxtrace.offset;
+	buffer->reference = event->auxtrace.reference;
+	buffer->size = event->auxtrace.size;
+	idx = event->auxtrace.idx;
+
+	err = auxtrace_queues__add_event_buffer(queues, session, idx, buffer);
+	if (err)
+		goto out_err;
+
+	if (buffer_ptr)
+		*buffer_ptr = buffer;
+
+	return 0;
+
+out_err:
+	auxtrace_buffer__free(buffer);
+	return err;
 }
 
 static int auxtrace_queues__add_indexed_event(struct auxtrace_queues *queues,
@@ -906,8 +901,9 @@ out_free:
 	return err;
 }
 
-int perf_event__process_auxtrace_info(struct perf_session *session,
-				      union perf_event *event)
+int perf_event__process_auxtrace_info(struct perf_tool *tool __maybe_unused,
+				      union perf_event *event,
+				      struct perf_session *session)
 {
 	enum auxtrace_type type = event->auxtrace_info.type;
 
@@ -923,16 +919,15 @@ int perf_event__process_auxtrace_info(struct perf_session *session,
 		return arm_spe_process_auxtrace_info(event, session);
 	case PERF_AUXTRACE_CS_ETM:
 		return cs_etm__process_auxtrace_info(event, session);
-	case PERF_AUXTRACE_S390_CPUMSF:
-		return s390_cpumsf_process_auxtrace_info(event, session);
 	case PERF_AUXTRACE_UNKNOWN:
 	default:
 		return -EINVAL;
 	}
 }
 
-s64 perf_event__process_auxtrace(struct perf_session *session,
-				 union perf_event *event)
+s64 perf_event__process_auxtrace(struct perf_tool *tool,
+				 union perf_event *event,
+				 struct perf_session *session)
 {
 	s64 err;
 
@@ -948,7 +943,7 @@ s64 perf_event__process_auxtrace(struct perf_session *session,
 	if (!session->auxtrace || event->header.type != PERF_RECORD_AUXTRACE)
 		return -EINVAL;
 
-	err = session->auxtrace->process_auxtrace_event(session, event, session->tool);
+	err = session->auxtrace->process_auxtrace_event(session, event, tool);
 	if (err < 0)
 		return err;
 
@@ -962,23 +957,16 @@ s64 perf_event__process_auxtrace(struct perf_session *session,
 #define PERF_ITRACE_DEFAULT_LAST_BRANCH_SZ	64
 #define PERF_ITRACE_MAX_LAST_BRANCH_SZ		1024
 
-void itrace_synth_opts__set_default(struct itrace_synth_opts *synth_opts,
-				    bool no_sample)
+void itrace_synth_opts__set_default(struct itrace_synth_opts *synth_opts)
 {
+	synth_opts->instructions = true;
 	synth_opts->branches = true;
 	synth_opts->transactions = true;
 	synth_opts->ptwrites = true;
 	synth_opts->pwr_events = true;
 	synth_opts->errors = true;
-	if (no_sample) {
-		synth_opts->period_type = PERF_ITRACE_PERIOD_INSTRUCTIONS;
-		synth_opts->period = 1;
-		synth_opts->calls = true;
-	} else {
-		synth_opts->instructions = true;
-		synth_opts->period_type = PERF_ITRACE_DEFAULT_PERIOD_TYPE;
-		synth_opts->period = PERF_ITRACE_DEFAULT_PERIOD;
-	}
+	synth_opts->period_type = PERF_ITRACE_DEFAULT_PERIOD_TYPE;
+	synth_opts->period = PERF_ITRACE_DEFAULT_PERIOD;
 	synth_opts->callchain_sz = PERF_ITRACE_DEFAULT_CALLCHAIN_SZ;
 	synth_opts->last_branch_sz = PERF_ITRACE_DEFAULT_LAST_BRANCH_SZ;
 	synth_opts->initial_skip = 0;
@@ -1006,7 +994,7 @@ int itrace_parse_synth_opts(const struct option *opt, const char *str,
 	}
 
 	if (!str) {
-		itrace_synth_opts__set_default(synth_opts, false);
+		itrace_synth_opts__set_default(synth_opts);
 		return 0;
 	}
 
@@ -1190,8 +1178,9 @@ void events_stats__auxtrace_error_warn(const struct events_stats *stats)
 	}
 }
 
-int perf_event__process_auxtrace_error(struct perf_session *session,
-				       union perf_event *event)
+int perf_event__process_auxtrace_error(struct perf_tool *tool __maybe_unused,
+				       union perf_event *event,
+				       struct perf_session *session)
 {
 	if (auxtrace__dont_decode(session))
 		return 0;
@@ -1200,12 +1189,11 @@ int perf_event__process_auxtrace_error(struct perf_session *session,
 	return 0;
 }
 
-static int __auxtrace_mmap__read(struct perf_mmap *map,
+static int __auxtrace_mmap__read(struct auxtrace_mmap *mm,
 				 struct auxtrace_record *itr,
 				 struct perf_tool *tool, process_auxtrace_t fn,
 				 bool snapshot, size_t snapshot_size)
 {
-	struct auxtrace_mmap *mm = &map->auxtrace_mmap;
 	u64 head, old = mm->prev, offset, ref;
 	unsigned char *data = mm->base;
 	size_t size, head_off, old_off, len1, len2, padding;
@@ -1292,7 +1280,7 @@ static int __auxtrace_mmap__read(struct perf_mmap *map,
 	ev.auxtrace.tid = mm->tid;
 	ev.auxtrace.cpu = mm->cpu;
 
-	if (fn(tool, map, &ev, data1, len1, data2, len2))
+	if (fn(tool, &ev, data1, len1, data2, len2))
 		return -1;
 
 	mm->prev = head;
@@ -1311,18 +1299,18 @@ static int __auxtrace_mmap__read(struct perf_mmap *map,
 	return 1;
 }
 
-int auxtrace_mmap__read(struct perf_mmap *map, struct auxtrace_record *itr,
+int auxtrace_mmap__read(struct auxtrace_mmap *mm, struct auxtrace_record *itr,
 			struct perf_tool *tool, process_auxtrace_t fn)
 {
-	return __auxtrace_mmap__read(map, itr, tool, fn, false, 0);
+	return __auxtrace_mmap__read(mm, itr, tool, fn, false, 0);
 }
 
-int auxtrace_mmap__read_snapshot(struct perf_mmap *map,
+int auxtrace_mmap__read_snapshot(struct auxtrace_mmap *mm,
 				 struct auxtrace_record *itr,
 				 struct perf_tool *tool, process_auxtrace_t fn,
 				 size_t snapshot_size)
 {
-	return __auxtrace_mmap__read(map, itr, tool, fn, true, snapshot_size);
+	return __auxtrace_mmap__read(mm, itr, tool, fn, true, snapshot_size);
 }
 
 /**
@@ -1690,7 +1678,7 @@ struct sym_args {
 static bool kern_sym_match(struct sym_args *args, const char *name, char type)
 {
 	/* A function with the same name, and global or the n'th found or any */
-	return kallsyms__is_function(type) &&
+	return symbol_type__is_a(type, MAP__FUNCTION) &&
 	       !strcmp(name, args->name) &&
 	       ((args->global && isupper(type)) ||
 		(args->selected && ++(args->cnt) == args->idx) ||
@@ -1795,7 +1783,7 @@ static int find_entire_kern_cb(void *arg, const char *name __maybe_unused,
 {
 	struct sym_args *args = arg;
 
-	if (!kallsyms__is_function(type))
+	if (!symbol_type__is_a(type, MAP__FUNCTION))
 		return 0;
 
 	if (!args->started) {
@@ -1926,7 +1914,7 @@ static void print_duplicate_syms(struct dso *dso, const char *sym_name)
 
 	pr_err("Multiple symbols with name '%s'\n", sym_name);
 
-	sym = dso__first_symbol(dso);
+	sym = dso__first_symbol(dso, MAP__FUNCTION);
 	while (sym) {
 		if (dso_sym_match(sym, sym_name, &cnt, -1)) {
 			pr_err("#%d\t0x%"PRIx64"\t%c\t%s\n",
@@ -1956,7 +1944,7 @@ static int find_dso_sym(struct dso *dso, const char *sym_name, u64 *start,
 	*start = 0;
 	*size = 0;
 
-	sym = dso__first_symbol(dso);
+	sym = dso__first_symbol(dso, MAP__FUNCTION);
 	while (sym) {
 		if (*start) {
 			if (!*size)
@@ -1983,14 +1971,17 @@ static int find_dso_sym(struct dso *dso, const char *sym_name, u64 *start,
 
 static int addr_filter__entire_dso(struct addr_filter *filt, struct dso *dso)
 {
-	if (dso__data_file_size(dso, NULL)) {
-		pr_err("Failed to determine filter for %s\nCannot determine file size.\n",
+	struct symbol *first_sym = dso__first_symbol(dso, MAP__FUNCTION);
+	struct symbol *last_sym = dso__last_symbol(dso, MAP__FUNCTION);
+
+	if (!first_sym || !last_sym) {
+		pr_err("Failed to determine filter for %s\nNo symbols found.\n",
 		       filt->filename);
 		return -EINVAL;
 	}
 
-	filt->addr = 0;
-	filt->size = dso->data.file_size;
+	filt->addr = first_sym->start;
+	filt->size = last_sym->end - first_sym->start;
 
 	return 0;
 }

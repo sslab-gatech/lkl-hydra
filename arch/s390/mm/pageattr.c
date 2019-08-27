@@ -14,7 +14,7 @@
 
 static inline unsigned long sske_frame(unsigned long addr, unsigned char skey)
 {
-	asm volatile(".insn rrf,0xb22b0000,%[skey],%[addr],1,0"
+	asm volatile(".insn rrf,0xb22b0000,%[skey],%[addr],9,0"
 		     : [addr] "+a" (addr) : [skey] "d" (skey));
 	return addr;
 }
@@ -23,6 +23,8 @@ void __storage_key_init_range(unsigned long start, unsigned long end)
 {
 	unsigned long boundary, size;
 
+	if (!PAGE_DEFAULT_KEY)
+		return;
 	while (start < end) {
 		if (MACHINE_HAS_EDAT1) {
 			/* set storage keys for a 1MB frame */
@@ -35,7 +37,7 @@ void __storage_key_init_range(unsigned long start, unsigned long end)
 				continue;
 			}
 		}
-		page_set_storage_key(start, PAGE_DEFAULT_KEY, 1);
+		page_set_storage_key(start, PAGE_DEFAULT_KEY, 0);
 		start += PAGE_SIZE;
 	}
 }

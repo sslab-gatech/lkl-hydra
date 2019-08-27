@@ -155,6 +155,8 @@ void t4vf_os_link_changed(struct adapter *adapter, int pidx, int link_ok)
 		const char *fc;
 		const struct port_info *pi = netdev_priv(dev);
 
+		netif_carrier_on(dev);
+
 		switch (pi->link_cfg.speed) {
 		case 100:
 			s = "100Mbps";
@@ -200,6 +202,7 @@ void t4vf_os_link_changed(struct adapter *adapter, int pidx, int link_ok)
 
 		netdev_info(dev, "link up, %s, full-duplex, %s PAUSE\n", s, fc);
 	} else {
+		netif_carrier_off(dev);
 		netdev_info(dev, "link down\n");
 	}
 }
@@ -274,18 +277,7 @@ static int link_start(struct net_device *dev)
 	 * is enabled on a port.
 	 */
 	if (ret == 0)
-		ret = t4vf_enable_pi(pi->adapter, pi, true, true);
-
-	/* The Virtual Interfaces are connected to an internal switch on the
-	 * chip which allows VIs attached to the same port to talk to each
-	 * other even when the port link is down.  As a result, we generally
-	 * want to always report a VI's link as being "up", provided there are
-	 * no errors in enabling vi.
-	 */
-
-	if (ret == 0)
-		netif_carrier_on(dev);
-
+		ret = t4vf_enable_vi(pi->adapter, pi->viid, true, true);
 	return ret;
 }
 
@@ -722,7 +714,6 @@ static int adapter_up(struct adapter *adapter)
 
 		if (adapter->flags & USING_MSIX)
 			name_msix_vecs(adapter);
-
 		adapter->flags |= FULL_INIT_DONE;
 	}
 
@@ -748,6 +739,8 @@ static int adapter_up(struct adapter *adapter)
 	enable_rx(adapter);
 	t4vf_sge_start(adapter);
 
+	/* Initialize hash mac addr list*/
+	INIT_LIST_HEAD(&adapter->mac_hlist);
 	return 0;
 }
 
@@ -821,7 +814,8 @@ static int cxgb4vf_stop(struct net_device *dev)
 
 	netif_tx_stop_all_queues(dev);
 	netif_carrier_off(dev);
-	t4vf_enable_pi(adapter, pi, false, false);
+	t4vf_enable_vi(adapter, pi->viid, false, false);
+	pi->link_cfg.link_ok = 0;
 
 	clear_bit(pi->port_id, &adapter->open_device_map);
 	if (adapter->open_device_map == 0)
@@ -1287,22 +1281,22 @@ static void fw_caps_to_lmm(enum fw_port_type port_type,
 
 	case FW_PORT_TYPE_KR:
 		SET_LMM(Backplane);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKR_Full);
+		SET_LMM(10000baseKR_Full);
 		break;
 
 	case FW_PORT_TYPE_BP_AP:
 		SET_LMM(Backplane);
-		FW_CAPS_TO_LMM(SPEED_1G, 1000baseKX_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseR_FEC);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKR_Full);
+		SET_LMM(10000baseR_FEC);
+		SET_LMM(10000baseKR_Full);
+		SET_LMM(1000baseKX_Full);
 		break;
 
 	case FW_PORT_TYPE_BP4_AP:
 		SET_LMM(Backplane);
-		FW_CAPS_TO_LMM(SPEED_1G, 1000baseKX_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseR_FEC);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKR_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKX4_Full);
+		SET_LMM(10000baseR_FEC);
+		SET_LMM(10000baseKR_Full);
+		SET_LMM(1000baseKX_Full);
+		SET_LMM(10000baseKX4_Full);
 		break;
 
 	case FW_PORT_TYPE_FIBER_XFI:
@@ -1318,24 +1312,18 @@ static void fw_caps_to_lmm(enum fw_port_type port_type,
 	case FW_PORT_TYPE_BP40_BA:
 	case FW_PORT_TYPE_QSFP:
 		SET_LMM(FIBRE);
-		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_40G, 40000baseSR4_Full);
+		SET_LMM(40000baseSR4_Full);
 		break;
 
 	case FW_PORT_TYPE_CR_QSFP:
 	case FW_PORT_TYPE_SFP28:
 		SET_LMM(FIBRE);
-		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_25G, 25000baseCR_Full);
+		SET_LMM(25000baseCR_Full);
 		break;
 
 	case FW_PORT_TYPE_KR_SFP28:
 		SET_LMM(Backplane);
-		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKR_Full);
-		FW_CAPS_TO_LMM(SPEED_25G, 25000baseKR_Full);
+		SET_LMM(25000baseKR_Full);
 		break;
 
 	case FW_PORT_TYPE_KR_XLAUI:
@@ -1347,18 +1335,13 @@ static void fw_caps_to_lmm(enum fw_port_type port_type,
 
 	case FW_PORT_TYPE_CR2_QSFP:
 		SET_LMM(FIBRE);
-		FW_CAPS_TO_LMM(SPEED_50G, 50000baseSR2_Full);
+		SET_LMM(50000baseSR2_Full);
 		break;
 
 	case FW_PORT_TYPE_KR4_100G:
 	case FW_PORT_TYPE_CR4_QSFP:
 		SET_LMM(FIBRE);
-		FW_CAPS_TO_LMM(SPEED_1G,  1000baseT_Full);
-		FW_CAPS_TO_LMM(SPEED_10G, 10000baseSR_Full);
-		FW_CAPS_TO_LMM(SPEED_40G, 40000baseSR4_Full);
-		FW_CAPS_TO_LMM(SPEED_25G, 25000baseCR_Full);
-		FW_CAPS_TO_LMM(SPEED_50G, 50000baseCR2_Full);
-		FW_CAPS_TO_LMM(SPEED_100G, 100000baseCR4_Full);
+		SET_LMM(100000baseCR4_Full);
 		break;
 
 	default:
@@ -1415,22 +1398,6 @@ static int cxgb4vf_get_link_ksettings(struct net_device *dev,
 	} else {
 		base->speed = SPEED_UNKNOWN;
 		base->duplex = DUPLEX_UNKNOWN;
-	}
-
-	if (pi->link_cfg.fc & PAUSE_RX) {
-		if (pi->link_cfg.fc & PAUSE_TX) {
-			ethtool_link_ksettings_add_link_mode(link_ksettings,
-							     advertising,
-							     Pause);
-		} else {
-			ethtool_link_ksettings_add_link_mode(link_ksettings,
-							     advertising,
-							     Asym_Pause);
-		}
-	} else if (pi->link_cfg.fc & PAUSE_TX) {
-		ethtool_link_ksettings_add_link_mode(link_ksettings,
-						     advertising,
-						     Asym_Pause);
 	}
 
 	base->autoneg = pi->link_cfg.autoneg;
@@ -2323,7 +2290,19 @@ static int resources_show(struct seq_file *seq, void *v)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(resources);
+
+static int resources_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, resources_show, inode->i_private);
+}
+
+static const struct file_operations resources_proc_fops = {
+	.owner   = THIS_MODULE,
+	.open    = resources_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = single_release,
+};
 
 /*
  * Show Virtual Interfaces.
@@ -2404,11 +2383,11 @@ struct cxgb4vf_debugfs_entry {
 };
 
 static struct cxgb4vf_debugfs_entry debugfs_files[] = {
-	{ "mboxlog",    0444, &mboxlog_fops },
-	{ "sge_qinfo",  0444, &sge_qinfo_debugfs_fops },
-	{ "sge_qstats", 0444, &sge_qstats_proc_fops },
-	{ "resources",  0444, &resources_fops },
-	{ "interfaces", 0444, &interfaces_proc_fops },
+	{ "mboxlog",    S_IRUGO, &mboxlog_fops },
+	{ "sge_qinfo",  S_IRUGO, &sge_qinfo_debugfs_fops },
+	{ "sge_qstats", S_IRUGO, &sge_qstats_proc_fops },
+	{ "resources",  S_IRUGO, &resources_proc_fops },
+	{ "interfaces", S_IRUGO, &interfaces_proc_fops },
 };
 
 /*
@@ -3023,9 +3002,6 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	if (err)
 		goto err_unmap_bar;
 
-	/* Initialize hash mac addr list */
-	INIT_LIST_HEAD(&adapter->mac_hlist);
-
 	/*
 	 * Allocate our "adapter ports" and stitch everything together.
 	 */
@@ -3277,7 +3253,6 @@ err_disable_device:
 static void cxgb4vf_pci_remove(struct pci_dev *pdev)
 {
 	struct adapter *adapter = pci_get_drvdata(pdev);
-	struct hash_mac_addr *entry, *tmp;
 
 	/*
 	 * Tear down driver state associated with device.
@@ -3328,11 +3303,6 @@ static void cxgb4vf_pci_remove(struct pci_dev *pdev)
 		if (!is_t4(adapter->params.chip))
 			iounmap(adapter->bar2);
 		kfree(adapter->mbox_log);
-		list_for_each_entry_safe(entry, tmp, &adapter->mac_hlist,
-					 list) {
-			list_del(&entry->list);
-			kfree(entry);
-		}
 		kfree(adapter);
 	}
 

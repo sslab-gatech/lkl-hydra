@@ -35,7 +35,7 @@ asmlinkage int old_mmap(unsigned long addr, unsigned long len,
 {
 	if (off & ~PAGE_MASK)
 		return -EINVAL;
-	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off>>PAGE_SHIFT);
+	return sys_mmap_pgoff(addr, len, prot, flags, fd, off>>PAGE_SHIFT);
 }
 
 asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
@@ -51,7 +51,7 @@ asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 
 	pgoff >>= PAGE_SHIFT - 12;
 
-	return ksys_mmap_pgoff(addr, len, prot, flags, fd, pgoff);
+	return sys_mmap_pgoff(addr, len, prot, flags, fd, pgoff);
 }
 
 /* sys_cacheflush -- flush (part of) the processor cache.  */

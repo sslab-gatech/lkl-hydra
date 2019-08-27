@@ -25,17 +25,7 @@ extern cpumask_t cpu_sibling_map[];
 extern cpumask_t cpu_core_map[];
 extern cpumask_t cpu_foreign_map[];
 
-static inline int raw_smp_processor_id(void)
-{
-#if defined(__VDSO__)
-	extern int vdso_smp_processor_id(void)
-		__compiletime_error("VDSO should not call smp_processor_id()");
-	return vdso_smp_processor_id();
-#else
-	return current_thread_info()->cpu;
-#endif
-}
-#define raw_smp_processor_id raw_smp_processor_id
+#define raw_smp_processor_id() (current_thread_info()->cpu)
 
 /* Map from cpu id to sequential logical cpu number.  This will only
    not be idempotent when cpus failed to come on-line.	*/
@@ -89,22 +79,6 @@ static inline void __cpu_die(unsigned int cpu)
 }
 
 extern void play_dead(void);
-#endif
-
-#ifdef CONFIG_KEXEC
-static inline void kexec_nonboot_cpu(void)
-{
-	extern const struct plat_smp_ops *mp_ops;	/* private */
-
-	return mp_ops->kexec_nonboot_cpu();
-}
-
-static inline void *kexec_nonboot_cpu_func(void)
-{
-	extern const struct plat_smp_ops *mp_ops;	/* private */
-
-	return mp_ops->kexec_nonboot_cpu;
-}
 #endif
 
 /*

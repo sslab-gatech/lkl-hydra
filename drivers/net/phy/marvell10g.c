@@ -21,12 +21,8 @@
  * If both the fiber and copper ports are connected, the first to gain
  * link takes priority and the other port is completely locked out.
  */
-#include <linux/ctype.h>
-#include <linux/hwmon.h>
-#include <linux/marvell_phy.h>
 #include <linux/phy.h>
-
-#define MDIO_AN_10GBT_CTRL_ADV_NBT_MASK	0x01e0
+#include <linux/marvell_phy.h>
 
 enum {
 	MV_PCS_BASE_T		= 0x0000,
@@ -44,19 +40,6 @@ enum {
 	 */
 	MV_AN_CTRL1000		= 0x8000, /* 1000base-T control register */
 	MV_AN_STAT1000		= 0x8001, /* 1000base-T status register */
-
-	/* Vendor2 MMD registers */
-	MV_V2_TEMP_CTRL		= 0xf08a,
-	MV_V2_TEMP_CTRL_MASK	= 0xc000,
-	MV_V2_TEMP_CTRL_SAMPLE	= 0x0000,
-	MV_V2_TEMP_CTRL_DISABLE	= 0xc000,
-	MV_V2_TEMP		= 0xf08c,
-	MV_V2_TEMP_UNKNOWN	= 0x9600, /* unknown function */
-};
-
-struct mv3310_priv {
-	struct device *hwmon_dev;
-	char *hwmon_name;
 };
 
 static int mv3310_modify(struct phy_device *phydev, int devad, u16 reg,
@@ -77,183 +60,30 @@ static int mv3310_modify(struct phy_device *phydev, int devad, u16 reg,
 	return ret < 0 ? ret : 1;
 }
 
-#ifdef CONFIG_HWMON
-static umode_t mv3310_hwmon_is_visible(const void *data,
-				       enum hwmon_sensor_types type,
-				       u32 attr, int channel)
-{
-	if (type == hwmon_chip && attr == hwmon_chip_update_interval)
-		return 0444;
-	if (type == hwmon_temp && attr == hwmon_temp_input)
-		return 0444;
-	return 0;
-}
-
-static int mv3310_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
-			     u32 attr, int channel, long *value)
-{
-	struct phy_device *phydev = dev_get_drvdata(dev);
-	int temp;
-
-	if (type == hwmon_chip && attr == hwmon_chip_update_interval) {
-		*value = MSEC_PER_SEC;
-		return 0;
-	}
-
-	if (type == hwmon_temp && attr == hwmon_temp_input) {
-		temp = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_TEMP);
-		if (temp < 0)
-			return temp;
-
-		*value = ((temp & 0xff) - 75) * 1000;
-
-		return 0;
-	}
-
-	return -EOPNOTSUPP;
-}
-
-static const struct hwmon_ops mv3310_hwmon_ops = {
-	.is_visible = mv3310_hwmon_is_visible,
-	.read = mv3310_hwmon_read,
-};
-
-static u32 mv3310_hwmon_chip_config[] = {
-	HWMON_C_REGISTER_TZ | HWMON_C_UPDATE_INTERVAL,
-	0,
-};
-
-static const struct hwmon_channel_info mv3310_hwmon_chip = {
-	.type = hwmon_chip,
-	.config = mv3310_hwmon_chip_config,
-};
-
-static u32 mv3310_hwmon_temp_config[] = {
-	HWMON_T_INPUT,
-	0,
-};
-
-static const struct hwmon_channel_info mv3310_hwmon_temp = {
-	.type = hwmon_temp,
-	.config = mv3310_hwmon_temp_config,
-};
-
-static const struct hwmon_channel_info *mv3310_hwmon_info[] = {
-	&mv3310_hwmon_chip,
-	&mv3310_hwmon_temp,
-	NULL,
-};
-
-static const struct hwmon_chip_info mv3310_hwmon_chip_info = {
-	.ops = &mv3310_hwmon_ops,
-	.info = mv3310_hwmon_info,
-};
-
-static int mv3310_hwmon_config(struct phy_device *phydev, bool enable)
-{
-	u16 val;
-	int ret;
-
-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, MV_V2_TEMP,
-			    MV_V2_TEMP_UNKNOWN);
-	if (ret < 0)
-		return ret;
-
-	val = enable ? MV_V2_TEMP_CTRL_SAMPLE : MV_V2_TEMP_CTRL_DISABLE;
-	ret = mv3310_modify(phydev, MDIO_MMD_VEND2, MV_V2_TEMP_CTRL,
-			    MV_V2_TEMP_CTRL_MASK, val);
-
-	return ret < 0 ? ret : 0;
-}
-
-static void mv3310_hwmon_disable(void *data)
-{
-	struct phy_device *phydev = data;
-
-	mv3310_hwmon_config(phydev, false);
-}
-
-static int mv3310_hwmon_probe(struct phy_device *phydev)
-{
-	struct device *dev = &phydev->mdio.dev;
-	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
-	int i, j, ret;
-
-	priv->hwmon_name = devm_kstrdup(dev, dev_name(dev), GFP_KERNEL);
-	if (!priv->hwmon_name)
-		return -ENODEV;
-
-	for (i = j = 0; priv->hwmon_name[i]; i++) {
-		if (isalnum(priv->hwmon_name[i])) {
-			if (i != j)
-				priv->hwmon_name[j] = priv->hwmon_name[i];
-			j++;
-		}
-	}
-	priv->hwmon_name[j] = '\0';
-
-	ret = mv3310_hwmon_config(phydev, true);
-	if (ret)
-		return ret;
-
-	ret = devm_add_action_or_reset(dev, mv3310_hwmon_disable, phydev);
-	if (ret)
-		return ret;
-
-	priv->hwmon_dev = devm_hwmon_device_register_with_info(dev,
-				priv->hwmon_name, phydev,
-				&mv3310_hwmon_chip_info, NULL);
-
-	return PTR_ERR_OR_ZERO(priv->hwmon_dev);
-}
-#else
-static inline int mv3310_hwmon_config(struct phy_device *phydev, bool enable)
-{
-	return 0;
-}
-
-static int mv3310_hwmon_probe(struct phy_device *phydev)
-{
-	return 0;
-}
-#endif
-
 static int mv3310_probe(struct phy_device *phydev)
 {
-	struct mv3310_priv *priv;
 	u32 mmd_mask = MDIO_DEVS_PMAPMD | MDIO_DEVS_AN;
-	int ret;
 
 	if (!phydev->is_c45 ||
 	    (phydev->c45_ids.devices_in_package & mmd_mask) != mmd_mask)
 		return -ENODEV;
 
-	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
-
-	dev_set_drvdata(&phydev->mdio.dev, priv);
-
-	ret = mv3310_hwmon_probe(phydev);
-	if (ret)
-		return ret;
-
 	return 0;
 }
 
-static int mv3310_suspend(struct phy_device *phydev)
+/*
+ * Resetting the MV88X3310 causes it to become non-responsive.  Avoid
+ * setting the reset bit(s).
+ */
+static int mv3310_soft_reset(struct phy_device *phydev)
 {
 	return 0;
-}
-
-static int mv3310_resume(struct phy_device *phydev)
-{
-	return mv3310_hwmon_config(phydev, true);
 }
 
 static int mv3310_config_init(struct phy_device *phydev)
 {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(supported) = { 0, };
+	u32 mask;
 	int val;
 
 	/* Check that the PHY interface type is compatible */
@@ -337,9 +167,13 @@ static int mv3310_config_init(struct phy_device *phydev)
 		}
 	}
 
-	linkmode_copy(phydev->supported, supported);
-	linkmode_and(phydev->advertising, phydev->advertising,
-		     phydev->supported);
+	if (!ethtool_convert_link_mode_to_legacy_u32(&mask, supported))
+		dev_warn(&phydev->mdio.dev,
+			 "PHY supports (%*pb) more modes than phylib supports, some modes not supported.\n",
+			 __ETHTOOL_LINK_MODE_MASK_NBITS, supported);
+
+	phydev->supported &= mask;
+	phydev->advertising &= phydev->supported;
 
 	return 0;
 }
@@ -347,7 +181,7 @@ static int mv3310_config_init(struct phy_device *phydev)
 static int mv3310_config_aneg(struct phy_device *phydev)
 {
 	bool changed = false;
-	u16 reg;
+	u32 advertising;
 	int ret;
 
 	/* We don't support manual MDI control */
@@ -361,37 +195,31 @@ static int mv3310_config_aneg(struct phy_device *phydev)
 		return genphy_c45_an_disable_aneg(phydev);
 	}
 
-	linkmode_and(phydev->advertising, phydev->advertising,
-		     phydev->supported);
+	phydev->advertising &= phydev->supported;
+	advertising = phydev->advertising;
 
 	ret = mv3310_modify(phydev, MDIO_MMD_AN, MDIO_AN_ADVERTISE,
 			    ADVERTISE_ALL | ADVERTISE_100BASE4 |
 			    ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM,
-			    linkmode_adv_to_mii_adv_t(phydev->advertising));
+			    ethtool_adv_to_mii_adv_t(advertising));
 	if (ret < 0)
 		return ret;
 	if (ret > 0)
 		changed = true;
 
-	reg = linkmode_adv_to_mii_ctrl1000_t(phydev->advertising);
 	ret = mv3310_modify(phydev, MDIO_MMD_AN, MV_AN_CTRL1000,
-			    ADVERTISE_1000FULL | ADVERTISE_1000HALF, reg);
+			    ADVERTISE_1000FULL | ADVERTISE_1000HALF,
+			    ethtool_adv_to_mii_ctrl1000_t(advertising));
 	if (ret < 0)
 		return ret;
 	if (ret > 0)
 		changed = true;
 
 	/* 10G control register */
-	if (linkmode_test_bit(ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
-			      phydev->advertising))
-		reg = MDIO_AN_10GBT_CTRL_ADV10G;
-	else
-		reg = 0;
-
-	/* Make sure we clear unsupported 2.5G/5G advertising */
 	ret = mv3310_modify(phydev, MDIO_MMD_AN, MDIO_AN_10GBT_CTRL,
-			    MDIO_AN_10GBT_CTRL_ADV10G |
-			    MDIO_AN_10GBT_CTRL_ADV_NBT_MASK, reg);
+			    MDIO_AN_10GBT_CTRL_ADV10G,
+			    advertising & ADVERTISED_10000baseT_Full ?
+				MDIO_AN_10GBT_CTRL_ADV10G : 0);
 	if (ret < 0)
 		return ret;
 	if (ret > 0)
@@ -461,7 +289,7 @@ static int mv3310_read_status(struct phy_device *phydev)
 
 	phydev->speed = SPEED_UNKNOWN;
 	phydev->duplex = DUPLEX_UNKNOWN;
-	linkmode_zero(phydev->lp_advertising);
+	phydev->lp_advertising = 0;
 	phydev->link = 0;
 	phydev->pause = 0;
 	phydev->asym_pause = 0;
@@ -489,12 +317,12 @@ static int mv3310_read_status(struct phy_device *phydev)
 		if (val < 0)
 			return val;
 
-		/* Read the link partner's 1G advertisement */
+		/* Read the link partner's 1G advertisment */
 		val = phy_read_mmd(phydev, MDIO_MMD_AN, MV_AN_STAT1000);
 		if (val < 0)
 			return val;
 
-		mii_stat1000_mod_linkmode_lpa_t(phydev->lp_advertising, val);
+		phydev->lp_advertising |= mii_stat1000_to_ethtool_lpa_t(val);
 
 		if (phydev->autoneg == AUTONEG_ENABLE)
 			phy_resolve_aneg_linkmode(phydev);
@@ -538,12 +366,19 @@ static struct phy_driver mv3310_drivers[] = {
 		.phy_id		= 0x002b09aa,
 		.phy_id_mask	= MARVELL_PHY_ID_MASK,
 		.name		= "mv88x3310",
-		.features	= PHY_10GBIT_FEATURES,
-		.soft_reset	= gen10g_no_soft_reset,
-		.config_init	= mv3310_config_init,
+		.features	= SUPPORTED_10baseT_Full |
+				  SUPPORTED_10baseT_Half |
+				  SUPPORTED_100baseT_Full |
+				  SUPPORTED_100baseT_Half |
+				  SUPPORTED_1000baseT_Full |
+				  SUPPORTED_Autoneg |
+				  SUPPORTED_TP |
+				  SUPPORTED_FIBRE |
+				  SUPPORTED_10000baseT_Full |
+				  SUPPORTED_Backplane,
 		.probe		= mv3310_probe,
-		.suspend	= mv3310_suspend,
-		.resume		= mv3310_resume,
+		.soft_reset	= mv3310_soft_reset,
+		.config_init	= mv3310_config_init,
 		.config_aneg	= mv3310_config_aneg,
 		.aneg_done	= mv3310_aneg_done,
 		.read_status	= mv3310_read_status,

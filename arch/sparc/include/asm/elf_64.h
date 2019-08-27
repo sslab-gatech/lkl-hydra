@@ -10,7 +10,6 @@
 #include <asm/processor.h>
 #include <asm/extable_64.h>
 #include <asm/spitfire.h>
-#include <asm/adi.h>
 
 /*
  * Sparc section types
@@ -216,13 +215,9 @@ extern unsigned int vdso_enabled;
 
 #define	ARCH_DLINFO							\
 do {									\
-	extern struct adi_config adi_state;				\
 	if (vdso_enabled)						\
 		NEW_AUX_ENT(AT_SYSINFO_EHDR,				\
 			    (unsigned long)current->mm->context.vdso);	\
-	NEW_AUX_ENT(AT_ADI_BLKSZ, adi_state.caps.blksz);		\
-	NEW_AUX_ENT(AT_ADI_NBITS, adi_state.caps.nbits);		\
-	NEW_AUX_ENT(AT_ADI_UEONADI, adi_state.caps.ue_on_adi);		\
 } while (0)
 
 struct linux_binprm;

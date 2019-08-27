@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 #
 # SPDX-License-Identifier: GPL-2.0
 #
@@ -9,11 +9,11 @@ import subprocess
 import select
 
 def read(sock, n):
-    buf = b''
+    buf = ''
     while len(buf) < n:
         rem = n - len(buf)
         try: s = sock.recv(rem)
-        except (socket.error) as e: return b''
+        except (socket.error), e: return ''
         buf += s
     return buf
 
@@ -22,7 +22,7 @@ def send(sock, s):
     count = 0
     while count < total:
         try: n = sock.send(s)
-        except (socket.error) as e: n = 0
+        except (socket.error), e: n = 0
         if n == 0:
             return count;
         count += n
@@ -43,7 +43,7 @@ host = socket.gethostname()
 
 try: serverSocket.bind((host, 0))
 except socket.error as msg:
-    print('bind fails: ' + str(msg))
+    print 'bind fails: ', msg
 
 sn = serverSocket.getsockname()
 serverPort = sn[1]
@@ -51,10 +51,10 @@ serverPort = sn[1]
 cmdStr = ("./tcp_client.py %d &") % (serverPort)
 os.system(cmdStr)
 
-buf = b''
+buf = ''
 n = 0
 while n < 500:
-    buf += b'.'
+    buf += '.'
     n += 1
 
 serverSocket.listen(MAX_PORTS)
@@ -79,5 +79,5 @@ while True:
                 serverSocket.close()
                 sys.exit(0)
     else:
-        print('Select timeout!')
+        print 'Select timeout!'
         sys.exit(1)

@@ -128,10 +128,9 @@ run_cmd_parmap() {
 	fi
 	echo $@ >>$DEBUG_FILE
 	$@ 2>>$DEBUG_FILE
-	err=$?
-	if [[ $err -ne 0 ]]; then
+	if [[ $? -ne 0 ]]; then
 		echo "coccicheck failed"
-		exit $err
+		exit $?
 	fi
 }
 

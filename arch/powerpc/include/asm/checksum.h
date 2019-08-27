@@ -12,8 +12,6 @@
 #ifdef CONFIG_GENERIC_CSUM
 #include <asm-generic/checksum.h>
 #else
-#include <linux/bitops.h>
-#include <linux/in6.h>
 /*
  * Computes the checksum of a memory block at src, length len,
  * and adds in "sum" (32-bit), while copying the block to dst.
@@ -57,7 +55,11 @@ static inline __sum16 csum_fold(__wsum sum)
 
 static inline u32 from64to32(u64 x)
 {
-	return (x + ror64(x, 32)) >> 32;
+	/* add up 32-bit and 32-bit for 32+c bit */
+	x = (x & 0xffffffff) + (x >> 32);
+	/* add up carry.. */
+	x = (x & 0xffffffff) + (x >> 32);
+	return (u32)x;
 }
 
 static inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr, __u32 len,
@@ -110,7 +112,7 @@ static inline __wsum csum_add(__wsum csum, __wsum addend)
 
 #ifdef __powerpc64__
 	res += (__force u64)addend;
-	return (__force __wsum)((u32)res + (res >> 32));
+	return (__force __wsum) from64to32(res);
 #else
 	asm("addc %0,%0,%1;"
 	    "addze %0,%0;"
@@ -211,11 +213,6 @@ static inline __sum16 ip_compute_csum(const void *buff, int len)
 {
 	return csum_fold(csum_partial(buff, len, 0));
 }
-
-#define _HAVE_ARCH_IPV6_CSUM
-__sum16 csum_ipv6_magic(const struct in6_addr *saddr,
-			const struct in6_addr *daddr,
-			__u32 len, __u8 proto, __wsum sum);
 
 #endif
 #endif /* __KERNEL__ */

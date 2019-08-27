@@ -77,7 +77,7 @@ static int cavium_rng_probe_vf(struct	pci_dev		*pdev,
 }
 
 /* Remove the VF */
-static void  cavium_rng_remove_vf(struct pci_dev *pdev)
+void  cavium_rng_remove_vf(struct pci_dev *pdev)
 {
 	struct cavium_rng *rng;
 

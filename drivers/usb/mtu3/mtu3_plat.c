@@ -200,14 +200,6 @@ static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
 	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
 	udelay(1);
 	mtu3_clrbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
-
-	/*
-	 * device ip may be powered on in firmware/BROM stage before entering
-	 * kernel stage;
-	 * power down device ip, otherwise ip-sleep will fail when working as
-	 * host only mode
-	 */
-	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL2, SSUSB_IP_DEV_PDN);
 }
 
 /* ignore the error if the clock does not exist */
@@ -455,7 +447,8 @@ static int mtu3_remove(struct platform_device *pdev)
  */
 static int __maybe_unused mtu3_suspend(struct device *dev)
 {
-	struct ssusb_mtk *ssusb = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct ssusb_mtk *ssusb = platform_get_drvdata(pdev);
 
 	dev_dbg(dev, "%s\n", __func__);
 
@@ -473,7 +466,8 @@ static int __maybe_unused mtu3_suspend(struct device *dev)
 
 static int __maybe_unused mtu3_resume(struct device *dev)
 {
-	struct ssusb_mtk *ssusb = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct ssusb_mtk *ssusb = platform_get_drvdata(pdev);
 	int ret;
 
 	dev_dbg(dev, "%s\n", __func__);

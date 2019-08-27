@@ -38,6 +38,7 @@
 #include <asm/8xx_immap.h>
 #include <asm/cpm1.h>
 #include <asm/io.h>
+#include <asm/tlbflush.h>
 #include <asm/rheap.h>
 #include <asm/prom.h>
 #include <asm/cpm.h>

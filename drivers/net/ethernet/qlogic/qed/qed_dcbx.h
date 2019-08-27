@@ -55,7 +55,6 @@ struct qed_dcbx_app_data {
 	u8 update;		/* Update indication */
 	u8 priority;		/* Priority */
 	u8 tc;			/* Traffic Class */
-	bool dont_add_vlan0;	/* Do not insert a vlan tag with id 0 */
 };
 
 #define QED_DCBX_VERSION_DISABLED       0
@@ -124,7 +123,4 @@ void qed_dcbx_info_free(struct qed_hwfn *p_hwfn);
 void qed_dcbx_set_pf_update_params(struct qed_dcbx_results *p_src,
 				   struct pf_update_ramrod_data *p_dest);
 
-#define QED_DCBX_DEFAULT_TC	0
-
-u8 qed_dcbx_get_priority_tc(struct qed_hwfn *p_hwfn, u8 pri);
 #endif

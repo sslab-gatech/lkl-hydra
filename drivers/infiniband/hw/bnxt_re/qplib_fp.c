@@ -36,8 +36,6 @@
  * Description: Fast Path Operators
  */
 
-#define dev_fmt(fmt) "QPLIB: " fmt
-
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/sched.h>
@@ -73,7 +71,8 @@ static void __bnxt_qplib_add_flush_qp(struct bnxt_qplib_qp *qp)
 
 	if (!qp->sq.flushed) {
 		dev_dbg(&scq->hwq.pdev->dev,
-			"FP: Adding to SQ Flush list = %p\n", qp);
+			"QPLIB: FP: Adding to SQ Flush list = %p",
+			qp);
 		bnxt_qplib_cancel_phantom_processing(qp);
 		list_add_tail(&qp->sq_flush, &scq->sqf_head);
 		qp->sq.flushed = true;
@@ -81,7 +80,8 @@ static void __bnxt_qplib_add_flush_qp(struct bnxt_qplib_qp *qp)
 	if (!qp->srq) {
 		if (!qp->rq.flushed) {
 			dev_dbg(&rcq->hwq.pdev->dev,
-				"FP: Adding to RQ Flush list = %p\n", qp);
+				"QPLIB: FP: Adding to RQ Flush list = %p",
+				qp);
 			list_add_tail(&qp->rq_flush, &rcq->rqf_head);
 			qp->rq.flushed = true;
 		}
@@ -196,7 +196,7 @@ static int bnxt_qplib_alloc_qp_hdr_buf(struct bnxt_qplib_res *res,
 				       struct bnxt_qplib_qp *qp)
 {
 	struct bnxt_qplib_q *rq = &qp->rq;
-	struct bnxt_qplib_q *sq = &qp->sq;
+	struct bnxt_qplib_q *sq = &qp->rq;
 	int rc = 0;
 
 	if (qp->sq_hdr_buf_size && sq->hwq.max_elements) {
@@ -207,7 +207,7 @@ static int bnxt_qplib_alloc_qp_hdr_buf(struct bnxt_qplib_res *res,
 		if (!qp->sq_hdr_buf) {
 			rc = -ENOMEM;
 			dev_err(&res->pdev->dev,
-				"Failed to create sq_hdr_buf\n");
+				"QPLIB: Failed to create sq_hdr_buf");
 			goto fail;
 		}
 	}
@@ -221,7 +221,7 @@ static int bnxt_qplib_alloc_qp_hdr_buf(struct bnxt_qplib_res *res,
 		if (!qp->rq_hdr_buf) {
 			rc = -ENOMEM;
 			dev_err(&res->pdev->dev,
-				"Failed to create rq_hdr_buf\n");
+				"QPLIB: Failed to create rq_hdr_buf");
 			goto fail;
 		}
 	}
@@ -277,7 +277,8 @@ static void bnxt_qplib_service_nq(unsigned long data)
 				num_cqne_processed++;
 			else
 				dev_warn(&nq->pdev->dev,
-					 "cqn - type 0x%x not handled\n", type);
+					 "QPLIB: cqn - type 0x%x not handled",
+					 type);
 			spin_unlock_bh(&cq->compl_lock);
 			break;
 		}
@@ -297,7 +298,7 @@ static void bnxt_qplib_service_nq(unsigned long data)
 				num_srqne_processed++;
 			else
 				dev_warn(&nq->pdev->dev,
-					 "SRQ event 0x%x not handled\n",
+					 "QPLIB: SRQ event 0x%x not handled",
 					 nqsrqe->event);
 			break;
 		}
@@ -305,7 +306,8 @@ static void bnxt_qplib_service_nq(unsigned long data)
 			break;
 		default:
 			dev_warn(&nq->pdev->dev,
-				 "nqe with type = 0x%x not handled\n", type);
+				 "QPLIB: nqe with type = 0x%x not handled",
+				 type);
 			break;
 		}
 		raw_cons++;
@@ -334,33 +336,22 @@ static irqreturn_t bnxt_qplib_nq_irq(int irq, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
-void bnxt_qplib_nq_stop_irq(struct bnxt_qplib_nq *nq, bool kill)
-{
-	tasklet_disable(&nq->worker);
-	/* Mask h/w interrupt */
-	NQ_DB(nq->bar_reg_iomem, nq->hwq.cons, nq->hwq.max_elements);
-	/* Sync with last running IRQ handler */
-	synchronize_irq(nq->vector);
-	if (kill)
-		tasklet_kill(&nq->worker);
-	if (nq->requested) {
-		irq_set_affinity_hint(nq->vector, NULL);
-		free_irq(nq->vector, nq);
-		nq->requested = false;
-	}
-}
-
 void bnxt_qplib_disable_nq(struct bnxt_qplib_nq *nq)
 {
 	if (nq->cqn_wq) {
 		destroy_workqueue(nq->cqn_wq);
 		nq->cqn_wq = NULL;
 	}
-
 	/* Make sure the HW is stopped! */
-	if (nq->requested)
-		bnxt_qplib_nq_stop_irq(nq, true);
+	synchronize_irq(nq->vector);
+	tasklet_disable(&nq->worker);
+	tasklet_kill(&nq->worker);
 
+	if (nq->requested) {
+		irq_set_affinity_hint(nq->vector, NULL);
+		free_irq(nq->vector, nq);
+		nq->requested = false;
+	}
 	if (nq->bar_reg_iomem)
 		iounmap(nq->bar_reg_iomem);
 	nq->bar_reg_iomem = NULL;
@@ -368,40 +359,6 @@ void bnxt_qplib_disable_nq(struct bnxt_qplib_nq *nq)
 	nq->cqn_handler = NULL;
 	nq->srqn_handler = NULL;
 	nq->vector = 0;
-}
-
-int bnxt_qplib_nq_start_irq(struct bnxt_qplib_nq *nq, int nq_indx,
-			    int msix_vector, bool need_init)
-{
-	int rc;
-
-	if (nq->requested)
-		return -EFAULT;
-
-	nq->vector = msix_vector;
-	if (need_init)
-		tasklet_init(&nq->worker, bnxt_qplib_service_nq,
-			     (unsigned long)nq);
-	else
-		tasklet_enable(&nq->worker);
-
-	snprintf(nq->name, sizeof(nq->name), "bnxt_qplib_nq-%d", nq_indx);
-	rc = request_irq(nq->vector, bnxt_qplib_nq_irq, 0, nq->name, nq);
-	if (rc)
-		return rc;
-
-	cpumask_clear(&nq->mask);
-	cpumask_set_cpu(nq_indx, &nq->mask);
-	rc = irq_set_affinity_hint(nq->vector, &nq->mask);
-	if (rc) {
-		dev_warn(&nq->pdev->dev,
-			 "set affinity failed; vector: %d nq_idx: %d\n",
-			 nq->vector, nq_indx);
-	}
-	nq->requested = true;
-	NQ_DB_REARM(nq->bar_reg_iomem, nq->hwq.cons, nq->hwq.max_elements);
-
-	return rc;
 }
 
 int bnxt_qplib_enable_nq(struct pci_dev *pdev, struct bnxt_qplib_nq *nq,
@@ -415,17 +372,41 @@ int bnxt_qplib_enable_nq(struct pci_dev *pdev, struct bnxt_qplib_nq *nq,
 	resource_size_t nq_base;
 	int rc = -1;
 
+	nq->pdev = pdev;
+	nq->vector = msix_vector;
 	if (cqn_handler)
 		nq->cqn_handler = cqn_handler;
 
 	if (srqn_handler)
 		nq->srqn_handler = srqn_handler;
 
+	tasklet_init(&nq->worker, bnxt_qplib_service_nq, (unsigned long)nq);
+
 	/* Have a task to schedule CQ notifiers in post send case */
 	nq->cqn_wq  = create_singlethread_workqueue("bnxt_qplib_nq");
 	if (!nq->cqn_wq)
-		return -ENOMEM;
+		goto fail;
 
+	nq->requested = false;
+	memset(nq->name, 0, 32);
+	sprintf(nq->name, "bnxt_qplib_nq-%d", nq_idx);
+	rc = request_irq(nq->vector, bnxt_qplib_nq_irq, 0, nq->name, nq);
+	if (rc) {
+		dev_err(&nq->pdev->dev,
+			"Failed to request IRQ for NQ: %#x", rc);
+		goto fail;
+	}
+
+	cpumask_clear(&nq->mask);
+	cpumask_set_cpu(nq_idx, &nq->mask);
+	rc = irq_set_affinity_hint(nq->vector, &nq->mask);
+	if (rc) {
+		dev_warn(&nq->pdev->dev,
+			 "QPLIB: set affinity failed; vector: %d nq_idx: %d\n",
+			 nq->vector, nq_idx);
+	}
+
+	nq->requested = true;
 	nq->bar_reg = NQ_CONS_PCI_BAR_REGION;
 	nq->bar_reg_off = bar_reg_offset;
 	nq_base = pci_resource_start(pdev, nq->bar_reg);
@@ -438,13 +419,7 @@ int bnxt_qplib_enable_nq(struct pci_dev *pdev, struct bnxt_qplib_nq *nq,
 		rc = -ENOMEM;
 		goto fail;
 	}
-
-	rc = bnxt_qplib_nq_start_irq(nq, nq_idx, msix_vector, true);
-	if (rc) {
-		dev_err(&nq->pdev->dev,
-			"Failed to request irq for nq-idx %d\n", nq_idx);
-		goto fail;
-	}
+	NQ_DB_REARM(nq->bar_reg_iomem, nq->hwq.cons, nq->hwq.max_elements);
 
 	return 0;
 fail:
@@ -661,8 +636,8 @@ int bnxt_qplib_post_srq_recv(struct bnxt_qplib_srq *srq,
 
 	spin_lock(&srq_hwq->lock);
 	if (srq->start_idx == srq->last_idx) {
-		dev_err(&srq_hwq->pdev->dev,
-			"FP: SRQ (0x%x) is full!\n", srq->id);
+		dev_err(&srq_hwq->pdev->dev, "QPLIB: FP: SRQ (0x%x) is full!",
+			srq->id);
 		rc = -EINVAL;
 		spin_unlock(&srq_hwq->lock);
 		goto done;
@@ -1323,7 +1298,7 @@ int bnxt_qplib_query_qp(struct bnxt_qplib_res *res, struct bnxt_qplib_qp *qp)
 		}
 	}
 	if (i == res->sgid_tbl.max)
-		dev_warn(&res->pdev->dev, "SGID not found??\n");
+		dev_warn(&res->pdev->dev, "QPLIB: SGID not found??");
 
 	qp->ah.hop_limit = sb->hop_limit;
 	qp->ah.traffic_class = sb->traffic_class;
@@ -1535,7 +1510,7 @@ int bnxt_qplib_post_send(struct bnxt_qplib_qp *qp,
 
 	if (bnxt_qplib_queue_full(sq)) {
 		dev_err(&sq->hwq.pdev->dev,
-			"prod = %#x cons = %#x qdepth = %#x delta = %#x\n",
+			"QPLIB: prod = %#x cons = %#x qdepth = %#x delta = %#x",
 			sq->hwq.prod, sq->hwq.cons, sq->hwq.max_elements,
 			sq->q_full_delta);
 		rc = -ENOMEM;
@@ -1560,7 +1535,7 @@ int bnxt_qplib_post_send(struct bnxt_qplib_qp *qp,
 		/* Copy the inline data */
 		if (wqe->inline_len > BNXT_QPLIB_SWQE_MAX_INLINE_LENGTH) {
 			dev_warn(&sq->hwq.pdev->dev,
-				 "Inline data length > 96 detected\n");
+				 "QPLIB: Inline data length > 96 detected");
 			data_len = BNXT_QPLIB_SWQE_MAX_INLINE_LENGTH;
 		} else {
 			data_len = wqe->inline_len;
@@ -1775,7 +1750,7 @@ done:
 			queue_work(qp->scq->nq->cqn_wq, &nq_work->work);
 		} else {
 			dev_err(&sq->hwq.pdev->dev,
-				"FP: Failed to allocate SQ nq_work!\n");
+				"QPLIB: FP: Failed to allocate SQ nq_work!");
 			rc = -ENOMEM;
 		}
 	}
@@ -1814,12 +1789,13 @@ int bnxt_qplib_post_recv(struct bnxt_qplib_qp *qp,
 	if (qp->state == CMDQ_MODIFY_QP_NEW_STATE_ERR) {
 		sch_handler = true;
 		dev_dbg(&rq->hwq.pdev->dev,
-			"%s: Error QP. Scheduling for poll_cq\n", __func__);
+			"%s Error QP. Scheduling for poll_cq\n",
+			__func__);
 		goto queue_err;
 	}
 	if (bnxt_qplib_queue_full(rq)) {
 		dev_err(&rq->hwq.pdev->dev,
-			"FP: QP (0x%x) RQ is full!\n", qp->id);
+			"QPLIB: FP: QP (0x%x) RQ is full!", qp->id);
 		rc = -EINVAL;
 		goto done;
 	}
@@ -1868,7 +1844,7 @@ queue_err:
 			queue_work(qp->rcq->nq->cqn_wq, &nq_work->work);
 		} else {
 			dev_err(&rq->hwq.pdev->dev,
-				"FP: Failed to allocate RQ nq_work!\n");
+				"QPLIB: FP: Failed to allocate RQ nq_work!");
 			rc = -ENOMEM;
 		}
 	}
@@ -1930,7 +1906,7 @@ int bnxt_qplib_create_cq(struct bnxt_qplib_res *res, struct bnxt_qplib_cq *cq)
 
 	if (!cq->dpi) {
 		dev_err(&rcfw->pdev->dev,
-			"FP: CREATE_CQ failed due to NULL DPI\n");
+			"QPLIB: FP: CREATE_CQ failed due to NULL DPI");
 		return -EINVAL;
 	}
 	req.dpi = cpu_to_le32(cq->dpi->dpi);
@@ -1967,7 +1943,6 @@ int bnxt_qplib_create_cq(struct bnxt_qplib_res *res, struct bnxt_qplib_cq *cq)
 	INIT_LIST_HEAD(&cq->sqf_head);
 	INIT_LIST_HEAD(&cq->rqf_head);
 	spin_lock_init(&cq->compl_lock);
-	spin_lock_init(&cq->flush_lock);
 
 	bnxt_qplib_arm_cq_enable(cq);
 	return 0;
@@ -2171,7 +2146,7 @@ static int do_wa9060(struct bnxt_qplib_qp *qp, struct bnxt_qplib_cq *cq,
 						 *  comes back
 						 */
 						dev_dbg(&cq->hwq.pdev->dev,
-							"FP: Got Phantom CQE\n");
+							"FP:Got Phantom CQE");
 						sq->condition = false;
 						sq->single = true;
 						rc = 0;
@@ -2188,7 +2163,7 @@ static int do_wa9060(struct bnxt_qplib_qp *qp, struct bnxt_qplib_cq *cq,
 			peek_raw_cq_cons++;
 		}
 		dev_err(&cq->hwq.pdev->dev,
-			"Should not have come here! cq_cons=0x%x qp=0x%x sq cons sw=0x%x hw=0x%x\n",
+			"Should not have come here! cq_cons=0x%x qp=0x%x sq cons sw=0x%x hw=0x%x",
 			cq_cons, qp->id, sw_sq_cons, cqe_sq_cons);
 		rc = -EINVAL;
 	}
@@ -2212,7 +2187,7 @@ static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 				      le64_to_cpu(hwcqe->qp_handle));
 	if (!qp) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: Process Req qp is NULL\n");
+			"QPLIB: FP: Process Req qp is NULL");
 		return -EINVAL;
 	}
 	sq = &qp->sq;
@@ -2220,14 +2195,16 @@ static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 	cqe_sq_cons = HWQ_CMP(le16_to_cpu(hwcqe->sq_cons_idx), &sq->hwq);
 	if (cqe_sq_cons > sq->hwq.max_elements) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: CQ Process req reported sq_cons_idx 0x%x which exceeded max 0x%x\n",
+			"QPLIB: FP: CQ Process req reported ");
+		dev_err(&cq->hwq.pdev->dev,
+			"QPLIB: sq_cons_idx 0x%x which exceeded max 0x%x",
 			cqe_sq_cons, sq->hwq.max_elements);
 		return -EINVAL;
 	}
 
 	if (qp->sq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		goto done;
 	}
 	/* Require to walk the sq's swq to fabricate CQEs for all previously
@@ -2259,7 +2236,9 @@ static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 		    hwcqe->status != CQ_REQ_STATUS_OK) {
 			cqe->status = hwcqe->status;
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Processed Req wr_id[%d] = 0x%llx with status 0x%x\n",
+				"QPLIB: FP: CQ Processed Req ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id[%d] = 0x%llx with status 0x%x",
 				sw_sq_cons, cqe->wr_id, cqe->status);
 			cqe++;
 			(*budget)--;
@@ -2325,12 +2304,12 @@ static int bnxt_qplib_cq_process_res_rc(struct bnxt_qplib_cq *cq,
 	qp = (struct bnxt_qplib_qp *)((unsigned long)
 				      le64_to_cpu(hwcqe->qp_handle));
 	if (!qp) {
-		dev_err(&cq->hwq.pdev->dev, "process_cq RC qp is NULL\n");
+		dev_err(&cq->hwq.pdev->dev, "QPLIB: process_cq RC qp is NULL");
 		return -EINVAL;
 	}
 	if (qp->rq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		goto done;
 	}
 
@@ -2349,9 +2328,11 @@ static int bnxt_qplib_cq_process_res_rc(struct bnxt_qplib_cq *cq,
 		srq = qp->srq;
 		if (!srq)
 			return -EINVAL;
-		if (wr_id_idx >= srq->hwq.max_elements) {
+		if (wr_id_idx > srq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process RC wr_id idx 0x%x exceeded SRQ max 0x%x\n",
+				"QPLIB: FP: CQ Process RC ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id idx 0x%x exceeded SRQ max 0x%x",
 				wr_id_idx, srq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2362,9 +2343,11 @@ static int bnxt_qplib_cq_process_res_rc(struct bnxt_qplib_cq *cq,
 		*pcqe = cqe;
 	} else {
 		rq = &qp->rq;
-		if (wr_id_idx >= rq->hwq.max_elements) {
+		if (wr_id_idx > rq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process RC wr_id idx 0x%x exceeded RQ max 0x%x\n",
+				"QPLIB: FP: CQ Process RC ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id idx 0x%x exceeded RQ max 0x%x",
 				wr_id_idx, rq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2400,12 +2383,12 @@ static int bnxt_qplib_cq_process_res_ud(struct bnxt_qplib_cq *cq,
 	qp = (struct bnxt_qplib_qp *)((unsigned long)
 				      le64_to_cpu(hwcqe->qp_handle));
 	if (!qp) {
-		dev_err(&cq->hwq.pdev->dev, "process_cq UD qp is NULL\n");
+		dev_err(&cq->hwq.pdev->dev, "QPLIB: process_cq UD qp is NULL");
 		return -EINVAL;
 	}
 	if (qp->rq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		goto done;
 	}
 	cqe = *pcqe;
@@ -2428,9 +2411,11 @@ static int bnxt_qplib_cq_process_res_ud(struct bnxt_qplib_cq *cq,
 		if (!srq)
 			return -EINVAL;
 
-		if (wr_id_idx >= srq->hwq.max_elements) {
+		if (wr_id_idx > srq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process UD wr_id idx 0x%x exceeded SRQ max 0x%x\n",
+				"QPLIB: FP: CQ Process UD ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id idx 0x%x exceeded SRQ max 0x%x",
 				wr_id_idx, srq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2441,9 +2426,11 @@ static int bnxt_qplib_cq_process_res_ud(struct bnxt_qplib_cq *cq,
 		*pcqe = cqe;
 	} else {
 		rq = &qp->rq;
-		if (wr_id_idx >= rq->hwq.max_elements) {
+		if (wr_id_idx > rq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process UD wr_id idx 0x%x exceeded RQ max 0x%x\n",
+				"QPLIB: FP: CQ Process UD ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id idx 0x%x exceeded RQ max 0x%x",
 				wr_id_idx, rq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2495,12 +2482,13 @@ static int bnxt_qplib_cq_process_res_raweth_qp1(struct bnxt_qplib_cq *cq,
 	qp = (struct bnxt_qplib_qp *)((unsigned long)
 				      le64_to_cpu(hwcqe->qp_handle));
 	if (!qp) {
-		dev_err(&cq->hwq.pdev->dev, "process_cq Raw/QP1 qp is NULL\n");
+		dev_err(&cq->hwq.pdev->dev,
+			"QPLIB: process_cq Raw/QP1 qp is NULL");
 		return -EINVAL;
 	}
 	if (qp->rq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		goto done;
 	}
 	cqe = *pcqe;
@@ -2529,12 +2517,14 @@ static int bnxt_qplib_cq_process_res_raweth_qp1(struct bnxt_qplib_cq *cq,
 		srq = qp->srq;
 		if (!srq) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: SRQ used but not defined??\n");
+				"QPLIB: FP: SRQ used but not defined??");
 			return -EINVAL;
 		}
-		if (wr_id_idx >= srq->hwq.max_elements) {
+		if (wr_id_idx > srq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process Raw/QP1 wr_id idx 0x%x exceeded SRQ max 0x%x\n",
+				"QPLIB: FP: CQ Process Raw/QP1 ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: wr_id idx 0x%x exceeded SRQ max 0x%x",
 				wr_id_idx, srq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2545,9 +2535,11 @@ static int bnxt_qplib_cq_process_res_raweth_qp1(struct bnxt_qplib_cq *cq,
 		*pcqe = cqe;
 	} else {
 		rq = &qp->rq;
-		if (wr_id_idx >= rq->hwq.max_elements) {
+		if (wr_id_idx > rq->hwq.max_elements) {
 			dev_err(&cq->hwq.pdev->dev,
-				"FP: CQ Process Raw/QP1 RQ wr_id idx 0x%x exceeded RQ max 0x%x\n",
+				"QPLIB: FP: CQ Process Raw/QP1 RQ wr_id ");
+			dev_err(&cq->hwq.pdev->dev,
+				"QPLIB: ix 0x%x exceeded RQ max 0x%x",
 				wr_id_idx, rq->hwq.max_elements);
 			return -EINVAL;
 		}
@@ -2582,14 +2574,14 @@ static int bnxt_qplib_cq_process_terminal(struct bnxt_qplib_cq *cq,
 	/* Check the Status */
 	if (hwcqe->status != CQ_TERMINAL_STATUS_OK)
 		dev_warn(&cq->hwq.pdev->dev,
-			 "FP: CQ Process Terminal Error status = 0x%x\n",
+			 "QPLIB: FP: CQ Process Terminal Error status = 0x%x",
 			 hwcqe->status);
 
 	qp = (struct bnxt_qplib_qp *)((unsigned long)
 				      le64_to_cpu(hwcqe->qp_handle));
 	if (!qp) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: CQ Process terminal qp is NULL\n");
+			"QPLIB: FP: CQ Process terminal qp is NULL");
 		return -EINVAL;
 	}
 
@@ -2605,14 +2597,16 @@ static int bnxt_qplib_cq_process_terminal(struct bnxt_qplib_cq *cq,
 
 	if (cqe_cons > sq->hwq.max_elements) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: CQ Process terminal reported sq_cons_idx 0x%x which exceeded max 0x%x\n",
+			"QPLIB: FP: CQ Process terminal reported ");
+		dev_err(&cq->hwq.pdev->dev,
+			"QPLIB: sq_cons_idx 0x%x which exceeded max 0x%x",
 			cqe_cons, sq->hwq.max_elements);
 		goto do_rq;
 	}
 
 	if (qp->sq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		goto sq_done;
 	}
 
@@ -2653,14 +2647,16 @@ do_rq:
 		goto done;
 	} else if (cqe_cons > rq->hwq.max_elements) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: CQ Processed terminal reported rq_cons_idx 0x%x exceeds max 0x%x\n",
+			"QPLIB: FP: CQ Processed terminal ");
+		dev_err(&cq->hwq.pdev->dev,
+			"QPLIB: reported rq_cons_idx 0x%x exceeds max 0x%x",
 			cqe_cons, rq->hwq.max_elements);
 		goto done;
 	}
 
 	if (qp->rq.flushed) {
 		dev_dbg(&cq->hwq.pdev->dev,
-			"%s: QP in Flush QP = %p\n", __func__, qp);
+			"%s: QPLIB: QP in Flush QP = %p\n", __func__, qp);
 		rc = 0;
 		goto done;
 	}
@@ -2682,7 +2678,7 @@ static int bnxt_qplib_cq_process_cutoff(struct bnxt_qplib_cq *cq,
 	/* Check the Status */
 	if (hwcqe->status != CQ_CUTOFF_STATUS_OK) {
 		dev_err(&cq->hwq.pdev->dev,
-			"FP: CQ Process Cutoff Error status = 0x%x\n",
+			"QPLIB: FP: CQ Process Cutoff Error status = 0x%x",
 			hwcqe->status);
 		return -EINVAL;
 	}
@@ -2702,12 +2698,16 @@ int bnxt_qplib_process_flush_list(struct bnxt_qplib_cq *cq,
 
 	spin_lock_irqsave(&cq->flush_lock, flags);
 	list_for_each_entry(qp, &cq->sqf_head, sq_flush) {
-		dev_dbg(&cq->hwq.pdev->dev, "FP: Flushing SQ QP= %p\n", qp);
+		dev_dbg(&cq->hwq.pdev->dev,
+			"QPLIB: FP: Flushing SQ QP= %p",
+			qp);
 		__flush_sq(&qp->sq, qp, &cqe, &budget);
 	}
 
 	list_for_each_entry(qp, &cq->rqf_head, rq_flush) {
-		dev_dbg(&cq->hwq.pdev->dev, "FP: Flushing RQ QP= %p\n", qp);
+		dev_dbg(&cq->hwq.pdev->dev,
+			"QPLIB: FP: Flushing RQ QP= %p",
+			qp);
 		__flush_rq(&qp->rq, qp, &cqe, &budget);
 	}
 	spin_unlock_irqrestore(&cq->flush_lock, flags);
@@ -2775,7 +2775,7 @@ int bnxt_qplib_poll_cq(struct bnxt_qplib_cq *cq, struct bnxt_qplib_cqe *cqe,
 			goto exit;
 		default:
 			dev_err(&cq->hwq.pdev->dev,
-				"process_cq unknown type 0x%lx\n",
+				"QPLIB: process_cq unknown type 0x%lx",
 				hw_cqe->cqe_type_toggle &
 				CQ_BASE_CQE_TYPE_MASK);
 			rc = -EINVAL;
@@ -2788,7 +2788,7 @@ int bnxt_qplib_poll_cq(struct bnxt_qplib_cq *cq, struct bnxt_qplib_cqe *cqe,
 			 * next one
 			 */
 			dev_err(&cq->hwq.pdev->dev,
-				"process_cqe error rc = 0x%x\n", rc);
+				"QPLIB: process_cqe error rc = 0x%x", rc);
 		}
 		raw_cons++;
 	}

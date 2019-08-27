@@ -491,7 +491,13 @@ struct inode *diReadSpecial(struct super_block *sb, ino_t inum, int secondary)
 	/* release the page */
 	release_metapage(mp);
 
-	inode_fake_hash(ip);
+	/*
+	 * __mark_inode_dirty expects inodes to be hashed.  Since we don't
+	 * want special inodes in the fileset inode space, we make them
+	 * appear hashed, but do not put on any lists.  hlist_del()
+	 * will work fine and require no locking.
+	 */
+	hlist_add_fake(&ip->i_hash);
 
 	return (ip);
 }

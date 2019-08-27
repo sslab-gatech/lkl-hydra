@@ -1,10 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0
- *
+/*
  * This file contains the functions and defines necessary to modify and
  * use the SuperH page table tree.
  *
  * Copyright (C) 1999 Niibe Yutaka
  * Copyright (C) 2002 - 2007 Paul Mundt
+ *
+ * This file is subject to the terms and conditions of the GNU General
+ * Public License.  See the file "COPYING" in the main directory of this
+ * archive for more details.
  */
 #ifndef __ASM_SH_PGTABLE_H
 #define __ASM_SH_PGTABLE_H
@@ -152,6 +155,8 @@ extern void page_table_range_init(unsigned long start, unsigned long end,
 /* arch/sh/mm/mmap.c */
 #define HAVE_ARCH_UNMAPPED_AREA
 #define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
+
+#define __HAVE_ARCH_PTE_SPECIAL
 
 #include <asm-generic/pgtable.h>
 

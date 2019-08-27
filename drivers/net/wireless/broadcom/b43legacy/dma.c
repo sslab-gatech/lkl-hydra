@@ -331,9 +331,9 @@ void free_descriptor_buffer(struct b43legacy_dmaring *ring,
 static int alloc_ringmemory(struct b43legacy_dmaring *ring)
 {
 	/* GFP flags must match the flags in free_ringmemory()! */
-	ring->descbase = dma_alloc_coherent(ring->dev->dev->dma_dev,
-					    B43legacy_DMA_RINGMEMSIZE,
-					    &(ring->dmabase), GFP_KERNEL);
+	ring->descbase = dma_zalloc_coherent(ring->dev->dev->dma_dev,
+					     B43legacy_DMA_RINGMEMSIZE,
+					     &(ring->dmabase), GFP_KERNEL);
 	if (!ring->descbase)
 		return -ENOMEM;
 
@@ -1064,7 +1064,7 @@ static int dma_tx_fragment(struct b43legacy_dmaring *ring,
 	meta->dmaaddr = map_descbuffer(ring, skb->data, skb->len, 1);
 	/* create a bounce buffer in zone_dma on mapping failure. */
 	if (b43legacy_dma_mapping_error(ring, meta->dmaaddr, skb->len, 1)) {
-		bounce_skb = alloc_skb(skb->len, GFP_KERNEL | GFP_DMA);
+		bounce_skb = alloc_skb(skb->len, GFP_ATOMIC | GFP_DMA);
 		if (!bounce_skb) {
 			ring->current_slot = old_top_slot;
 			ring->used_slots = old_used_slots;
@@ -1149,7 +1149,7 @@ int b43legacy_dma_tx(struct b43legacy_wldev *dev,
 		return -ENOSPC;
 	}
 
-	if (WARN_ON(free_slots(ring) < SLOTS_PER_PACKET)) {
+	if (unlikely(WARN_ON(free_slots(ring) < SLOTS_PER_PACKET))) {
 		/* If we get here, we have a real error with the queue
 		 * full, but queues not stopped. */
 		b43legacyerr(dev->wl, "DMA queue overflow\n");

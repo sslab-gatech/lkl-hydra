@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Dummy stubs used when CONFIG_POSIX_TIMERS=n
  *
  * Created by:  Nicolas Pitre, July 2016
  * Copyright:   (C) 2016 Linaro Limited
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/linkage.h>
@@ -16,11 +19,6 @@
 #include <linux/posix-timers.h>
 #include <linux/compat.h>
 
-#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
-/* Architectures may override SYS_NI and COMPAT_SYS_NI */
-#include <asm/syscall_wrapper.h>
-#endif
-
 asmlinkage long sys_ni_posix_timers(void)
 {
 	pr_err_once("process %d (%s) attempted a POSIX timer syscall "
@@ -29,13 +27,8 @@ asmlinkage long sys_ni_posix_timers(void)
 	return -ENOSYS;
 }
 
-#ifndef SYS_NI
 #define SYS_NI(name)  SYSCALL_ALIAS(sys_##name, sys_ni_posix_timers)
-#endif
-
-#ifndef COMPAT_SYS_NI
 #define COMPAT_SYS_NI(name)  SYSCALL_ALIAS(compat_sys_##name, sys_ni_posix_timers)
-#endif
 
 SYS_NI(timer_create);
 SYS_NI(timer_gettime);
@@ -56,7 +49,7 @@ SYS_NI(alarm);
  */
 
 SYSCALL_DEFINE2(clock_settime, const clockid_t, which_clock,
-		const struct __kernel_timespec __user *, tp)
+		const struct timespec __user *, tp)
 {
 	struct timespec64 new_tp;
 
@@ -78,7 +71,7 @@ int do_clock_gettime(clockid_t which_clock, struct timespec64 *tp)
 		ktime_get_ts64(tp);
 		break;
 	case CLOCK_BOOTTIME:
-		ktime_get_boottime_ts64(tp);
+		get_monotonic_boottime64(tp);
 		break;
 	default:
 		return -EINVAL;
@@ -87,7 +80,7 @@ int do_clock_gettime(clockid_t which_clock, struct timespec64 *tp)
 	return 0;
 }
 SYSCALL_DEFINE2(clock_gettime, const clockid_t, which_clock,
-		struct __kernel_timespec __user *, tp)
+		struct timespec __user *, tp)
 {
 	int ret;
 	struct timespec64 kernel_tp;
@@ -101,7 +94,7 @@ SYSCALL_DEFINE2(clock_gettime, const clockid_t, which_clock,
 	return 0;
 }
 
-SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock, struct __kernel_timespec __user *, tp)
+SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock, struct timespec __user *, tp)
 {
 	struct timespec64 rtn_tp = {
 		.tv_sec = 0,
@@ -121,8 +114,8 @@ SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock, struct __kernel_time
 }
 
 SYSCALL_DEFINE4(clock_nanosleep, const clockid_t, which_clock, int, flags,
-		const struct __kernel_timespec __user *, rqtp,
-		struct __kernel_timespec __user *, rmtp)
+		const struct timespec __user *, rqtp,
+		struct timespec __user *, rmtp)
 {
 	struct timespec64 t;
 
@@ -155,24 +148,22 @@ COMPAT_SYS_NI(timer_settime);
 COMPAT_SYS_NI(timer_gettime);
 COMPAT_SYS_NI(getitimer);
 COMPAT_SYS_NI(setitimer);
-#endif
 
-#ifdef CONFIG_COMPAT_32BIT_TIME
 COMPAT_SYSCALL_DEFINE2(clock_settime, const clockid_t, which_clock,
-		       struct old_timespec32 __user *, tp)
+		       struct compat_timespec __user *, tp)
 {
 	struct timespec64 new_tp;
 
 	if (which_clock != CLOCK_REALTIME)
 		return -EINVAL;
-	if (get_old_timespec32(&new_tp, tp))
+	if (compat_get_timespec64(&new_tp, tp))
 		return -EFAULT;
 
 	return do_sys_settimeofday64(&new_tp, NULL);
 }
 
 COMPAT_SYSCALL_DEFINE2(clock_gettime, clockid_t, which_clock,
-		       struct old_timespec32 __user *, tp)
+		       struct compat_timespec __user *, tp)
 {
 	int ret;
 	struct timespec64 kernel_tp;
@@ -181,13 +172,13 @@ COMPAT_SYSCALL_DEFINE2(clock_gettime, clockid_t, which_clock,
 	if (ret)
 		return ret;
 
-	if (put_old_timespec32(&kernel_tp, tp))
+	if (compat_put_timespec64(&kernel_tp, tp))
 		return -EFAULT;
 	return 0;
 }
 
 COMPAT_SYSCALL_DEFINE2(clock_getres, clockid_t, which_clock,
-		       struct old_timespec32 __user *, tp)
+		       struct compat_timespec __user *, tp)
 {
 	struct timespec64 rtn_tp = {
 		.tv_sec = 0,
@@ -198,7 +189,7 @@ COMPAT_SYSCALL_DEFINE2(clock_getres, clockid_t, which_clock,
 	case CLOCK_REALTIME:
 	case CLOCK_MONOTONIC:
 	case CLOCK_BOOTTIME:
-		if (put_old_timespec32(&rtn_tp, tp))
+		if (compat_put_timespec64(&rtn_tp, tp))
 			return -EFAULT;
 		return 0;
 	default:
@@ -207,8 +198,8 @@ COMPAT_SYSCALL_DEFINE2(clock_getres, clockid_t, which_clock,
 }
 
 COMPAT_SYSCALL_DEFINE4(clock_nanosleep, clockid_t, which_clock, int, flags,
-		       struct old_timespec32 __user *, rqtp,
-		       struct old_timespec32 __user *, rmtp)
+		       struct compat_timespec __user *, rqtp,
+		       struct compat_timespec __user *, rmtp)
 {
 	struct timespec64 t;
 
@@ -221,7 +212,7 @@ COMPAT_SYSCALL_DEFINE4(clock_nanosleep, clockid_t, which_clock, int, flags,
 		return -EINVAL;
 	}
 
-	if (get_old_timespec32(&t, rqtp))
+	if (compat_get_timespec64(&t, rqtp))
 		return -EFAULT;
 	if (!timespec64_valid(&t))
 		return -EINVAL;

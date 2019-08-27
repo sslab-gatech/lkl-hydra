@@ -300,10 +300,8 @@ static void ushc_request(struct mmc_host *mmc, struct mmc_request *req)
 			pipe = usb_sndbulkpipe(ushc->usb_dev, 2);
 
 		usb_fill_bulk_urb(ushc->data_urb, ushc->usb_dev, pipe,
-				  NULL, data->sg->length,
+				  sg_virt(data->sg), data->sg->length,
 				  data_callback, ushc);
-		ushc->data_urb->num_sgs = 1;
-		ushc->data_urb->sg = data->sg;
 		ret = usb_submit_urb(ushc->data_urb, GFP_ATOMIC);
 		if (ret < 0)
 			goto out;
@@ -311,6 +309,8 @@ static void ushc_request(struct mmc_host *mmc, struct mmc_request *req)
 
 	/* Submit CSW. */
 	ret = usb_submit_urb(ushc->csw_urb, GFP_ATOMIC);
+	if (ret < 0)
+		goto out;
 
 out:
 	spin_unlock_irqrestore(&ushc->lock, flags);

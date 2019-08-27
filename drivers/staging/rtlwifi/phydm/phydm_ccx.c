@@ -1,7 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2016  Realtek Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -317,7 +328,7 @@ void phydm_get_nhm_result(void *dm_void)
 		ccx_info->NHM_result[10] = (u8)((value32 & MASKBYTE2) >> 16);
 		ccx_info->NHM_result[11] = (u8)((value32 & MASKBYTE3) >> 24);
 
-		/* Get NHM duration */
+		/*Get NHM duration*/
 		value32 = odm_read_4byte(dm, ODM_REG_NHM_CNT10_TO_CNT11_11N);
 		ccx_info->NHM_duration = (u16)(value32 & MASKLWORD);
 	}
@@ -331,15 +342,14 @@ bool phydm_check_nhm_ready(void *dm_void)
 	bool ret = false;
 
 	if (dm->support_ic_type & ODM_IC_11AC_SERIES) {
-		value32 = odm_get_bb_reg(dm,
-					 ODM_REG_CLM_RESULT_11AC,
-					 MASKDWORD);
+		value32 =
+			odm_get_bb_reg(dm, ODM_REG_CLM_RESULT_11AC, MASKDWORD);
 
 		for (i = 0; i < 200; i++) {
 			ODM_delay_ms(1);
 			if (odm_get_bb_reg(dm, ODM_REG_NHM_DUR_READY_11AC,
 					   BIT(17))) {
-				ret = true;
+				ret = 1;
 				break;
 			}
 		}
@@ -352,7 +362,7 @@ bool phydm_check_nhm_ready(void *dm_void)
 			ODM_delay_ms(1);
 			if (odm_get_bb_reg(dm, ODM_REG_NHM_DUR_READY_11AC,
 					   BIT(17))) {
-				ret = true;
+				ret = 1;
 				break;
 			}
 		}

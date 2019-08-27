@@ -13,7 +13,7 @@ static inline unsigned int bpf_num_possible_cpus(void)
 	unsigned int start, end, possible_cpus = 0;
 	char buff[128];
 	FILE *fp;
-	int len, n, i, j = 0;
+	int n;
 
 	fp = fopen(fcpu, "r");
 	if (!fp) {
@@ -21,27 +21,17 @@ static inline unsigned int bpf_num_possible_cpus(void)
 		exit(1);
 	}
 
-	if (!fgets(buff, sizeof(buff), fp)) {
-		printf("Failed to read %s!\n", fcpu);
-		exit(1);
-	}
-
-	len = strlen(buff);
-	for (i = 0; i <= len; i++) {
-		if (buff[i] == ',' || buff[i] == '\0') {
-			buff[i] = '\0';
-			n = sscanf(&buff[j], "%u-%u", &start, &end);
-			if (n <= 0) {
-				printf("Failed to retrieve # possible CPUs!\n");
-				exit(1);
-			} else if (n == 1) {
-				end = start;
-			}
-			possible_cpus += end - start + 1;
-			j = i + 1;
+	while (fgets(buff, sizeof(buff), fp)) {
+		n = sscanf(buff, "%u-%u", &start, &end);
+		if (n == 0) {
+			printf("Failed to retrieve # possible CPUs!\n");
+			exit(1);
+		} else if (n == 1) {
+			end = start;
 		}
+		possible_cpus = start == 0 ? end + 1 : 0;
+		break;
 	}
-
 	fclose(fp);
 
 	return possible_cpus;
@@ -53,9 +43,5 @@ static inline unsigned int bpf_num_possible_cpus(void)
 	struct { type v; /* padding */ } __bpf_percpu_val_align	\
 		name[bpf_num_possible_cpus()]
 #define bpf_percpu(name, cpu) name[(cpu)].v
-
-#ifndef ARRAY_SIZE
-# define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-#endif
 
 #endif /* __BPF_UTIL__ */

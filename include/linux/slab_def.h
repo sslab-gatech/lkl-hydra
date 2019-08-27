@@ -67,10 +67,9 @@ struct kmem_cache {
 
 	/*
 	 * If debugging is enabled, then the allocator can add additional
-	 * fields and/or padding to every object. 'size' contains the total
-	 * object size including these internal fields, while 'obj_offset'
-	 * and 'object_size' contain the offset to the user object and its
-	 * size.
+	 * fields and/or padding to every object. size contains the total
+	 * object size including these internal fields, the following two
+	 * variables contain the offset to the user object and its size.
 	 */
 	int obj_offset;
 #endif /* CONFIG_DEBUG_SLAB */
@@ -86,8 +85,8 @@ struct kmem_cache {
 	unsigned int *random_seq;
 #endif
 
-	unsigned int useroffset;	/* Usercopy region offset */
-	unsigned int usersize;		/* Usercopy region size */
+	size_t useroffset;		/* Usercopy region offset */
+	size_t usersize;		/* Usercopy region size */
 
 	struct kmem_cache_node *node[MAX_NUMNODES];
 };
@@ -102,19 +101,6 @@ static inline void *nearest_obj(struct kmem_cache *cache, struct page *page,
 		return last_object;
 	else
 		return object;
-}
-
-/*
- * We want to avoid an expensive divide : (offset / cache->size)
- *   Using the fact that size is a constant for a particular cache,
- *   we can replace (offset / cache->size) by
- *   reciprocal_divide(offset, cache->reciprocal_buffer_size)
- */
-static inline unsigned int obj_to_index(const struct kmem_cache *cache,
-					const struct page *page, void *obj)
-{
-	u32 offset = (obj - page->s_mem);
-	return reciprocal_divide(offset, cache->reciprocal_buffer_size);
 }
 
 #endif	/* _LINUX_SLAB_DEF_H */

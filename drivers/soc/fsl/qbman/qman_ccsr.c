@@ -273,7 +273,6 @@ static const struct qman_error_info_mdata error_mdata[] = {
 static u32 __iomem *qm_ccsr_start;
 /* A SDQCR mask comprising all the available/visible pool channels */
 static u32 qm_pools_sdqcr;
-static int __qman_probed;
 
 static inline u32 qm_ccsr_in(u32 offset)
 {
@@ -419,7 +418,7 @@ static size_t fqd_sz, pfdr_sz;
 static int zero_priv_mem(phys_addr_t addr, size_t sz)
 {
 	/* map as cacheable, non-guarded */
-	void __iomem *tmpp = ioremap_cache(addr, sz);
+	void __iomem *tmpp = ioremap_prot(addr, sz, 0);
 
 	if (!tmpp)
 		return -ENOMEM;
@@ -687,12 +686,6 @@ static int qman_resource_init(struct device *dev)
 	return 0;
 }
 
-int qman_is_probed(void)
-{
-	return __qman_probed;
-}
-EXPORT_SYMBOL_GPL(qman_is_probed);
-
 static int fsl_qman_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -701,8 +694,6 @@ static int fsl_qman_probe(struct platform_device *pdev)
 	int ret, err_irq;
 	u16 id;
 	u8 major, minor;
-
-	__qman_probed = -1;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -836,8 +827,6 @@ static int fsl_qman_probe(struct platform_device *pdev)
 	ret = qman_wq_alloc();
 	if (ret)
 		return ret;
-
-	__qman_probed = 1;
 
 	return 0;
 }

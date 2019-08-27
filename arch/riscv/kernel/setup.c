@@ -29,12 +29,12 @@
 #include <linux/of_fdt.h>
 #include <linux/of_platform.h>
 #include <linux/sched/task.h>
-#include <linux/swiotlb.h>
 
 #include <asm/setup.h>
 #include <asm/sections.h>
 #include <asm/pgtable.h>
 #include <asm/smp.h>
+#include <asm/sbi.h>
 #include <asm/tlbflush.h>
 #include <asm/thread_info.h>
 
@@ -59,21 +59,18 @@ EXPORT_SYMBOL(empty_zero_page);
 
 /* The lucky hart to first increment this variable will boot the other cores */
 atomic_t hart_lottery;
-unsigned long boot_cpu_hartid;
-
-unsigned long __cpuid_to_hartid_map[NR_CPUS] = {
-	[0 ... NR_CPUS-1] = INVALID_HARTID
-};
-
-void __init smp_setup_processor_id(void)
-{
-	cpuid_to_hartid_map(0) = boot_cpu_hartid;
-}
 
 #ifdef CONFIG_BLK_DEV_INITRD
 static void __init setup_initrd(void)
 {
+	extern char __initramfs_start[];
+	extern unsigned long __initramfs_size;
 	unsigned long size;
+
+	if (__initramfs_size > 0) {
+		initrd_start = (unsigned long)(&__initramfs_start);
+		initrd_end = initrd_start + __initramfs_size;
+	}
 
 	if (initrd_start >= initrd_end) {
 		printk(KERN_INFO "initrd not found or empty");
@@ -149,14 +146,7 @@ asmlinkage void __init setup_vm(void)
 
 void __init parse_dtb(unsigned int hartid, void *dtb)
 {
-	if (!early_init_dt_scan(__va(dtb)))
-		return;
-
-	pr_err("No DTB passed to the kernel\n");
-#ifdef CONFIG_CMDLINE_FORCE
-	strlcpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
-	pr_info("Forcing kernel command line to: %s\n", boot_command_line);
-#endif
+	early_init_dt_scan(__va(dtb));
 }
 
 static void __init setup_bootmem(void)
@@ -181,7 +171,7 @@ static void __init setup_bootmem(void)
 	BUG_ON(mem_size == 0);
 
 	set_max_mapnr(PFN_DOWN(mem_size));
-	max_low_pfn = PFN_DOWN(memblock_end_of_DRAM());
+	max_low_pfn = pfn_base + PFN_DOWN(mem_size);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	setup_initrd();
@@ -217,10 +207,6 @@ void __init setup_arch(char **cmdline_p)
 	paging_init();
 	unflatten_device_tree();
 
-#ifdef CONFIG_SWIOTLB
-	swiotlb_init(1);
-#endif
-
 #ifdef CONFIG_SMP
 	setup_smp();
 #endif
@@ -232,3 +218,8 @@ void __init setup_arch(char **cmdline_p)
 	riscv_fill_hwcap();
 }
 
+static int __init riscv_device_init(void)
+{
+	return of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL);
+}
+subsys_initcall_sync(riscv_device_init);

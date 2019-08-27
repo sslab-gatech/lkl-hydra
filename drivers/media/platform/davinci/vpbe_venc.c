@@ -11,7 +11,6 @@
  * GNU General Public License for more details.
  */
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/ctype.h>
@@ -22,11 +21,8 @@
 #include <linux/videodev2.h>
 #include <linux/slab.h>
 
-#ifdef CONFIG_ARCH_DAVINCI
 #include <mach/hardware.h>
 #include <mach/mux.h>
-#endif
-
 #include <linux/platform_data/i2c-davinci.h>
 
 #include <linux/io.h>
@@ -228,6 +224,7 @@ venc_enable_vpss_clock(int venc_type,
  */
 static int venc_set_ntsc(struct v4l2_subdev *sd)
 {
+	u32 val;
 	struct venc_state *venc = to_state(sd);
 	struct venc_platform_data *pdata = venc->pdata;
 
@@ -244,7 +241,7 @@ static int venc_set_ntsc(struct v4l2_subdev *sd)
 	if (venc->venc_type == VPBE_VERSION_3) {
 		venc_write(sd, VENC_CLKCTL, 0x01);
 		venc_write(sd, VENC_VIDCTL, 0);
-		vdaccfg_write(sd, VDAC_CONFIG_SD_V3);
+		val = vdaccfg_write(sd, VDAC_CONFIG_SD_V3);
 	} else if (venc->venc_type == VPBE_VERSION_2) {
 		venc_write(sd, VENC_CLKCTL, 0x01);
 		venc_write(sd, VENC_VIDCTL, 0);
@@ -607,16 +604,17 @@ static int venc_device_get(struct device *dev, void *data)
 struct v4l2_subdev *venc_sub_dev_init(struct v4l2_device *v4l2_dev,
 		const char *venc_name)
 {
-	struct venc_state *venc = NULL;
+	struct venc_state *venc;
+	int err;
 
-	bus_for_each_dev(&platform_bus_type, NULL, &venc,
+	err = bus_for_each_dev(&platform_bus_type, NULL, &venc,
 			venc_device_get);
 	if (venc == NULL)
 		return NULL;
 
 	v4l2_subdev_init(&venc->sd, &venc_ops);
 
-	strscpy(venc->sd.name, venc_name, sizeof(venc->sd.name));
+	strcpy(venc->sd.name, venc_name);
 	if (v4l2_device_register_subdev(v4l2_dev, &venc->sd) < 0) {
 		v4l2_err(v4l2_dev,
 			"vpbe unable to register venc sub device\n");

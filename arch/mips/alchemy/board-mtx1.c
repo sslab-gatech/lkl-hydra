@@ -24,7 +24,6 @@
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <linux/gpio.h>
-#include <linux/gpio/machine.h>
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
 #include <linux/mtd/partitions.h>
@@ -32,7 +31,6 @@
 #include <mtd/mtd-abi.h>
 #include <asm/bootinfo.h>
 #include <asm/reboot.h>
-#include <asm/setup.h>
 #include <asm/mach-au1x00/au1000.h>
 #include <asm/mach-au1x00/gpio-au1000.h>
 #include <asm/mach-au1x00/au1xxx_eth.h>
@@ -60,7 +58,7 @@ void __init prom_init(void)
 	add_memory_region(0, memsize, BOOT_MEM_RAM);
 }
 
-void prom_putchar(char c)
+void prom_putchar(unsigned char c)
 {
 	alchemy_uart_putchar(AU1000_UART0_PHYS_ADDR, c);
 }
@@ -131,21 +129,23 @@ static struct platform_device mtx1_button = {
 	}
 };
 
-static struct gpiod_lookup_table mtx1_wdt_gpio_table = {
-	.dev_id = "mtx1-wdt.0",
-	.table = {
-		/* Global number 215 is offset 15 on Alchemy GPIO 2 */
-		GPIO_LOOKUP("alchemy-gpio2", 15, NULL, GPIO_ACTIVE_HIGH),
-		{ },
-	},
+static struct resource mtx1_wdt_res[] = {
+	[0] = {
+		.start	= 215,
+		.end	= 215,
+		.name	= "mtx1-wdt-gpio",
+		.flags	= IORESOURCE_IRQ,
+	}
 };
 
 static struct platform_device mtx1_wdt = {
 	.name = "mtx1-wdt",
 	.id = 0,
+	.num_resources = ARRAY_SIZE(mtx1_wdt_res),
+	.resource = mtx1_wdt_res,
 };
 
-static const struct gpio_led default_leds[] = {
+static struct gpio_led default_leds[] = {
 	{
 		.name	= "mtx1:green",
 		.gpio = 211,
@@ -309,7 +309,6 @@ static int __init mtx1_register_devices(void)
 	}
 	gpio_direction_input(mtx1_gpio_button[0].gpio);
 out:
-	gpiod_add_lookup_table(&mtx1_wdt_gpio_table);
 	return platform_add_devices(mtx1_devs, ARRAY_SIZE(mtx1_devs));
 }
 arch_initcall(mtx1_register_devices);

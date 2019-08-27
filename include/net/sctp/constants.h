@@ -71,7 +71,7 @@ enum { SCTP_DEFAULT_INSTREAMS = SCTP_MAX_STREAM };
 					 SCTP_NUM_AUTH_CHUNK_TYPES)
 
 /* These are the different flavours of event.  */
-enum sctp_event_type {
+enum sctp_event {
 	SCTP_EVENT_T_CHUNK = 1,
 	SCTP_EVENT_T_TIMEOUT,
 	SCTP_EVENT_T_OTHER,
@@ -147,6 +147,11 @@ SCTP_SUBTYPE_CONSTRUCTOR(PRIMITIVE,	enum sctp_event_primitive, primitive)
 
 #define sctp_chunk_is_data(a) (a->chunk_hdr->type == SCTP_CID_DATA || \
 			       a->chunk_hdr->type == SCTP_CID_I_DATA)
+
+/* Calculate the actual data size in a data chunk */
+#define SCTP_DATA_SNDSIZE(c) ((int)((unsigned long)(c->chunk_end) - \
+				    (unsigned long)(c->chunk_hdr) - \
+				    sctp_datachk_len(&c->asoc->stream)))
 
 /* Internal error codes */
 enum sctp_ierror {
@@ -249,10 +254,11 @@ enum { SCTP_ARBITRARY_COOKIE_ECHO_LEN = 200 };
 #define SCTP_TSN_MAP_SIZE 4096
 
 /* We will not record more than this many duplicate TSNs between two
- * SACKs.  The minimum PMTU is 512.  Remove all the headers and there
- * is enough room for 117 duplicate reports.  Round down to the
+ * SACKs.  The minimum PMTU is 576.  Remove all the headers and there
+ * is enough room for 131 duplicate reports.  Round down to the
  * nearest power of 2.
  */
+enum { SCTP_MIN_PMTU = 576 };
 enum { SCTP_MAX_DUP_TSNS = 16 };
 enum { SCTP_MAX_GABS = 16 };
 

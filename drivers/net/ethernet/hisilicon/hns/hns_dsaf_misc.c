@@ -340,8 +340,7 @@ static void hns_dsaf_xge_srst_by_port_acpi(struct dsaf_device *dsaf_dev,
  * bit18-19 for com/dfx
  * @enable: false - request reset , true - drop reset
  */
-static void
-hns_dsaf_srst_chns(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
+void hns_dsaf_srst_chns(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
 {
 	u32 reg_addr;
 
@@ -363,7 +362,7 @@ hns_dsaf_srst_chns(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
  * bit18-19 for com/dfx
  * @enable: false - request reset , true - drop reset
  */
-static void
+void
 hns_dsaf_srst_chns_acpi(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
 {
 	hns_dsaf_acpi_srst_by_port(dsaf_dev, HNS_OP_RESET_FUNC,
@@ -371,7 +370,7 @@ hns_dsaf_srst_chns_acpi(struct dsaf_device *dsaf_dev, u32 msk, bool dereset)
 				   msk, dereset);
 }
 
-static void hns_dsaf_roce_srst(struct dsaf_device *dsaf_dev, bool dereset)
+void hns_dsaf_roce_srst(struct dsaf_device *dsaf_dev, bool dereset)
 {
 	if (!dereset) {
 		dsaf_write_sub(dsaf_dev, DSAF_SUB_SC_ROCEE_RESET_REQ_REG, 1);
@@ -385,7 +384,7 @@ static void hns_dsaf_roce_srst(struct dsaf_device *dsaf_dev, bool dereset)
 	}
 }
 
-static void hns_dsaf_roce_srst_acpi(struct dsaf_device *dsaf_dev, bool dereset)
+void hns_dsaf_roce_srst_acpi(struct dsaf_device *dsaf_dev, bool dereset)
 {
 	hns_dsaf_acpi_srst_by_port(dsaf_dev, HNS_OP_RESET_FUNC,
 				   HNS_ROCE_RESET_FUNC, 0, dereset);
@@ -569,7 +568,7 @@ static phy_interface_t hns_mac_get_phy_if_acpi(struct hns_mac_cb *mac_cb)
 	return phy_if;
 }
 
-static int hns_mac_get_sfp_prsnt(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
+int hns_mac_get_sfp_prsnt(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
 {
 	u32 val = 0;
 	int ret;
@@ -587,7 +586,7 @@ static int hns_mac_get_sfp_prsnt(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
 	return 0;
 }
 
-static int hns_mac_get_sfp_prsnt_acpi(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
+int hns_mac_get_sfp_prsnt_acpi(struct hns_mac_cb *mac_cb, int *sfp_prsnt)
 {
 	union acpi_object *obj;
 	union acpi_object obj_args, argv4;

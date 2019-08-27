@@ -654,9 +654,9 @@ static struct vscsibk_pend *scsiback_get_pend_req(struct vscsiif_back_ring *ring
 	struct scsiback_nexus *nexus = tpg->tpg_nexus;
 	struct se_session *se_sess = nexus->tvn_se_sess;
 	struct vscsibk_pend *req;
-	int tag, cpu, i;
+	int tag, i;
 
-	tag = sbitmap_queue_get(&se_sess->sess_tag_pool, &cpu);
+	tag = percpu_ida_alloc(&se_sess->sess_tag_pool, TASK_RUNNING);
 	if (tag < 0) {
 		pr_err("Unable to obtain tag for vscsiif_request\n");
 		return ERR_PTR(-ENOMEM);
@@ -665,7 +665,6 @@ static struct vscsibk_pend *scsiback_get_pend_req(struct vscsiif_back_ring *ring
 	req = &((struct vscsibk_pend *)se_sess->sess_cmd_map)[tag];
 	memset(req, 0, sizeof(*req));
 	req->se_cmd.map_tag = tag;
-	req->se_cmd.map_cpu = cpu;
 
 	for (i = 0; i < VSCSI_MAX_GRANTS; i++)
 		req->grant_handles[i] = SCSIBACK_INVALID_HANDLE;
@@ -1013,7 +1012,6 @@ static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
 {
 	struct v2p_entry *entry;
 	unsigned long flags;
-	int err;
 
 	if (try) {
 		spin_lock_irqsave(&info->v2p_lock, flags);
@@ -1029,11 +1027,8 @@ static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
 			scsiback_del_translation_entry(info, vir);
 		}
 	} else if (!try) {
-		err = xenbus_printf(XBT_NIL, info->dev->nodename, state,
+		xenbus_printf(XBT_NIL, info->dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 	}
 }
 
@@ -1072,11 +1067,8 @@ static void scsiback_do_1lun_hotplug(struct vscsibk_info *info, int op,
 	snprintf(str, sizeof(str), "vscsi-devs/%s/p-dev", ent);
 	val = xenbus_read(XBT_NIL, dev->nodename, str, NULL);
 	if (IS_ERR(val)) {
-		err = xenbus_printf(XBT_NIL, dev->nodename, state,
+		xenbus_printf(XBT_NIL, dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 		return;
 	}
 	strlcpy(phy, val, VSCSI_NAMELEN);
@@ -1087,11 +1079,8 @@ static void scsiback_do_1lun_hotplug(struct vscsibk_info *info, int op,
 	err = xenbus_scanf(XBT_NIL, dev->nodename, str, "%u:%u:%u:%u",
 			   &vir.hst, &vir.chn, &vir.tgt, &vir.lun);
 	if (XENBUS_EXIST_ERR(err)) {
-		err = xenbus_printf(XBT_NIL, dev->nodename, state,
+		xenbus_printf(XBT_NIL, dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 		return;
 	}
 
@@ -1388,7 +1377,9 @@ static int scsiback_check_stop_free(struct se_cmd *se_cmd)
 
 static void scsiback_release_cmd(struct se_cmd *se_cmd)
 {
-	target_free_tag(se_cmd->se_sess, se_cmd);
+	struct se_session *se_sess = se_cmd->se_sess;
+
+	percpu_ida_free(&se_sess->sess_tag_pool, se_cmd->map_tag);
 }
 
 static u32 scsiback_sess_get_index(struct se_session *se_sess)
@@ -1531,7 +1522,7 @@ static int scsiback_make_nexus(struct scsiback_tpg *tpg,
 		goto out_unlock;
 	}
 
-	tv_nexus->tvn_se_sess = target_setup_session(&tpg->se_tpg,
+	tv_nexus->tvn_se_sess = target_alloc_session(&tpg->se_tpg,
 						     VSCSI_DEFAULT_SESSION_TAGS,
 						     sizeof(struct vscsibk_pend),
 						     TARGET_PROT_NORMAL, name,
@@ -1586,7 +1577,7 @@ static int scsiback_drop_nexus(struct scsiback_tpg *tpg)
 	/*
 	 * Release the SCSI I_T Nexus to the emulated xen-pvscsi Target Port
 	 */
-	target_remove_session(se_sess);
+	transport_deregister_session(tv_nexus->tvn_se_sess);
 	tpg->tpg_nexus = NULL;
 	mutex_unlock(&tpg->tv_tpg_mutex);
 
@@ -1712,6 +1703,11 @@ static struct configfs_attribute *scsiback_wwn_attrs[] = {
 	NULL,
 };
 
+static char *scsiback_get_fabric_name(void)
+{
+	return "xen-pvscsi";
+}
+
 static int scsiback_port_link(struct se_portal_group *se_tpg,
 			       struct se_lun *lun)
 {
@@ -1737,7 +1733,9 @@ static void scsiback_port_unlink(struct se_portal_group *se_tpg,
 }
 
 static struct se_portal_group *
-scsiback_make_tpg(struct se_wwn *wwn, const char *name)
+scsiback_make_tpg(struct se_wwn *wwn,
+		   struct config_group *group,
+		   const char *name)
 {
 	struct scsiback_tport *tport = container_of(wwn,
 			struct scsiback_tport, tport_wwn);
@@ -1805,7 +1803,8 @@ static int scsiback_check_false(struct se_portal_group *se_tpg)
 
 static const struct target_core_fabric_ops scsiback_ops = {
 	.module				= THIS_MODULE,
-	.fabric_name			= "xen-pvscsi",
+	.name				= "xen-pvscsi",
+	.get_fabric_name		= scsiback_get_fabric_name,
 	.tpg_get_wwn			= scsiback_get_fabric_wwn,
 	.tpg_get_tag			= scsiback_get_tag,
 	.tpg_check_demo_mode		= scsiback_check_true,

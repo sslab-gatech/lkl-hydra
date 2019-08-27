@@ -39,7 +39,7 @@ static void relay_file_mmap_close(struct vm_area_struct *vma)
 /*
  * fault() vm_op implementation for relay file mapping.
  */
-static vm_fault_t relay_buf_fault(struct vm_fault *vmf)
+static int relay_buf_fault(struct vm_fault *vmf)
 {
 	struct page *page;
 	struct rchan_buf *buf = vmf->vma->vm_private_data;
@@ -169,8 +169,7 @@ static struct rchan_buf *relay_create_buf(struct rchan *chan)
 	buf = kzalloc(sizeof(struct rchan_buf), GFP_KERNEL);
 	if (!buf)
 		return NULL;
-	buf->padding = kmalloc_array(chan->n_subbufs, sizeof(size_t *),
-				     GFP_KERNEL);
+	buf->padding = kmalloc(chan->n_subbufs * sizeof(size_t *), GFP_KERNEL);
 	if (!buf->padding)
 		goto free_buf;
 
@@ -428,8 +427,6 @@ static struct dentry *relay_create_buf_file(struct rchan *chan,
 	dentry = chan->cb->create_buf_file(tmpname, chan->parent,
 					   S_IRUSR, buf,
 					   &chan->is_global);
-	if (IS_ERR(dentry))
-		dentry = NULL;
 
 	kfree(tmpname);
 
@@ -463,7 +460,7 @@ static struct rchan_buf *relay_open_buf(struct rchan *chan, unsigned int cpu)
 		dentry = chan->cb->create_buf_file(NULL, NULL,
 						   S_IRUSR, buf,
 						   &chan->is_global);
-		if (IS_ERR_OR_NULL(dentry))
+		if (WARN_ON(dentry))
 			goto free_buf;
 	}
 

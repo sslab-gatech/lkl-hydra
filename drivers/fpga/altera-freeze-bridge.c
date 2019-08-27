@@ -1,8 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * FPGA Freeze Bridge Controller
  *
  *  Copyright (C) 2016 Altera Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -210,7 +221,6 @@ static int altera_freeze_br_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	void __iomem *base_addr;
 	struct altera_freeze_br_data *priv;
-	struct fpga_bridge *br;
 	struct resource *res;
 	u32 status, revision;
 
@@ -244,21 +254,13 @@ static int altera_freeze_br_probe(struct platform_device *pdev)
 
 	priv->base_addr = base_addr;
 
-	br = devm_fpga_bridge_create(dev, FREEZE_BRIDGE_NAME,
-				     &altera_freeze_br_br_ops, priv);
-	if (!br)
-		return -ENOMEM;
-
-	platform_set_drvdata(pdev, br);
-
-	return fpga_bridge_register(br);
+	return fpga_bridge_register(dev, FREEZE_BRIDGE_NAME,
+				    &altera_freeze_br_br_ops, priv);
 }
 
 static int altera_freeze_br_remove(struct platform_device *pdev)
 {
-	struct fpga_bridge *br = platform_get_drvdata(pdev);
-
-	fpga_bridge_unregister(br);
+	fpga_bridge_unregister(&pdev->dev);
 
 	return 0;
 }

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * For architectures where we want to allow direct access to the PCI config
- * stuff - it would probably be preferable on PCs too, but there people
- * just do it by hand with the magic northbridge registers.
+ *	pci_syscall.c
+ *
+ * For architectures where we want to allow direct access
+ * to the PCI config stuff - it would probably be preferable
+ * on PCs too, but there people just do it by hand with the
+ * magic northbridge registers..
  */
 
 #include <linux/errno.h>

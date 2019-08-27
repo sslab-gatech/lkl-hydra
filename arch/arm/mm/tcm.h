@@ -11,7 +11,7 @@
 void __init tcm_init(void);
 #else
 /* No TCM support, just blank inlines to be optimized out */
-static inline void tcm_init(void)
+inline void tcm_init(void)
 {
 }
 #endif

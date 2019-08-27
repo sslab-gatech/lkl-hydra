@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Device Tree Source for the iWave-RZ/G1M/G1N Qseven carrier board
  *
  * Copyright (C) 2017 Renesas Electronics Corp.
+ *
+ * This file is licensed under the terms of the GNU General Public License
+ * version 2.  This program is licensed "as is" without any warranty of any
+ * kind, whether express or implied.
  */
 
 /*
@@ -116,10 +119,6 @@
 	status = "okay";
 };
 
-&cmt0 {
-	status = "okay";
-};
-
 &hsusb {
 	status = "okay";
 	pinctrl-0 = <&usb0_pins>;
@@ -162,6 +161,10 @@
 
 &pcie_bus_clk {
 	clock-frequency = <100000000>;
+};
+
+&pciec {
+	status = "okay";
 };
 
 &pfc {
@@ -232,11 +235,6 @@
 			capture = <&ssi0 &src2 &dvc0>;
 		};
 	};
-};
-
-&rwdt {
-	timeout-sec = <60>;
-	status = "okay";
 };
 
 &scif0 {

@@ -3,10 +3,12 @@
 #
 
 menu "Graphics support"
-
-if HAS_IOMEM
+	depends on HAS_IOMEM
 
 config HAVE_FB_ATMEL
+	bool
+
+config SH_LCD_MIPI_DSI
 	bool
 
 source "drivers/char/agp/Kconfig"
@@ -33,8 +35,6 @@ config VIDEOMODE_HELPERS
 
 config HDMI
 	bool
-
-endif # HAS_IOMEM
 
 if VT
 	source "drivers/video/console/Kconfig"

@@ -15,7 +15,6 @@
 #include <linux/console.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/partitions.h>
-#include <linux/nvmem-provider.h>
 #include <linux/regulator/machine.h>
 #include <linux/i2c.h>
 #include <linux/platform_data/at24.h>
@@ -31,7 +30,6 @@
 #include <mach/da8xx.h>
 #include <linux/platform_data/mtd-davinci.h>
 #include <linux/platform_data/mtd-davinci-aemif.h>
-#include <linux/platform_data/ti-aemif.h>
 #include <mach/mux.h>
 #include <linux/platform_data/spi-davinci.h>
 
@@ -161,31 +159,6 @@ bad_config:
 	/* default maximum speed is valid for all platforms */
 	mityomapl138_cpufreq_init(partnum);
 }
-
-/*
- * We don't define a cell for factory config as it will be accessed from the
- * board file using the nvmem notifier chain.
- */
-static struct nvmem_cell_info mityomapl138_nvmem_cells[] = {
-	{
-		.name		= "macaddr",
-		.offset		= 0x64,
-		.bytes		= ETH_ALEN,
-	}
-};
-
-static struct nvmem_cell_table mityomapl138_nvmem_cell_table = {
-	.nvmem_name	= "1-00500",
-	.cells		= mityomapl138_nvmem_cells,
-	.ncells		= ARRAY_SIZE(mityomapl138_nvmem_cells),
-};
-
-static struct nvmem_cell_lookup mityomapl138_nvmem_cell_lookup = {
-	.nvmem_name	= "1-00500",
-	.cell_name	= "macaddr",
-	.dev_id		= "davinci_emac.1",
-	.con_id		= "mac-address",
-};
 
 static struct at24_platform_data mityomapl138_fd_chip = {
 	.byte_len	= 256,
@@ -427,7 +400,6 @@ static struct mtd_partition mityomapl138_nandflash_partition[] = {
 };
 
 static struct davinci_nand_pdata mityomapl138_nandflash_data = {
-	.core_chipsel	= 1,
 	.parts		= mityomapl138_nandflash_partition,
 	.nr_parts	= ARRAY_SIZE(mityomapl138_nandflash_partition),
 	.ecc_mode	= NAND_ECC_HW,
@@ -449,53 +421,27 @@ static struct resource mityomapl138_nandflash_resource[] = {
 	},
 };
 
-static struct platform_device mityomapl138_aemif_devices[] = {
-	{
-		.name		= "davinci_nand",
-		.id		= 1,
-		.dev		= {
-			.platform_data	= &mityomapl138_nandflash_data,
-		},
-		.num_resources	= ARRAY_SIZE(mityomapl138_nandflash_resource),
-		.resource	= mityomapl138_nandflash_resource,
+static struct platform_device mityomapl138_nandflash_device = {
+	.name		= "davinci_nand",
+	.id		= 1,
+	.dev		= {
+		.platform_data	= &mityomapl138_nandflash_data,
 	},
+	.num_resources	= ARRAY_SIZE(mityomapl138_nandflash_resource),
+	.resource	= mityomapl138_nandflash_resource,
 };
 
-static struct resource mityomapl138_aemif_resources[] = {
-	{
-		.start	= DA8XX_AEMIF_CTL_BASE,
-		.end	= DA8XX_AEMIF_CTL_BASE + SZ_32K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct aemif_abus_data mityomapl138_aemif_abus_data[] = {
-	{
-		.cs	= 1,
-	},
-};
-
-static struct aemif_platform_data mityomapl138_aemif_pdata = {
-	.abus_data		= mityomapl138_aemif_abus_data,
-	.num_abus_data		= ARRAY_SIZE(mityomapl138_aemif_abus_data),
-	.sub_devices		= mityomapl138_aemif_devices,
-	.num_sub_devices	= ARRAY_SIZE(mityomapl138_aemif_devices),
-};
-
-static struct platform_device mityomapl138_aemif_device = {
-	.name		= "ti-aemif",
-	.id		= -1,
-	.dev = {
-		.platform_data	= &mityomapl138_aemif_pdata,
-	},
-	.resource	= mityomapl138_aemif_resources,
-	.num_resources	= ARRAY_SIZE(mityomapl138_aemif_resources),
+static struct platform_device *mityomapl138_devices[] __initdata = {
+	&mityomapl138_nandflash_device,
 };
 
 static void __init mityomapl138_setup_nand(void)
 {
-	if (platform_device_register(&mityomapl138_aemif_device))
-		pr_warn("%s: Cannot register AEMIF device\n", __func__);
+	platform_add_devices(mityomapl138_devices,
+				 ARRAY_SIZE(mityomapl138_devices));
+
+	if (davinci_aemif_setup(&mityomapl138_nandflash_device))
+		pr_warn("%s: Cannot configure AEMIF\n", __func__);
 }
 
 static const short mityomap_mii_pins[] = {
@@ -556,7 +502,9 @@ static void __init mityomapl138_init(void)
 {
 	int ret;
 
-	da850_register_clocks();
+	ret = da8xx_register_cfgchip();
+	if (ret)
+		pr_warn("%s: CFGCHIP registration failed: %d\n", __func__, ret);
 
 	/* for now, no special EDMA channels are reserved */
 	ret = da850_register_edma(NULL);
@@ -568,9 +516,6 @@ static void __init mityomapl138_init(void)
 		pr_warn("watchdog registration failed: %d\n", ret);
 
 	davinci_serial_init(da8xx_serial_device);
-
-	nvmem_add_cell_table(&mityomapl138_nvmem_cell_table);
-	nvmem_add_cell_lookups(&mityomapl138_nvmem_cell_lookup, 1);
 
 	ret = da8xx_register_i2c(0, &mityomap_i2c_0_pdata);
 	if (ret)
@@ -625,8 +570,9 @@ MACHINE_START(MITYOMAPL138, "MityDSP-L138/MityARM-1808")
 	.atag_offset	= 0x100,
 	.map_io		= mityomapl138_map_io,
 	.init_irq	= cp_intc_init,
-	.init_time	= da850_init_time,
+	.init_time	= davinci_timer_init,
 	.init_machine	= mityomapl138_init,
 	.init_late	= davinci_init_late,
 	.dma_zone_size	= SZ_128M,
+	.restart	= da8xx_restart,
 MACHINE_END

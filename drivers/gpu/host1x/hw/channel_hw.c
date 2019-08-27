@@ -26,6 +26,7 @@
 #include "../intr.h"
 #include "../job.h"
 
+#define HOST1X_CHANNEL_SIZE 16384
 #define TRACE_MAX_LENGTH 128U
 
 static void trace_write_gather(struct host1x_cdma *cdma, struct host1x_bo *bo,
@@ -103,7 +104,8 @@ static int channel_submit(struct host1x_job *job)
 	sp = host->syncpt + job->syncpt_id;
 	trace_host1x_channel_submit(dev_name(ch->dev),
 				    job->num_gathers, job->num_relocs,
-				    job->syncpt_id, job->syncpt_incrs);
+				    job->num_waitchk, job->syncpt_id,
+				    job->syncpt_incrs);
 
 	/* before error checks, return current max */
 	prev_max = job->syncpt_end = host1x_syncpt_read_max(sp);
@@ -163,7 +165,7 @@ static int channel_submit(struct host1x_job *job)
 	trace_host1x_channel_submitted(dev_name(ch->dev), prev_max, syncval);
 
 	/* schedule a submit complete interrupt */
-	err = host1x_intr_add_action(host, sp, syncval,
+	err = host1x_intr_add_action(host, job->syncpt_id, syncval,
 				     HOST1X_INTR_ACTION_SUBMIT_COMPLETE, ch,
 				     completed_waiter, NULL);
 	completed_waiter = NULL;
@@ -202,11 +204,7 @@ static void enable_gather_filter(struct host1x *host,
 static int host1x_channel_init(struct host1x_channel *ch, struct host1x *dev,
 			       unsigned int index)
 {
-#if HOST1X_HW < 6
-	ch->regs = dev->regs + index * 0x4000;
-#else
-	ch->regs = dev->regs + index * 0x100;
-#endif
+	ch->regs = dev->regs + index * HOST1X_CHANNEL_SIZE;
 	enable_gather_filter(dev, ch);
 	return 0;
 }

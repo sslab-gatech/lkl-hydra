@@ -62,14 +62,14 @@ static const struct {
 static int wm8524_startup(struct snd_pcm_substream *substream,
 			  struct snd_soc_dai *dai)
 {
-	struct snd_soc_component *component = dai->component;
-	struct wm8524_priv *wm8524 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = dai->codec;
+	struct wm8524_priv *wm8524 = snd_soc_codec_get_drvdata(codec);
 
 	/* The set of sample rates that can be supported depends on the
 	 * MCLK supplied to the CODEC - enforce this.
 	 */
 	if (!wm8524->sysclk) {
-		dev_err(component->dev,
+		dev_err(codec->dev,
 			"No MCLK configured, call set_sysclk() on init\n");
 		return -EINVAL;
 	}
@@ -86,8 +86,8 @@ static int wm8524_startup(struct snd_pcm_substream *substream,
 static void wm8524_shutdown(struct snd_pcm_substream *substream,
 			  struct snd_soc_dai *dai)
 {
-	struct snd_soc_component *component = dai->component;
-	struct wm8524_priv *wm8524 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = dai->codec;
+	struct wm8524_priv *wm8524 = snd_soc_codec_get_drvdata(codec);
 
 	gpiod_set_value_cansleep(wm8524->mute, 0);
 }
@@ -95,8 +95,8 @@ static void wm8524_shutdown(struct snd_pcm_substream *substream,
 static int wm8524_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_component *component = codec_dai->component;
-	struct wm8524_priv *wm8524 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = codec_dai->codec;
+	struct wm8524_priv *wm8524 = snd_soc_codec_get_drvdata(codec);
 	unsigned int val;
 	int i, j = 0;
 
@@ -118,13 +118,13 @@ static int wm8524_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		case 96000:
 		case 176400:
 		case 192000:
-			dev_dbg(component->dev, "Supported sample rate: %dHz\n",
+			dev_dbg(codec->dev, "Supported sample rate: %dHz\n",
 				val);
 			wm8524->rate_constraint_list[j++] = val;
 			wm8524->rate_constraint.count++;
 			break;
 		default:
-			dev_dbg(component->dev, "Skipping sample rate: %dHz\n",
+			dev_dbg(codec->dev, "Skipping sample rate: %dHz\n",
 				val);
 		}
 	}
@@ -152,7 +152,7 @@ static int wm8524_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 
 static int wm8524_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 {
-	struct wm8524_priv *wm8524 = snd_soc_component_get_drvdata(dai->component);
+	struct wm8524_priv *wm8524 = snd_soc_codec_get_drvdata(dai->codec);
 
 	if (wm8524->mute)
 		gpiod_set_value_cansleep(wm8524->mute, mute);
@@ -184,9 +184,9 @@ static struct snd_soc_dai_driver wm8524_dai = {
 	.ops = &wm8524_dai_ops,
 };
 
-static int wm8524_probe(struct snd_soc_component *component)
+static int wm8524_probe(struct snd_soc_codec *codec)
 {
-	struct wm8524_priv *wm8524 = snd_soc_component_get_drvdata(component);
+	struct wm8524_priv *wm8524 = snd_soc_codec_get_drvdata(codec);
 
 	wm8524->rate_constraint.list = &wm8524->rate_constraint_list[0];
 	wm8524->rate_constraint.count =
@@ -195,16 +195,15 @@ static int wm8524_probe(struct snd_soc_component *component)
 	return 0;
 }
 
-static const struct snd_soc_component_driver soc_component_dev_wm8524 = {
-	.probe			= wm8524_probe,
-	.dapm_widgets		= wm8524_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(wm8524_dapm_widgets),
-	.dapm_routes		= wm8524_dapm_routes,
-	.num_dapm_routes	= ARRAY_SIZE(wm8524_dapm_routes),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static const struct snd_soc_codec_driver soc_codec_dev_wm8524 = {
+	.probe =	wm8524_probe,
+
+	.component_driver = {
+		.dapm_widgets		= wm8524_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(wm8524_dapm_widgets),
+		.dapm_routes		= wm8524_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(wm8524_dapm_routes),
+	},
 };
 
 static const struct of_device_id wm8524_of_match[] = {
@@ -232,16 +231,23 @@ static int wm8524_codec_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = devm_snd_soc_register_component(&pdev->dev,
-			&soc_component_dev_wm8524, &wm8524_dai, 1);
+	ret =  snd_soc_register_codec(&pdev->dev,
+			&soc_codec_dev_wm8524, &wm8524_dai, 1);
 	if (ret < 0)
-		dev_err(&pdev->dev, "Failed to register component: %d\n", ret);
+		dev_err(&pdev->dev, "Failed to register codec: %d\n", ret);
 
 	return ret;
 }
 
+static int wm8524_codec_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_codec(&pdev->dev);
+	return 0;
+}
+
 static struct platform_driver wm8524_codec_driver = {
 	.probe		= wm8524_codec_probe,
+	.remove		= wm8524_codec_remove,
 	.driver		= {
 		.name	= "wm8524-codec",
 		.of_match_table = wm8524_of_match,

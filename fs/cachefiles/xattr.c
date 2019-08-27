@@ -113,7 +113,6 @@ int cachefiles_set_object_xattr(struct cachefiles_object *object,
 	/* attempt to install the cache metadata directly */
 	_debug("SET #%u", auxdata->len);
 
-	clear_bit(FSCACHE_COOKIE_AUX_UPDATED, &object->fscache.cookie->flags);
 	ret = vfs_setxattr(dentry, cachefiles_xattr_cache,
 			   &auxdata->type, auxdata->len,
 			   XATTR_CREATE);
@@ -135,15 +134,13 @@ int cachefiles_update_object_xattr(struct cachefiles_object *object,
 	struct dentry *dentry = object->dentry;
 	int ret;
 
-	if (!dentry)
-		return -ESTALE;
+	ASSERT(dentry);
 
 	_enter("%p,#%d", object, auxdata->len);
 
 	/* attempt to install the cache metadata directly */
 	_debug("SET #%u", auxdata->len);
 
-	clear_bit(FSCACHE_COOKIE_AUX_UPDATED, &object->fscache.cookie->flags);
 	ret = vfs_setxattr(dentry, cachefiles_xattr_cache,
 			   &auxdata->type, auxdata->len,
 			   XATTR_REPLACE);
@@ -183,8 +180,7 @@ int cachefiles_check_auxdata(struct cachefiles_object *object)
 		goto error;
 
 	xlen--;
-	validity = fscache_check_aux(&object->fscache, &auxbuf->data, xlen,
-				     i_size_read(d_backing_inode(dentry)));
+	validity = fscache_check_aux(&object->fscache, &auxbuf->data, xlen);
 	if (validity != FSCACHE_CHECKAUX_OKAY)
 		goto error;
 
@@ -253,8 +249,7 @@ int cachefiles_check_object_xattr(struct cachefiles_object *object,
 		       object->fscache.cookie->def->name, dlen);
 
 		result = fscache_check_aux(&object->fscache,
-					   &auxbuf->data, dlen,
-					   i_size_read(d_backing_inode(dentry)));
+					   &auxbuf->data, dlen);
 
 		switch (result) {
 			/* entry okay as is */

@@ -4,8 +4,6 @@
 
 #include <uapi/asm/ptrace.h>
 
-struct task_struct;
-
 #ifndef __ASSEMBLY__
 #ifndef PS_S
 #define PS_S  (0x10)

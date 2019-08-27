@@ -108,7 +108,6 @@ struct posix_acl *nfs3_get_acl(struct inode *inode, int type)
 		case -EPROTONOSUPPORT:
 			dprintk("NFS_V3_ACL extension not supported; disabling\n");
 			server->caps &= ~NFS_CAP_ACLS;
-			/* fall through */
 		case -ENOTSUPP:
 			status = -EOPNOTSUPP;
 		default:
@@ -230,7 +229,6 @@ static int __nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 			dprintk("NFS_V3_ACL SETACL RPC not supported"
 					"(will not retry)\n");
 			server->caps &= ~NFS_CAP_ACLS;
-			/* fall through */
 		case -ENOTSUPP:
 			status = -EOPNOTSUPP;
 	}

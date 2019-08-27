@@ -96,7 +96,7 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 
 	DPRINTK("ENTER\n");
 
-	hpriv->stop_engine(ap);
+	ahci_stop_engine(ap);
 
 	/*
 	 * There is a errata on ls1021a Rev1.0 and Rev2.0 which is:
@@ -250,7 +250,7 @@ static int ahci_qoriq_probe(struct platform_device *pdev)
 	struct resource *res;
 	int rc;
 
-	hpriv = ahci_platform_get_resources(pdev, 0);
+	hpriv = ahci_platform_get_resources(pdev);
 	if (IS_ERR(hpriv))
 		return PTR_ERR(hpriv);
 

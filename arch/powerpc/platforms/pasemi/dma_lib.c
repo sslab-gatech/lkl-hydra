@@ -262,6 +262,8 @@ int pasemi_dma_alloc_ring(struct pasemi_dmachan *chan, int ring_size)
 	if (!chan->ring_virt)
 		return -ENOMEM;
 
+	memset(chan->ring_virt, 0, ring_size * sizeof(u64));
+
 	return 0;
 }
 EXPORT_SYMBOL(pasemi_dma_alloc_ring);
@@ -529,7 +531,7 @@ int pasemi_dma_init(void)
 	iob_pdev = pci_get_device(PCI_VENDOR_ID_PASEMI, 0xa001, NULL);
 	if (!iob_pdev) {
 		BUG();
-		pr_warn("Can't find I/O Bridge\n");
+		printk(KERN_WARNING "Can't find I/O Bridge\n");
 		err = -ENODEV;
 		goto out;
 	}
@@ -538,7 +540,7 @@ int pasemi_dma_init(void)
 	dma_pdev = pci_get_device(PCI_VENDOR_ID_PASEMI, 0xa007, NULL);
 	if (!dma_pdev) {
 		BUG();
-		pr_warn("Can't find DMA controller\n");
+		printk(KERN_WARNING "Can't find DMA controller\n");
 		err = -ENODEV;
 		goto out;
 	}
@@ -574,7 +576,7 @@ int pasemi_dma_init(void)
 		res.start = 0xfd800000;
 		res.end = res.start + 0x1000;
 	}
-	dma_status = ioremap_cache(res.start, resource_size(&res));
+	dma_status = __ioremap(res.start, resource_size(&res), 0);
 	pci_dev_put(iob_pdev);
 
 	for (i = 0; i < MAX_TXCH; i++)
@@ -621,7 +623,7 @@ int pasemi_dma_init(void)
 	pasemi_write_dma_reg(PAS_DMA_TXF_CFLG0, 0xffffffff);
 	pasemi_write_dma_reg(PAS_DMA_TXF_CFLG1, 0xffffffff);
 
-	pr_info("PA Semi PWRficient DMA library initialized "
+	printk(KERN_INFO "PA Semi PWRficient DMA library initialized "
 		"(%d tx, %d rx channels)\n", num_txch, num_rxch);
 
 out:

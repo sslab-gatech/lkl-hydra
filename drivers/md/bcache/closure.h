@@ -105,7 +105,6 @@
 struct closure;
 struct closure_syncer;
 typedef void (closure_fn) (struct closure *);
-extern struct dentry *bcache_debug;
 
 struct closure_waitlist {
 	struct llist_head	list;
@@ -159,7 +158,7 @@ struct closure {
 #define CLOSURE_MAGIC_DEAD	0xc054dead
 #define CLOSURE_MAGIC_ALIVE	0xc054a11e
 
-	unsigned int		magic;
+	unsigned		magic;
 	struct list_head	all;
 	unsigned long		ip;
 	unsigned long		waiting_on;
@@ -289,12 +288,10 @@ static inline void closure_init_stack(struct closure *cl)
 }
 
 /**
- * closure_wake_up - wake up all closures on a wait list,
- *		     with memory barrier
+ * closure_wake_up - wake up all closures on a wait list.
  */
 static inline void closure_wake_up(struct closure_waitlist *list)
 {
-	/* Memory barrier for the wait list */
 	smp_mb();
 	__closure_wake_up(list);
 }
@@ -345,8 +342,7 @@ do {									\
 } while (0)
 
 /**
- * closure_return_with_destructor - finish execution of a closure,
- *				    with destructor
+ * closure_return - finish execution of a closure, with destructor
  *
  * Works like closure_return(), except @destructor will be called when all
  * outstanding refs on @cl have been dropped; @destructor may be used to safely

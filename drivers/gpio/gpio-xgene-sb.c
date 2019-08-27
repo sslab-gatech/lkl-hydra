@@ -143,14 +143,12 @@ static int xgene_gpio_sb_domain_activate(struct irq_domain *d,
 {
 	struct xgene_gpio_sb *priv = d->host_data;
 	u32 gpio = HWIRQ_TO_GPIO(priv, irq_data->hwirq);
-	int ret;
 
-	ret = gpiochip_lock_as_irq(&priv->gc, gpio);
-	if (ret) {
+	if (gpiochip_lock_as_irq(&priv->gc, gpio)) {
 		dev_err(priv->gc.parent,
 		"Unable to configure XGene GPIO standby pin %d as IRQ\n",
 				gpio);
-		return ret;
+		return -ENOSPC;
 	}
 
 	xgene_gpio_set_bit(&priv->gc, priv->regs + MPA_GPIO_SEL_LO,

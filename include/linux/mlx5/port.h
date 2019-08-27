@@ -107,6 +107,9 @@ enum mlx5e_connector_type {
 
 #define MLX5E_PROT_MASK(link_mode) (1 << link_mode)
 
+#define PORT_MODULE_EVENT_MODULE_STATUS_MASK 0xF
+#define PORT_MODULE_EVENT_ERROR_TYPE_MASK         0xF
+
 int mlx5_set_port_caps(struct mlx5_core_dev *dev, u8 port_num, u32 caps);
 int mlx5_query_port_ptys(struct mlx5_core_dev *dev, u32 *ptys,
 			 int ptys_size, int proto_mask, u8 local_port);
@@ -147,12 +150,6 @@ int mlx5_query_port_pause(struct mlx5_core_dev *dev,
 int mlx5_set_port_pfc(struct mlx5_core_dev *dev, u8 pfc_en_tx, u8 pfc_en_rx);
 int mlx5_query_port_pfc(struct mlx5_core_dev *dev, u8 *pfc_en_tx,
 			u8 *pfc_en_rx);
-
-int mlx5_set_port_stall_watermark(struct mlx5_core_dev *dev,
-				  u16 stall_critical_watermark,
-				  u16 stall_minor_watermark);
-int mlx5_query_port_stall_watermark(struct mlx5_core_dev *dev,
-				    u16 *stall_critical_watermark, u16 *stall_minor_watermark);
 
 int mlx5_max_tc(struct mlx5_core_dev *mdev);
 

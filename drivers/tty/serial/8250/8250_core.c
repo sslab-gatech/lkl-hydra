@@ -130,8 +130,12 @@ static irqreturn_t serial8250_interrupt(int irq, void *dev_id)
 
 		l = l->next;
 
-		if (l == i->head && pass_counter++ > PASS_LIMIT)
+		if (l == i->head && pass_counter++ > PASS_LIMIT) {
+			/* If we hit this, we're dead. */
+			printk_ratelimited(KERN_ERR
+				"serial8250: too much work for irq%d\n", irq);
 			break;
+		}
 	} while (l != end);
 
 	spin_unlock(&i->lock);
@@ -319,7 +323,7 @@ static int univ8250_setup_irq(struct uart_8250_port *up)
 	 * the port is opened so this value needs to be preserved.
 	 */
 	if (up->bugs & UART_BUG_THRE) {
-		pr_debug("%s - using backup timer\n", port->name);
+		pr_debug("ttyS%d - using backup timer\n", serial_index(port));
 
 		up->timer.function = serial8250_backup_timeout;
 		mod_timer(&up->timer, jiffies +
@@ -942,21 +946,6 @@ static struct uart_8250_port *serial8250_find_match_or_unused(struct uart_port *
 	return NULL;
 }
 
-static void serial_8250_overrun_backoff_work(struct work_struct *work)
-{
-	struct uart_8250_port *up =
-	    container_of(to_delayed_work(work), struct uart_8250_port,
-			 overrun_backoff);
-	struct uart_port *port = &up->port;
-	unsigned long flags;
-
-	spin_lock_irqsave(&port->lock, flags);
-	up->ier |= UART_IER_RLSI | UART_IER_RDI;
-	up->port.read_status_mask |= UART_LSR_DR;
-	serial_out(up, UART_IER, up->ier);
-	spin_unlock_irqrestore(&port->lock, flags);
-}
-
 /**
  *	serial8250_register_8250_port - register a serial port
  *	@up: serial port template
@@ -1034,10 +1023,6 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 			uart->port.get_mctrl = up->port.get_mctrl;
 		if (up->port.set_mctrl)
 			uart->port.set_mctrl = up->port.set_mctrl;
-		if (up->port.get_divisor)
-			uart->port.get_divisor = up->port.get_divisor;
-		if (up->port.set_divisor)
-			uart->port.set_divisor = up->port.set_divisor;
 		if (up->port.startup)
 			uart->port.startup = up->port.startup;
 		if (up->port.shutdown)
@@ -1070,18 +1055,7 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 
 			ret = 0;
 		}
-
-		/* Initialise interrupt backoff work if required */
-		if (up->overrun_backoff_time_ms > 0) {
-			uart->overrun_backoff_time_ms =
-				up->overrun_backoff_time_ms;
-			INIT_DELAYED_WORK(&uart->overrun_backoff,
-					serial_8250_overrun_backoff_work);
-		} else {
-			uart->overrun_backoff_time_ms = 0;
-		}
 	}
-
 	mutex_unlock(&serial_mutex);
 
 	return ret;

@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2005 Silicon Graphics, Inc.
  * Copyright (c) 2013 Red Hat, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -293,11 +305,9 @@ xfs_da3_node_read(
 			type = XFS_BLFT_DIR_LEAFN_BUF;
 			break;
 		default:
-			XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW,
-					tp->t_mountp, info, sizeof(*info));
-			xfs_trans_brelse(tp, *bpp);
-			*bpp = NULL;
-			return -EFSCORRUPTED;
+			type = 0;
+			ASSERT(0);
+			break;
 		}
 		xfs_trans_buf_set_type(tp, *bpp, type);
 	}
@@ -1481,7 +1491,6 @@ xfs_da3_node_lookup_int(
 	int			error;
 	int			retval;
 	unsigned int		expected_level = 0;
-	uint16_t		magic;
 	struct xfs_inode	*dp = state->args->dp;
 
 	args = state->args;
@@ -1506,27 +1515,25 @@ xfs_da3_node_lookup_int(
 			return error;
 		}
 		curr = blk->bp->b_addr;
-		magic = be16_to_cpu(curr->magic);
+		blk->magic = be16_to_cpu(curr->magic);
 
-		if (magic == XFS_ATTR_LEAF_MAGIC ||
-		    magic == XFS_ATTR3_LEAF_MAGIC) {
+		if (blk->magic == XFS_ATTR_LEAF_MAGIC ||
+		    blk->magic == XFS_ATTR3_LEAF_MAGIC) {
 			blk->magic = XFS_ATTR_LEAF_MAGIC;
 			blk->hashval = xfs_attr_leaf_lasthash(blk->bp, NULL);
 			break;
 		}
 
-		if (magic == XFS_DIR2_LEAFN_MAGIC ||
-		    magic == XFS_DIR3_LEAFN_MAGIC) {
+		if (blk->magic == XFS_DIR2_LEAFN_MAGIC ||
+		    blk->magic == XFS_DIR3_LEAFN_MAGIC) {
 			blk->magic = XFS_DIR2_LEAFN_MAGIC;
 			blk->hashval = xfs_dir2_leaf_lasthash(args->dp,
 							      blk->bp, NULL);
 			break;
 		}
 
-		if (magic != XFS_DA_NODE_MAGIC && magic != XFS_DA3_NODE_MAGIC)
-			return -EFSCORRUPTED;
-
 		blk->magic = XFS_DA_NODE_MAGIC;
+
 
 		/*
 		 * Search an intermediate node for a match.
@@ -2062,9 +2069,11 @@ xfs_da_grow_inode_int(
 	 * Try mapping it in one filesystem block.
 	 */
 	nmap = 1;
+	ASSERT(args->firstblock != NULL);
 	error = xfs_bmapi_write(tp, dp, *bno, count,
 			xfs_bmapi_aflag(w)|XFS_BMAPI_METADATA|XFS_BMAPI_CONTIG,
-			args->total, &map, &nmap);
+			args->firstblock, args->total, &map, &nmap,
+			args->dfops);
 	if (error)
 		return error;
 
@@ -2082,11 +2091,12 @@ xfs_da_grow_inode_int(
 		 */
 		mapp = kmem_alloc(sizeof(*mapp) * count, KM_SLEEP);
 		for (b = *bno, mapi = 0; b < *bno + count; ) {
-			nmap = min(XFS_BMAP_MAX_NMAP, count);
+			nmap = MIN(XFS_BMAP_MAX_NMAP, count);
 			c = (int)(*bno + count - b);
 			error = xfs_bmapi_write(tp, dp, b, c,
 					xfs_bmapi_aflag(w)|XFS_BMAPI_METADATA,
-					args->total, &mapp[mapi], &nmap);
+					args->firstblock, args->total,
+					&mapp[mapi], &nmap, args->dfops);
 			if (error)
 				goto out_free_map;
 			if (nmap < 1)
@@ -2375,13 +2385,13 @@ done:
  */
 int
 xfs_da_shrink_inode(
-	struct xfs_da_args	*args,
-	xfs_dablk_t		dead_blkno,
-	struct xfs_buf		*dead_buf)
+	xfs_da_args_t	*args,
+	xfs_dablk_t	dead_blkno,
+	struct xfs_buf	*dead_buf)
 {
-	struct xfs_inode	*dp;
-	int			done, error, w, count;
-	struct xfs_trans	*tp;
+	xfs_inode_t *dp;
+	int done, error, w, count;
+	xfs_trans_t *tp;
 
 	trace_xfs_da_shrink_inode(args);
 
@@ -2395,7 +2405,8 @@ xfs_da_shrink_inode(
 		 * the last block to the place we want to kill.
 		 */
 		error = xfs_bunmapi(tp, dp, dead_blkno, count,
-				    xfs_bmapi_aflag(w), 0, &done);
+				    xfs_bmapi_aflag(w), 0, args->firstblock,
+				    args->dfops, &done);
 		if (error == -ENOSPC) {
 			if (w != XFS_DATA_FORK)
 				break;

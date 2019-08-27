@@ -1,13 +1,20 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2012 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  *
  ******************************************************************************/
 #ifndef __RTW_PWRCTRL_H_
 #define __RTW_PWRCTRL_H_
 
-#include <linux/mutex.h>
 
 #define FW_PWR0	0
 #define FW_PWR1		1
@@ -31,18 +38,19 @@
 #define BTCOEX_ALIVE	BIT(4)
 
 
-enum Power_Mgnt {
-	PS_MODE_ACTIVE	= 0,
-	PS_MODE_MIN,
-	PS_MODE_MAX,
-	PS_MODE_DTIM,	/* PS_MODE_SELF_DEFINED */
-	PS_MODE_VOIP,
-	PS_MODE_UAPSD_WMM,
-	PS_MODE_UAPSD,
-	PS_MODE_IBSS,
-	PS_MODE_WWLAN,
-	PM_Radio_Off,
-	PM_Card_Disable,
+enum Power_Mgnt
+{
+	PS_MODE_ACTIVE	= 0	,
+	PS_MODE_MIN			,
+	PS_MODE_MAX			,
+	PS_MODE_DTIM			,	/* PS_MODE_SELF_DEFINED */
+	PS_MODE_VOIP			,
+	PS_MODE_UAPSD_WMM	,
+	PS_MODE_UAPSD			,
+	PS_MODE_IBSS			,
+	PS_MODE_WWLAN		,
+	PM_Radio_Off			,
+	PM_Card_Disable		,
 	PS_MODE_NUM,
 };
 
@@ -93,6 +101,10 @@ struct reportpwrstate_parm {
 	unsigned char state; /* the CPWM value */
 	unsigned short rsvd;
 };
+
+
+typedef _sema _pwrlock;
+
 
 #define LPS_DELAY_TIME	1*HZ /*  1 sec */
 
@@ -204,7 +216,8 @@ typedef struct pno_scan_info
 
 struct pwrctrl_priv
 {
-	struct mutex lock;
+	_pwrlock	lock;
+	_pwrlock	check_32k_lock;
 	volatile u8 rpwm; /*  requested power state for fw */
 	volatile u8 cpwm; /*  fw current power state. updated when 1. read from HCPWM 2. driver lowers power level */
 	volatile u8 tog; /*  toggling */

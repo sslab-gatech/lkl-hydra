@@ -57,10 +57,6 @@
 	status = "ok";
 };
 
-&ipmi0 {
-	status = "ok";
-};
-
 &usb_ohci {
 	status = "ok";
 };

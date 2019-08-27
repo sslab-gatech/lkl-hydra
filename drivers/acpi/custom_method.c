@@ -92,8 +92,9 @@ static int __init acpi_custom_method_init(void)
 
 static void __exit acpi_custom_method_exit(void)
 {
-	debugfs_remove(cm_dentry);
-}
+	if (cm_dentry)
+		debugfs_remove(cm_dentry);
+ }
 
 module_init(acpi_custom_method_init);
 module_exit(acpi_custom_method_exit);

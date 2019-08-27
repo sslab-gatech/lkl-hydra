@@ -25,6 +25,20 @@ ENTRY(get_sev_encryption_bit)
 	push	%ebx
 	push	%ecx
 	push	%edx
+	push	%edi
+
+	/*
+	 * RIP-relative addressing is needed to access the encryption bit
+	 * variable. Since we are running in 32-bit mode we need this call/pop
+	 * sequence to get the proper relative addressing.
+	 */
+	call	1f
+1:	popl	%edi
+	subl	$1b, %edi
+
+	movl	enc_bit(%edi), %eax
+	cmpl	$0, %eax
+	jge	.Lsev_exit
 
 	/* Check if running under a hypervisor */
 	movl	$1, %eax
@@ -55,12 +69,15 @@ ENTRY(get_sev_encryption_bit)
 
 	movl	%ebx, %eax
 	andl	$0x3f, %eax		/* Return the encryption bit location */
+	movl	%eax, enc_bit(%edi)
 	jmp	.Lsev_exit
 
 .Lno_sev:
 	xor	%eax, %eax
+	movl	%eax, enc_bit(%edi)
 
 .Lsev_exit:
+	pop	%edi
 	pop	%edx
 	pop	%ecx
 	pop	%ebx
@@ -71,7 +88,9 @@ ENTRY(get_sev_encryption_bit)
 ENDPROC(get_sev_encryption_bit)
 
 	.code64
-ENTRY(set_sev_encryption_mask)
+ENTRY(get_sev_encryption_mask)
+	xor	%rax, %rax
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 	push	%rbp
 	push	%rdx
@@ -82,7 +101,9 @@ ENTRY(set_sev_encryption_mask)
 	testl	%eax, %eax
 	jz	.Lno_sev_mask
 
-	bts	%rax, sme_me_mask(%rip)	/* Create the encryption mask */
+	xor	%rdx, %rdx
+	bts	%rax, %rdx		/* Create the encryption mask */
+	mov	%rdx, %rax		/* ... and return it */
 
 .Lno_sev_mask:
 	movq	%rbp, %rsp		/* Restore original stack pointer */
@@ -91,14 +112,9 @@ ENTRY(set_sev_encryption_mask)
 	pop	%rbp
 #endif
 
-	xor	%rax, %rax
 	ret
-ENDPROC(set_sev_encryption_mask)
+ENDPROC(get_sev_encryption_mask)
 
 	.data
-
-#ifdef CONFIG_AMD_MEM_ENCRYPT
-	.balign	8
-GLOBAL(sme_me_mask)
-	.quad	0
-#endif
+enc_bit:
+	.int	0xffffffff

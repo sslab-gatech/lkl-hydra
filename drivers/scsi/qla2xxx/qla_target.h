@@ -374,8 +374,8 @@ struct atio_from_isp {
 static inline int fcpcmd_is_corrupted(struct atio *atio)
 {
 	if (atio->entry_type == ATIO_TYPE7 &&
-	    ((le16_to_cpu(atio->attr_n_length) & FCP_CMD_LENGTH_MASK) <
-	     FCP_CMD_LENGTH_MIN))
+	    (le16_to_cpu(atio->attr_n_length & FCP_CMD_LENGTH_MASK) <
+	    FCP_CMD_LENGTH_MIN))
 		return 1;
 	else
 		return 0;
@@ -682,7 +682,7 @@ struct qla_tgt_cmd;
  * target module (tcm_qla2xxx).
  */
 struct qla_tgt_func_tmpl {
-	struct qla_tgt_cmd *(*find_cmd_by_tag)(struct fc_port *, uint64_t);
+
 	int (*handle_cmd)(struct scsi_qla_host *, struct qla_tgt_cmd *,
 			unsigned char *, uint32_t, int, int, int);
 	void (*handle_data)(struct qla_tgt_cmd *);
@@ -770,6 +770,14 @@ int qla2x00_wait_for_hba_online(struct scsi_qla_host *);
 #define	FC_TM_FCP_DATA_MISMATCH     3
 #define	FC_TM_REJECT                4
 #define FC_TM_FAILED                5
+
+#if (BITS_PER_LONG > 32) || defined(CONFIG_HIGHMEM64G)
+#define pci_dma_lo32(a) (a & 0xffffffff)
+#define pci_dma_hi32(a) ((((a) >> 16)>>16) & 0xffffffff)
+#else
+#define pci_dma_lo32(a) (a & 0xffffffff)
+#define pci_dma_hi32(a) 0
+#endif
 
 #define QLA_TGT_SENSE_VALID(sense)  ((sense != NULL) && \
 				(((const uint8_t *)(sense))[0] & 0x70) == 0x70)
@@ -892,7 +900,6 @@ struct qla_tgt_cmd {
 	unsigned int aborted:1;
 	unsigned int data_work:1;
 	unsigned int data_work_free:1;
-	unsigned int released:1;
 
 	struct scatterlist *sg;	/* cmd data buffer SG vector */
 	int sg_cnt;		/* SG segments count */
@@ -901,7 +908,6 @@ struct qla_tgt_cmd {
 	u64 unpacked_lun;
 	enum dma_data_direction dma_data_direction;
 
-	uint16_t ctio_flags;
 	uint16_t vp_idx;
 	uint16_t loop_id;	/* to save extra sess dereferences */
 	struct qla_tgt *tgt;	/* to save extra sess dereferences */
@@ -950,22 +956,16 @@ struct qla_tgt_sess_work_param {
 };
 
 struct qla_tgt_mgmt_cmd {
-	uint8_t cmd_type;
-	uint8_t pad[3];
 	uint16_t tmr_func;
 	uint8_t fc_tm_rsp;
-	uint8_t abort_io_attr;
 	struct fc_port *sess;
 	struct qla_qpair *qpair;
 	struct scsi_qla_host *vha;
 	struct se_cmd se_cmd;
 	struct work_struct free_work;
 	unsigned int flags;
-#define QLA24XX_MGMT_SEND_NACK	BIT_0
-#define QLA24XX_MGMT_ABORT_IO_ATTR_VALID BIT_1
 	uint32_t reset_count;
-	struct work_struct work;
-	uint64_t unpacked_lun;
+#define QLA24XX_MGMT_SEND_NACK	1
 	union {
 		struct atio_from_isp atio;
 		struct imm_ntfy_from_isp imm_ntfy;
@@ -1016,7 +1016,7 @@ extern void qlt_fc_port_deleted(struct scsi_qla_host *, fc_port_t *, int);
 extern int __init qlt_init(void);
 extern void qlt_exit(void);
 extern void qlt_update_vp_map(struct scsi_qla_host *, int);
-extern void qlt_free_session_done(struct work_struct *);
+
 /*
  * This macro is used during early initializations when host->active_mode
  * is not set. Right now, ha value is ignored.

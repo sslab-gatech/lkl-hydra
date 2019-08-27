@@ -28,6 +28,9 @@ enum {
 	EFX_EF10_TEST = 1,
 	EFX_EF10_REFILL,
 };
+
+/* The reserved RSS context value */
+#define EFX_EF10_RSS_CONTEXT_INVALID	0xffffffff
 /* The maximum size of a shared RSS context */
 /* TODO: this should really be from the mcdi protocol export */
 #define EFX_EF10_MAX_SHARED_RSS_CONTEXT_SIZE 64UL
@@ -96,15 +99,17 @@ struct efx_ef10_filter_table {
 		MC_CMD_GET_PARSER_DISP_INFO_OUT_SUPPORTED_MATCHES_MAXNUM * 2];
 	unsigned int rx_match_count;
 
-	struct rw_semaphore lock; /* Protects entries */
 	struct {
 		unsigned long spec;	/* pointer to spec plus flag bits */
-/* AUTO_OLD is used to mark and sweep MAC filters for the device address lists. */
-/* unused flag	1UL */
+/* BUSY flag indicates that an update is in progress.  AUTO_OLD is
+ * used to mark and sweep MAC filters for the device address lists.
+ */
+#define EFX_EF10_FILTER_FLAG_BUSY	1UL
 #define EFX_EF10_FILTER_FLAG_AUTO_OLD	2UL
 #define EFX_EF10_FILTER_FLAGS		3UL
 		u64 handle;		/* firmware handle */
 	} *entry;
+	wait_queue_head_t waitq;
 /* Shadow of net_device address lists, guarded by mac_lock */
 	struct efx_ef10_dev_addr dev_uc_list[EFX_EF10_FILTER_DEV_UC_MAX];
 	struct efx_ef10_dev_addr dev_mc_list[EFX_EF10_FILTER_DEV_MC_MAX];
@@ -692,7 +697,7 @@ static int efx_ef10_probe(struct efx_nic *efx)
 	}
 	nic_data->warm_boot_count = rc;
 
-	efx->rss_context.context_id = EFX_EF10_RSS_CONTEXT_INVALID;
+	nic_data->rx_rss_context = EFX_EF10_RSS_CONTEXT_INVALID;
 
 	nic_data->vport_id = EVB_PORT_ID_ASSIGNED;
 
@@ -1484,8 +1489,8 @@ static int efx_ef10_init_nic(struct efx_nic *efx)
 	}
 
 	/* don't fail init if RSS setup doesn't work */
-	rc = efx->type->rx_push_rss_config(efx, false,
-					   efx->rss_context.rx_indir_table, NULL);
+	rc = efx->type->rx_push_rss_config(efx, false, efx->rx_indir_table, NULL);
+	efx->rss_active = (rc == 0);
 
 	return 0;
 }
@@ -1499,11 +1504,10 @@ static void efx_ef10_reset_mc_allocations(struct efx_nic *efx)
 
 	/* All our allocations have been reset */
 	nic_data->must_realloc_vis = true;
-	nic_data->must_restore_rss_contexts = true;
 	nic_data->must_restore_filters = true;
 	nic_data->must_restore_piobufs = true;
 	efx_ef10_forget_old_piobufs(efx);
-	efx->rss_context.context_id = EFX_EF10_RSS_CONTEXT_INVALID;
+	nic_data->rx_rss_context = EFX_EF10_RSS_CONTEXT_INVALID;
 
 	/* Driver-created vswitches and vports must be re-created */
 	nic_data->must_probe_vswitching = true;
@@ -1666,6 +1670,7 @@ static const struct efx_hw_stat_desc efx_ef10_stat_desc[EF10_STAT_COUNT] = {
 	EF10_DMA_STAT(fec_corrected_symbols_lane1, FEC_CORRECTED_SYMBOLS_LANE1),
 	EF10_DMA_STAT(fec_corrected_symbols_lane2, FEC_CORRECTED_SYMBOLS_LANE2),
 	EF10_DMA_STAT(fec_corrected_symbols_lane3, FEC_CORRECTED_SYMBOLS_LANE3),
+	EF10_DMA_STAT(ctpio_dmabuf_start, CTPIO_DMABUF_START),
 	EF10_DMA_STAT(ctpio_vi_busy_fallback, CTPIO_VI_BUSY_FALLBACK),
 	EF10_DMA_STAT(ctpio_long_write_success, CTPIO_LONG_WRITE_SUCCESS),
 	EF10_DMA_STAT(ctpio_missing_dbell_fail, CTPIO_MISSING_DBELL_FAIL),
@@ -1776,6 +1781,7 @@ static const struct efx_hw_stat_desc efx_ef10_stat_desc[EF10_STAT_COUNT] = {
  * These bits are in the second u64 of the raw mask.
  */
 #define EF10_CTPIO_STAT_MASK (						\
+	(1ULL << (EF10_STAT_ctpio_dmabuf_start - 64)) |			\
 	(1ULL << (EF10_STAT_ctpio_vi_busy_fallback - 64)) |		\
 	(1ULL << (EF10_STAT_ctpio_long_write_success - 64)) |		\
 	(1ULL << (EF10_STAT_ctpio_missing_dbell_fail - 64)) |		\
@@ -2697,30 +2703,27 @@ static int efx_ef10_get_rss_flags(struct efx_nic *efx, u32 context, u32 *flags)
  * Defaults are 4-tuple for TCP and 2-tuple for UDP and other-IP, so we
  * just need to set the UDP ports flags (for both IP versions).
  */
-static void efx_ef10_set_rss_flags(struct efx_nic *efx,
-				   struct efx_rss_context *ctx)
+static void efx_ef10_set_rss_flags(struct efx_nic *efx, u32 context)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_RSS_CONTEXT_SET_FLAGS_IN_LEN);
 	u32 flags;
 
 	BUILD_BUG_ON(MC_CMD_RSS_CONTEXT_SET_FLAGS_OUT_LEN != 0);
 
-	if (efx_ef10_get_rss_flags(efx, ctx->context_id, &flags) != 0)
+	if (efx_ef10_get_rss_flags(efx, context, &flags) != 0)
 		return;
-	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_SET_FLAGS_IN_RSS_CONTEXT_ID,
-		       ctx->context_id);
+	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_SET_FLAGS_IN_RSS_CONTEXT_ID, context);
 	flags |= RSS_MODE_HASH_PORTS << MC_CMD_RSS_CONTEXT_GET_FLAGS_OUT_UDP_IPV4_RSS_MODE_LBN;
 	flags |= RSS_MODE_HASH_PORTS << MC_CMD_RSS_CONTEXT_GET_FLAGS_OUT_UDP_IPV6_RSS_MODE_LBN;
 	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_SET_FLAGS_IN_FLAGS, flags);
 	if (!efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_SET_FLAGS, inbuf, sizeof(inbuf),
 			  NULL, 0, NULL))
 		/* Succeeded, so UDP 4-tuple is now enabled */
-		ctx->rx_hash_udp_4tuple = true;
+		efx->rx_hash_udp_4tuple = true;
 }
 
-static int efx_ef10_alloc_rss_context(struct efx_nic *efx, bool exclusive,
-				      struct efx_rss_context *ctx,
-				      unsigned *context_size)
+static int efx_ef10_alloc_rss_context(struct efx_nic *efx, u32 *context,
+				      bool exclusive, unsigned *context_size)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_RSS_CONTEXT_ALLOC_IN_LEN);
 	MCDI_DECLARE_BUF(outbuf, MC_CMD_RSS_CONTEXT_ALLOC_OUT_LEN);
@@ -2736,7 +2739,7 @@ static int efx_ef10_alloc_rss_context(struct efx_nic *efx, bool exclusive,
 				    EFX_EF10_MAX_SHARED_RSS_CONTEXT_SIZE);
 
 	if (!exclusive && rss_spread == 1) {
-		ctx->context_id = EFX_EF10_RSS_CONTEXT_INVALID;
+		*context = EFX_EF10_RSS_CONTEXT_INVALID;
 		if (context_size)
 			*context_size = 1;
 		return 0;
@@ -2759,26 +2762,29 @@ static int efx_ef10_alloc_rss_context(struct efx_nic *efx, bool exclusive,
 	if (outlen < MC_CMD_RSS_CONTEXT_ALLOC_OUT_LEN)
 		return -EIO;
 
-	ctx->context_id = MCDI_DWORD(outbuf, RSS_CONTEXT_ALLOC_OUT_RSS_CONTEXT_ID);
+	*context = MCDI_DWORD(outbuf, RSS_CONTEXT_ALLOC_OUT_RSS_CONTEXT_ID);
 
 	if (context_size)
 		*context_size = rss_spread;
 
 	if (nic_data->datapath_caps &
 	    1 << MC_CMD_GET_CAPABILITIES_OUT_ADDITIONAL_RSS_MODES_LBN)
-		efx_ef10_set_rss_flags(efx, ctx);
+		efx_ef10_set_rss_flags(efx, *context);
 
 	return 0;
 }
 
-static int efx_ef10_free_rss_context(struct efx_nic *efx, u32 context)
+static void efx_ef10_free_rss_context(struct efx_nic *efx, u32 context)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_RSS_CONTEXT_FREE_IN_LEN);
+	int rc;
 
 	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_FREE_IN_RSS_CONTEXT_ID,
 		       context);
-	return efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_FREE, inbuf, sizeof(inbuf),
+
+	rc = efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_FREE, inbuf, sizeof(inbuf),
 			    NULL, 0, NULL);
+	WARN_ON(rc != 0);
 }
 
 static int efx_ef10_populate_rss_table(struct efx_nic *efx, u32 context,
@@ -2790,15 +2796,15 @@ static int efx_ef10_populate_rss_table(struct efx_nic *efx, u32 context,
 
 	MCDI_SET_DWORD(tablebuf, RSS_CONTEXT_SET_TABLE_IN_RSS_CONTEXT_ID,
 		       context);
-	BUILD_BUG_ON(ARRAY_SIZE(efx->rss_context.rx_indir_table) !=
+	BUILD_BUG_ON(ARRAY_SIZE(efx->rx_indir_table) !=
 		     MC_CMD_RSS_CONTEXT_SET_TABLE_IN_INDIRECTION_TABLE_LEN);
 
-	/* This iterates over the length of efx->rss_context.rx_indir_table, but
-	 * copies bytes from rx_indir_table.  That's because the latter is a
-	 * pointer rather than an array, but should have the same length.
-	 * The efx->rss_context.rx_hash_key loop below is similar.
+	/* This iterates over the length of efx->rx_indir_table, but copies
+	 * bytes from rx_indir_table.  That's because the latter is a pointer
+	 * rather than an array, but should have the same length.
+	 * The efx->rx_hash_key loop below is similar.
 	 */
-	for (i = 0; i < ARRAY_SIZE(efx->rss_context.rx_indir_table); ++i)
+	for (i = 0; i < ARRAY_SIZE(efx->rx_indir_table); ++i)
 		MCDI_PTR(tablebuf,
 			 RSS_CONTEXT_SET_TABLE_IN_INDIRECTION_TABLE)[i] =
 				(u8) rx_indir_table[i];
@@ -2810,9 +2816,9 @@ static int efx_ef10_populate_rss_table(struct efx_nic *efx, u32 context,
 
 	MCDI_SET_DWORD(keybuf, RSS_CONTEXT_SET_KEY_IN_RSS_CONTEXT_ID,
 		       context);
-	BUILD_BUG_ON(ARRAY_SIZE(efx->rss_context.rx_hash_key) !=
+	BUILD_BUG_ON(ARRAY_SIZE(efx->rx_hash_key) !=
 		     MC_CMD_RSS_CONTEXT_SET_KEY_IN_TOEPLITZ_KEY_LEN);
-	for (i = 0; i < ARRAY_SIZE(efx->rss_context.rx_hash_key); ++i)
+	for (i = 0; i < ARRAY_SIZE(efx->rx_hash_key); ++i)
 		MCDI_PTR(keybuf, RSS_CONTEXT_SET_KEY_IN_TOEPLITZ_KEY)[i] = key[i];
 
 	return efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_SET_KEY, keybuf,
@@ -2821,27 +2827,27 @@ static int efx_ef10_populate_rss_table(struct efx_nic *efx, u32 context,
 
 static void efx_ef10_rx_free_indir_table(struct efx_nic *efx)
 {
-	int rc;
+	struct efx_ef10_nic_data *nic_data = efx->nic_data;
 
-	if (efx->rss_context.context_id != EFX_EF10_RSS_CONTEXT_INVALID) {
-		rc = efx_ef10_free_rss_context(efx, efx->rss_context.context_id);
-		WARN_ON(rc != 0);
-	}
-	efx->rss_context.context_id = EFX_EF10_RSS_CONTEXT_INVALID;
+	if (nic_data->rx_rss_context != EFX_EF10_RSS_CONTEXT_INVALID)
+		efx_ef10_free_rss_context(efx, nic_data->rx_rss_context);
+	nic_data->rx_rss_context = EFX_EF10_RSS_CONTEXT_INVALID;
 }
 
 static int efx_ef10_rx_push_shared_rss_config(struct efx_nic *efx,
 					      unsigned *context_size)
 {
+	u32 new_rx_rss_context;
 	struct efx_ef10_nic_data *nic_data = efx->nic_data;
-	int rc = efx_ef10_alloc_rss_context(efx, false, &efx->rss_context,
-					    context_size);
+	int rc = efx_ef10_alloc_rss_context(efx, &new_rx_rss_context,
+					    false, context_size);
 
 	if (rc != 0)
 		return rc;
 
+	nic_data->rx_rss_context = new_rx_rss_context;
 	nic_data->rx_rss_context_exclusive = false;
-	efx_set_default_rx_indir_table(efx, &efx->rss_context);
+	efx_set_default_rx_indir_table(efx);
 	return 0;
 }
 
@@ -2849,98 +2855,65 @@ static int efx_ef10_rx_push_exclusive_rss_config(struct efx_nic *efx,
 						 const u32 *rx_indir_table,
 						 const u8 *key)
 {
-	u32 old_rx_rss_context = efx->rss_context.context_id;
 	struct efx_ef10_nic_data *nic_data = efx->nic_data;
 	int rc;
+	u32 new_rx_rss_context;
 
-	if (efx->rss_context.context_id == EFX_EF10_RSS_CONTEXT_INVALID ||
+	if (nic_data->rx_rss_context == EFX_EF10_RSS_CONTEXT_INVALID ||
 	    !nic_data->rx_rss_context_exclusive) {
-		rc = efx_ef10_alloc_rss_context(efx, true, &efx->rss_context,
-						NULL);
+		rc = efx_ef10_alloc_rss_context(efx, &new_rx_rss_context,
+						true, NULL);
 		if (rc == -EOPNOTSUPP)
 			return rc;
 		else if (rc != 0)
 			goto fail1;
+	} else {
+		new_rx_rss_context = nic_data->rx_rss_context;
 	}
 
-	rc = efx_ef10_populate_rss_table(efx, efx->rss_context.context_id,
+	rc = efx_ef10_populate_rss_table(efx, new_rx_rss_context,
 					 rx_indir_table, key);
 	if (rc != 0)
 		goto fail2;
 
-	if (efx->rss_context.context_id != old_rx_rss_context &&
-	    old_rx_rss_context != EFX_EF10_RSS_CONTEXT_INVALID)
-		WARN_ON(efx_ef10_free_rss_context(efx, old_rx_rss_context) != 0);
+	if (nic_data->rx_rss_context != new_rx_rss_context)
+		efx_ef10_rx_free_indir_table(efx);
+	nic_data->rx_rss_context = new_rx_rss_context;
 	nic_data->rx_rss_context_exclusive = true;
-	if (rx_indir_table != efx->rss_context.rx_indir_table)
-		memcpy(efx->rss_context.rx_indir_table, rx_indir_table,
-		       sizeof(efx->rss_context.rx_indir_table));
-	if (key != efx->rss_context.rx_hash_key)
-		memcpy(efx->rss_context.rx_hash_key, key,
-		       efx->type->rx_hash_key_size);
+	if (rx_indir_table != efx->rx_indir_table)
+		memcpy(efx->rx_indir_table, rx_indir_table,
+		       sizeof(efx->rx_indir_table));
+	if (key != efx->rx_hash_key)
+		memcpy(efx->rx_hash_key, key, efx->type->rx_hash_key_size);
 
 	return 0;
 
 fail2:
-	if (old_rx_rss_context != efx->rss_context.context_id) {
-		WARN_ON(efx_ef10_free_rss_context(efx, efx->rss_context.context_id) != 0);
-		efx->rss_context.context_id = old_rx_rss_context;
-	}
+	if (new_rx_rss_context != nic_data->rx_rss_context)
+		efx_ef10_free_rss_context(efx, new_rx_rss_context);
 fail1:
 	netif_err(efx, hw, efx->net_dev, "%s: failed rc=%d\n", __func__, rc);
 	return rc;
 }
 
-static int efx_ef10_rx_push_rss_context_config(struct efx_nic *efx,
-					       struct efx_rss_context *ctx,
-					       const u32 *rx_indir_table,
-					       const u8 *key)
+static int efx_ef10_rx_pull_rss_config(struct efx_nic *efx)
 {
-	int rc;
-
-	WARN_ON(!mutex_is_locked(&efx->rss_lock));
-
-	if (ctx->context_id == EFX_EF10_RSS_CONTEXT_INVALID) {
-		rc = efx_ef10_alloc_rss_context(efx, true, ctx, NULL);
-		if (rc)
-			return rc;
-	}
-
-	if (!rx_indir_table) /* Delete this context */
-		return efx_ef10_free_rss_context(efx, ctx->context_id);
-
-	rc = efx_ef10_populate_rss_table(efx, ctx->context_id,
-					 rx_indir_table, key);
-	if (rc)
-		return rc;
-
-	memcpy(ctx->rx_indir_table, rx_indir_table,
-	       sizeof(efx->rss_context.rx_indir_table));
-	memcpy(ctx->rx_hash_key, key, efx->type->rx_hash_key_size);
-
-	return 0;
-}
-
-static int efx_ef10_rx_pull_rss_context_config(struct efx_nic *efx,
-					       struct efx_rss_context *ctx)
-{
+	struct efx_ef10_nic_data *nic_data = efx->nic_data;
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_RSS_CONTEXT_GET_TABLE_IN_LEN);
 	MCDI_DECLARE_BUF(tablebuf, MC_CMD_RSS_CONTEXT_GET_TABLE_OUT_LEN);
 	MCDI_DECLARE_BUF(keybuf, MC_CMD_RSS_CONTEXT_GET_KEY_OUT_LEN);
 	size_t outlen;
 	int rc, i;
 
-	WARN_ON(!mutex_is_locked(&efx->rss_lock));
-
 	BUILD_BUG_ON(MC_CMD_RSS_CONTEXT_GET_TABLE_IN_LEN !=
 		     MC_CMD_RSS_CONTEXT_GET_KEY_IN_LEN);
 
-	if (ctx->context_id == EFX_EF10_RSS_CONTEXT_INVALID)
+	if (nic_data->rx_rss_context == EFX_EF10_RSS_CONTEXT_INVALID)
 		return -ENOENT;
 
 	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_GET_TABLE_IN_RSS_CONTEXT_ID,
-		       ctx->context_id);
-	BUILD_BUG_ON(ARRAY_SIZE(ctx->rx_indir_table) !=
+		       nic_data->rx_rss_context);
+	BUILD_BUG_ON(ARRAY_SIZE(efx->rx_indir_table) !=
 		     MC_CMD_RSS_CONTEXT_GET_TABLE_OUT_INDIRECTION_TABLE_LEN);
 	rc = efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_GET_TABLE, inbuf, sizeof(inbuf),
 			  tablebuf, sizeof(tablebuf), &outlen);
@@ -2950,13 +2923,13 @@ static int efx_ef10_rx_pull_rss_context_config(struct efx_nic *efx,
 	if (WARN_ON(outlen != MC_CMD_RSS_CONTEXT_GET_TABLE_OUT_LEN))
 		return -EIO;
 
-	for (i = 0; i < ARRAY_SIZE(ctx->rx_indir_table); i++)
-		ctx->rx_indir_table[i] = MCDI_PTR(tablebuf,
+	for (i = 0; i < ARRAY_SIZE(efx->rx_indir_table); i++)
+		efx->rx_indir_table[i] = MCDI_PTR(tablebuf,
 				RSS_CONTEXT_GET_TABLE_OUT_INDIRECTION_TABLE)[i];
 
 	MCDI_SET_DWORD(inbuf, RSS_CONTEXT_GET_KEY_IN_RSS_CONTEXT_ID,
-		       ctx->context_id);
-	BUILD_BUG_ON(ARRAY_SIZE(ctx->rx_hash_key) !=
+		       nic_data->rx_rss_context);
+	BUILD_BUG_ON(ARRAY_SIZE(efx->rx_hash_key) !=
 		     MC_CMD_RSS_CONTEXT_SET_KEY_IN_TOEPLITZ_KEY_LEN);
 	rc = efx_mcdi_rpc(efx, MC_CMD_RSS_CONTEXT_GET_KEY, inbuf, sizeof(inbuf),
 			  keybuf, sizeof(keybuf), &outlen);
@@ -2966,48 +2939,11 @@ static int efx_ef10_rx_pull_rss_context_config(struct efx_nic *efx,
 	if (WARN_ON(outlen != MC_CMD_RSS_CONTEXT_GET_KEY_OUT_LEN))
 		return -EIO;
 
-	for (i = 0; i < ARRAY_SIZE(ctx->rx_hash_key); ++i)
-		ctx->rx_hash_key[i] = MCDI_PTR(
+	for (i = 0; i < ARRAY_SIZE(efx->rx_hash_key); ++i)
+		efx->rx_hash_key[i] = MCDI_PTR(
 				keybuf, RSS_CONTEXT_GET_KEY_OUT_TOEPLITZ_KEY)[i];
 
 	return 0;
-}
-
-static int efx_ef10_rx_pull_rss_config(struct efx_nic *efx)
-{
-	int rc;
-
-	mutex_lock(&efx->rss_lock);
-	rc = efx_ef10_rx_pull_rss_context_config(efx, &efx->rss_context);
-	mutex_unlock(&efx->rss_lock);
-	return rc;
-}
-
-static void efx_ef10_rx_restore_rss_contexts(struct efx_nic *efx)
-{
-	struct efx_ef10_nic_data *nic_data = efx->nic_data;
-	struct efx_rss_context *ctx;
-	int rc;
-
-	WARN_ON(!mutex_is_locked(&efx->rss_lock));
-
-	if (!nic_data->must_restore_rss_contexts)
-		return;
-
-	list_for_each_entry(ctx, &efx->rss_context.list, list) {
-		/* previous NIC RSS context is gone */
-		ctx->context_id = EFX_EF10_RSS_CONTEXT_INVALID;
-		/* so try to allocate a new one */
-		rc = efx_ef10_rx_push_rss_context_config(efx, ctx,
-							 ctx->rx_indir_table,
-							 ctx->rx_hash_key);
-		if (rc)
-			netif_warn(efx, probe, efx->net_dev,
-				   "failed to restore RSS context %u, rc=%d"
-				   "; RSS filters may fail to be applied\n",
-				   ctx->user_id, rc);
-	}
-	nic_data->must_restore_rss_contexts = false;
 }
 
 static int efx_ef10_pf_rx_push_rss_config(struct efx_nic *efx, bool user,
@@ -3020,7 +2956,7 @@ static int efx_ef10_pf_rx_push_rss_config(struct efx_nic *efx, bool user,
 		return 0;
 
 	if (!key)
-		key = efx->rss_context.rx_hash_key;
+		key = efx->rx_hash_key;
 
 	rc = efx_ef10_rx_push_exclusive_rss_config(efx, rx_indir_table, key);
 
@@ -3029,8 +2965,7 @@ static int efx_ef10_pf_rx_push_rss_config(struct efx_nic *efx, bool user,
 		bool mismatch = false;
 		size_t i;
 
-		for (i = 0;
-		     i < ARRAY_SIZE(efx->rss_context.rx_indir_table) && !mismatch;
+		for (i = 0; i < ARRAY_SIZE(efx->rx_indir_table) && !mismatch;
 		     i++)
 			mismatch = rx_indir_table[i] !=
 				ethtool_rxfh_indir_default(i, efx->rss_spread);
@@ -3065,9 +3000,11 @@ static int efx_ef10_vf_rx_push_rss_config(struct efx_nic *efx, bool user,
 					  const u8 *key
 					  __attribute__ ((unused)))
 {
+	struct efx_ef10_nic_data *nic_data = efx->nic_data;
+
 	if (user)
 		return -EOPNOTSUPP;
-	if (efx->rss_context.context_id != EFX_EF10_RSS_CONTEXT_INVALID)
+	if (nic_data->rx_rss_context != EFX_EF10_RSS_CONTEXT_INVALID)
 		return 0;
 	return efx_ef10_rx_push_shared_rss_config(efx, NULL);
 }
@@ -3999,6 +3936,29 @@ static void efx_ef10_prepare_flr(struct efx_nic *efx)
 	atomic_set(&efx->active_queues, 0);
 }
 
+static bool efx_ef10_filter_equal(const struct efx_filter_spec *left,
+				  const struct efx_filter_spec *right)
+{
+	if ((left->match_flags ^ right->match_flags) |
+	    ((left->flags ^ right->flags) &
+	     (EFX_FILTER_FLAG_RX | EFX_FILTER_FLAG_TX)))
+		return false;
+
+	return memcmp(&left->outer_vid, &right->outer_vid,
+		      sizeof(struct efx_filter_spec) -
+		      offsetof(struct efx_filter_spec, outer_vid)) == 0;
+}
+
+static unsigned int efx_ef10_filter_hash(const struct efx_filter_spec *spec)
+{
+	BUILD_BUG_ON(offsetof(struct efx_filter_spec, outer_vid) & 3);
+	return jhash2((const u32 *)&spec->outer_vid,
+		      (sizeof(struct efx_filter_spec) -
+		       offsetof(struct efx_filter_spec, outer_vid)) / 4,
+		      0);
+	/* XXX should we randomise the initval? */
+}
+
 /* Decide whether a filter should be exclusive or else should allow
  * delivery to additional recipients.  Currently we decide that
  * filters for specific local unicast MAC and IP addresses are
@@ -4149,7 +4109,6 @@ efx_ef10_filter_push_prep_set_match_fields(struct efx_nic *efx,
 static void efx_ef10_filter_push_prep(struct efx_nic *efx,
 				      const struct efx_filter_spec *spec,
 				      efx_dword_t *inbuf, u64 handle,
-				      struct efx_rss_context *ctx,
 				      bool replacing)
 {
 	struct efx_ef10_nic_data *nic_data = efx->nic_data;
@@ -4157,16 +4116,11 @@ static void efx_ef10_filter_push_prep(struct efx_nic *efx,
 
 	memset(inbuf, 0, MC_CMD_FILTER_OP_EXT_IN_LEN);
 
-	/* If RSS filter, caller better have given us an RSS context */
-	if (flags & EFX_FILTER_FLAG_RX_RSS) {
-		/* We don't have the ability to return an error, so we'll just
-		 * log a warning and disable RSS for the filter.
-		 */
-		if (WARN_ON_ONCE(!ctx))
-			flags &= ~EFX_FILTER_FLAG_RX_RSS;
-		else if (WARN_ON_ONCE(ctx->context_id == EFX_EF10_RSS_CONTEXT_INVALID))
-			flags &= ~EFX_FILTER_FLAG_RX_RSS;
-	}
+	/* Remove RSS flag if we don't have an RSS context. */
+	if (flags & EFX_FILTER_FLAG_RX_RSS &&
+	    spec->rss_context == EFX_FILTER_RSS_CONTEXT_DEFAULT &&
+	    nic_data->rx_rss_context == EFX_EF10_RSS_CONTEXT_INVALID)
+		flags &= ~EFX_FILTER_FLAG_RX_RSS;
 
 	if (replacing) {
 		MCDI_SET_DWORD(inbuf, FILTER_OP_IN_OP,
@@ -4192,18 +4146,21 @@ static void efx_ef10_filter_push_prep(struct efx_nic *efx,
 		       MC_CMD_FILTER_OP_IN_RX_MODE_RSS :
 		       MC_CMD_FILTER_OP_IN_RX_MODE_SIMPLE);
 	if (flags & EFX_FILTER_FLAG_RX_RSS)
-		MCDI_SET_DWORD(inbuf, FILTER_OP_IN_RX_CONTEXT, ctx->context_id);
+		MCDI_SET_DWORD(inbuf, FILTER_OP_IN_RX_CONTEXT,
+			       spec->rss_context !=
+			       EFX_FILTER_RSS_CONTEXT_DEFAULT ?
+			       spec->rss_context : nic_data->rx_rss_context);
 }
 
 static int efx_ef10_filter_push(struct efx_nic *efx,
-				const struct efx_filter_spec *spec, u64 *handle,
-				struct efx_rss_context *ctx, bool replacing)
+				const struct efx_filter_spec *spec,
+				u64 *handle, bool replacing)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_FILTER_OP_EXT_IN_LEN);
 	MCDI_DECLARE_BUF(outbuf, MC_CMD_FILTER_OP_EXT_OUT_LEN);
 	int rc;
 
-	efx_ef10_filter_push_prep(efx, spec, inbuf, *handle, ctx, replacing);
+	efx_ef10_filter_push_prep(efx, spec, inbuf, *handle, replacing);
 	rc = efx_mcdi_rpc(efx, MC_CMD_FILTER_OP, inbuf, sizeof(inbuf),
 			  outbuf, sizeof(outbuf), NULL);
 	if (rc == 0)
@@ -4288,111 +4245,110 @@ static int efx_ef10_filter_pri(struct efx_ef10_filter_table *table,
 	return -EPROTONOSUPPORT;
 }
 
-static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
-					 struct efx_filter_spec *spec,
-					 bool replace_equal)
+static s32 efx_ef10_filter_insert(struct efx_nic *efx,
+				  struct efx_filter_spec *spec,
+				  bool replace_equal)
 {
+	struct efx_ef10_filter_table *table = efx->filter_state;
 	DECLARE_BITMAP(mc_rem_map, EFX_EF10_FILTER_SEARCH_LIMIT);
-	struct efx_ef10_nic_data *nic_data = efx->nic_data;
-	struct efx_ef10_filter_table *table;
 	struct efx_filter_spec *saved_spec;
-	struct efx_rss_context *ctx = NULL;
 	unsigned int match_pri, hash;
 	unsigned int priv_flags;
-	bool rss_locked = false;
 	bool replacing = false;
-	unsigned int depth, i;
 	int ins_index = -1;
 	DEFINE_WAIT(wait);
 	bool is_mc_recip;
 	s32 rc;
 
-	WARN_ON(!rwsem_is_locked(&efx->filter_sem));
-	table = efx->filter_state;
-	down_write(&table->lock);
-
 	/* For now, only support RX filters */
 	if ((spec->flags & (EFX_FILTER_FLAG_RX | EFX_FILTER_FLAG_TX)) !=
-	    EFX_FILTER_FLAG_RX) {
-		rc = -EINVAL;
-		goto out_unlock;
-	}
+	    EFX_FILTER_FLAG_RX)
+		return -EINVAL;
 
 	rc = efx_ef10_filter_pri(table, spec);
 	if (rc < 0)
-		goto out_unlock;
+		return rc;
 	match_pri = rc;
 
-	hash = efx_filter_spec_hash(spec);
+	hash = efx_ef10_filter_hash(spec);
 	is_mc_recip = efx_filter_is_mc_recipient(spec);
 	if (is_mc_recip)
 		bitmap_zero(mc_rem_map, EFX_EF10_FILTER_SEARCH_LIMIT);
 
-	if (spec->flags & EFX_FILTER_FLAG_RX_RSS) {
-		mutex_lock(&efx->rss_lock);
-		rss_locked = true;
-		if (spec->rss_context)
-			ctx = efx_find_rss_context_entry(efx, spec->rss_context);
-		else
-			ctx = &efx->rss_context;
-		if (!ctx) {
-			rc = -ENOENT;
-			goto out_unlock;
-		}
-		if (ctx->context_id == EFX_EF10_RSS_CONTEXT_INVALID) {
-			rc = -EOPNOTSUPP;
-			goto out_unlock;
-		}
-	}
-
 	/* Find any existing filters with the same match tuple or
-	 * else a free slot to insert at.
+	 * else a free slot to insert at.  If any of them are busy,
+	 * we have to wait and retry.
 	 */
-	for (depth = 1; depth < EFX_EF10_FILTER_SEARCH_LIMIT; depth++) {
-		i = (hash + depth) & (HUNT_FILTER_TBL_ROWS - 1);
-		saved_spec = efx_ef10_filter_entry_spec(table, i);
+	for (;;) {
+		unsigned int depth = 1;
+		unsigned int i;
 
-		if (!saved_spec) {
-			if (ins_index < 0)
-				ins_index = i;
-		} else if (efx_filter_spec_equal(spec, saved_spec)) {
-			if (spec->priority < saved_spec->priority &&
-			    spec->priority != EFX_FILTER_PRI_AUTO) {
-				rc = -EPERM;
-				goto out_unlock;
-			}
-			if (!is_mc_recip) {
-				/* This is the only one */
-				if (spec->priority ==
-				    saved_spec->priority &&
-				    !replace_equal) {
-					rc = -EEXIST;
-					goto out_unlock;
-				}
-				ins_index = i;
-				break;
-			} else if (spec->priority >
-				   saved_spec->priority ||
-				   (spec->priority ==
-				    saved_spec->priority &&
-				    replace_equal)) {
+		spin_lock_bh(&efx->filter_lock);
+
+		for (;;) {
+			i = (hash + depth) & (HUNT_FILTER_TBL_ROWS - 1);
+			saved_spec = efx_ef10_filter_entry_spec(table, i);
+
+			if (!saved_spec) {
 				if (ins_index < 0)
 					ins_index = i;
-				else
-					__set_bit(depth, mc_rem_map);
+			} else if (efx_ef10_filter_equal(spec, saved_spec)) {
+				if (table->entry[i].spec &
+				    EFX_EF10_FILTER_FLAG_BUSY)
+					break;
+				if (spec->priority < saved_spec->priority &&
+				    spec->priority != EFX_FILTER_PRI_AUTO) {
+					rc = -EPERM;
+					goto out_unlock;
+				}
+				if (!is_mc_recip) {
+					/* This is the only one */
+					if (spec->priority ==
+					    saved_spec->priority &&
+					    !replace_equal) {
+						rc = -EEXIST;
+						goto out_unlock;
+					}
+					ins_index = i;
+					goto found;
+				} else if (spec->priority >
+					   saved_spec->priority ||
+					   (spec->priority ==
+					    saved_spec->priority &&
+					    replace_equal)) {
+					if (ins_index < 0)
+						ins_index = i;
+					else
+						__set_bit(depth, mc_rem_map);
+				}
 			}
+
+			/* Once we reach the maximum search depth, use
+			 * the first suitable slot or return -EBUSY if
+			 * there was none
+			 */
+			if (depth == EFX_EF10_FILTER_SEARCH_LIMIT) {
+				if (ins_index < 0) {
+					rc = -EBUSY;
+					goto out_unlock;
+				}
+				goto found;
+			}
+
+			++depth;
 		}
+
+		prepare_to_wait(&table->waitq, &wait, TASK_UNINTERRUPTIBLE);
+		spin_unlock_bh(&efx->filter_lock);
+		schedule();
 	}
 
-	/* Once we reach the maximum search depth, use the first suitable
-	 * slot, or return -EBUSY if there was none
+found:
+	/* Create a software table entry if necessary, and mark it
+	 * busy.  We might yet fail to insert, but any attempt to
+	 * insert a conflicting filter while we're waiting for the
+	 * firmware must find the busy entry.
 	 */
-	if (ins_index < 0) {
-		rc = -EBUSY;
-		goto out_unlock;
-	}
-
-	/* Create a software table entry if necessary. */
 	saved_spec = efx_ef10_filter_entry_spec(table, ins_index);
 	if (saved_spec) {
 		if (spec->priority == EFX_FILTER_PRI_AUTO &&
@@ -4416,19 +4372,28 @@ static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
 		*saved_spec = *spec;
 		priv_flags = 0;
 	}
-	efx_ef10_filter_set_entry(table, ins_index, saved_spec, priv_flags);
+	efx_ef10_filter_set_entry(table, ins_index, saved_spec,
+				  priv_flags | EFX_EF10_FILTER_FLAG_BUSY);
 
-	/* Actually insert the filter on the HW */
+	/* Mark lower-priority multicast recipients busy prior to removal */
+	if (is_mc_recip) {
+		unsigned int depth, i;
+
+		for (depth = 0; depth < EFX_EF10_FILTER_SEARCH_LIMIT; depth++) {
+			i = (hash + depth) & (HUNT_FILTER_TBL_ROWS - 1);
+			if (test_bit(depth, mc_rem_map))
+				table->entry[i].spec |=
+					EFX_EF10_FILTER_FLAG_BUSY;
+		}
+	}
+
+	spin_unlock_bh(&efx->filter_lock);
+
 	rc = efx_ef10_filter_push(efx, spec, &table->entry[ins_index].handle,
-				  ctx, replacing);
-
-	if (rc == -EINVAL && nic_data->must_realloc_vis)
-		/* The MC rebooted under us, causing it to reject our filter
-		 * insertion as pointing to an invalid VI (spec->dmaq_id).
-		 */
-		rc = -EAGAIN;
+				  replacing);
 
 	/* Finalise the software table entry */
+	spin_lock_bh(&efx->filter_lock);
 	if (rc == 0) {
 		if (replacing) {
 			/* Update the fields that may differ */
@@ -4444,12 +4409,6 @@ static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
 	} else if (!replacing) {
 		kfree(saved_spec);
 		saved_spec = NULL;
-	} else {
-		/* We failed to replace, so the old filter is still present.
-		 * Roll back the software table to reflect this.  In fact the
-		 * efx_ef10_filter_set_entry() call below will do the right
-		 * thing, so nothing extra is needed here.
-		 */
 	}
 	efx_ef10_filter_set_entry(table, ins_index, saved_spec, priv_flags);
 
@@ -4471,6 +4430,7 @@ static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
 			priv_flags = efx_ef10_filter_entry_flags(table, i);
 
 			if (rc == 0) {
+				spin_unlock_bh(&efx->filter_lock);
 				MCDI_SET_DWORD(inbuf, FILTER_OP_IN_OP,
 					       MC_CMD_FILTER_OP_IN_OP_UNSUBSCRIBE);
 				MCDI_SET_QWORD(inbuf, FILTER_OP_IN_HANDLE,
@@ -4478,12 +4438,15 @@ static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
 				rc = efx_mcdi_rpc(efx, MC_CMD_FILTER_OP,
 						  inbuf, sizeof(inbuf),
 						  NULL, 0, NULL);
+				spin_lock_bh(&efx->filter_lock);
 			}
 
 			if (rc == 0) {
 				kfree(saved_spec);
 				saved_spec = NULL;
 				priv_flags = 0;
+			} else {
+				priv_flags &= ~EFX_EF10_FILTER_FLAG_BUSY;
 			}
 			efx_ef10_filter_set_entry(table, i, saved_spec,
 						  priv_flags);
@@ -4494,24 +4457,11 @@ static s32 efx_ef10_filter_insert_locked(struct efx_nic *efx,
 	if (rc == 0)
 		rc = efx_ef10_make_filter_id(match_pri, ins_index);
 
+	wake_up_all(&table->waitq);
 out_unlock:
-	if (rss_locked)
-		mutex_unlock(&efx->rss_lock);
-	up_write(&table->lock);
+	spin_unlock_bh(&efx->filter_lock);
+	finish_wait(&table->waitq, &wait);
 	return rc;
-}
-
-static s32 efx_ef10_filter_insert(struct efx_nic *efx,
-				  struct efx_filter_spec *spec,
-				  bool replace_equal)
-{
-	s32 ret;
-
-	down_read(&efx->filter_sem);
-	ret = efx_ef10_filter_insert_locked(efx, spec, replace_equal);
-	up_read(&efx->filter_sem);
-
-	return ret;
 }
 
 static void efx_ef10_filter_update_rx_scatter(struct efx_nic *efx)
@@ -4523,8 +4473,6 @@ static void efx_ef10_filter_update_rx_scatter(struct efx_nic *efx)
  * If !by_index, remove by ID
  * If by_index, remove by index
  * Filter ID may come from userland and must be range-checked.
- * Caller must hold efx->filter_sem for read, and efx->filter_state->lock
- * for write.
  */
 static int efx_ef10_filter_remove_internal(struct efx_nic *efx,
 					   unsigned int priority_mask,
@@ -4539,23 +4487,45 @@ static int efx_ef10_filter_remove_internal(struct efx_nic *efx,
 	DEFINE_WAIT(wait);
 	int rc;
 
+	/* Find the software table entry and mark it busy.  Don't
+	 * remove it yet; any attempt to update while we're waiting
+	 * for the firmware must find the busy entry.
+	 */
+	for (;;) {
+		spin_lock_bh(&efx->filter_lock);
+		if (!(table->entry[filter_idx].spec &
+		      EFX_EF10_FILTER_FLAG_BUSY))
+			break;
+		prepare_to_wait(&table->waitq, &wait, TASK_UNINTERRUPTIBLE);
+		spin_unlock_bh(&efx->filter_lock);
+		schedule();
+	}
+
 	spec = efx_ef10_filter_entry_spec(table, filter_idx);
 	if (!spec ||
 	    (!by_index &&
 	     efx_ef10_filter_pri(table, spec) !=
-	     efx_ef10_filter_get_unsafe_pri(filter_id)))
-		return -ENOENT;
+	     efx_ef10_filter_get_unsafe_pri(filter_id))) {
+		rc = -ENOENT;
+		goto out_unlock;
+	}
 
 	if (spec->flags & EFX_FILTER_FLAG_RX_OVER_AUTO &&
 	    priority_mask == (1U << EFX_FILTER_PRI_AUTO)) {
 		/* Just remove flags */
 		spec->flags &= ~EFX_FILTER_FLAG_RX_OVER_AUTO;
 		table->entry[filter_idx].spec &= ~EFX_EF10_FILTER_FLAG_AUTO_OLD;
-		return 0;
+		rc = 0;
+		goto out_unlock;
 	}
 
-	if (!(priority_mask & (1U << spec->priority)))
-		return -ENOENT;
+	if (!(priority_mask & (1U << spec->priority))) {
+		rc = -ENOENT;
+		goto out_unlock;
+	}
+
+	table->entry[filter_idx].spec |= EFX_EF10_FILTER_FLAG_BUSY;
+	spin_unlock_bh(&efx->filter_lock);
 
 	if (spec->flags & EFX_FILTER_FLAG_RX_OVER_AUTO) {
 		/* Reset to an automatic filter */
@@ -4564,15 +4534,15 @@ static int efx_ef10_filter_remove_internal(struct efx_nic *efx,
 
 		new_spec.priority = EFX_FILTER_PRI_AUTO;
 		new_spec.flags = (EFX_FILTER_FLAG_RX |
-				  (efx_rss_active(&efx->rss_context) ?
+				  (efx_rss_enabled(efx) ?
 				   EFX_FILTER_FLAG_RX_RSS : 0));
 		new_spec.dmaq_id = 0;
-		new_spec.rss_context = 0;
+		new_spec.rss_context = EFX_FILTER_RSS_CONTEXT_DEFAULT;
 		rc = efx_ef10_filter_push(efx, &new_spec,
 					  &table->entry[filter_idx].handle,
-					  &efx->rss_context,
 					  true);
 
+		spin_lock_bh(&efx->filter_lock);
 		if (rc == 0)
 			*spec = new_spec;
 	} else {
@@ -4587,6 +4557,7 @@ static int efx_ef10_filter_remove_internal(struct efx_nic *efx,
 		rc = efx_mcdi_rpc_quiet(efx, MC_CMD_FILTER_OP,
 					inbuf, sizeof(inbuf), NULL, 0, NULL);
 
+		spin_lock_bh(&efx->filter_lock);
 		if ((rc == 0) || (rc == -ENOENT)) {
 			/* Filter removed OK or didn't actually exist */
 			kfree(spec);
@@ -4598,6 +4569,11 @@ static int efx_ef10_filter_remove_internal(struct efx_nic *efx,
 		}
 	}
 
+	table->entry[filter_idx].spec &= ~EFX_EF10_FILTER_FLAG_BUSY;
+	wake_up_all(&table->waitq);
+out_unlock:
+	spin_unlock_bh(&efx->filter_lock);
+	finish_wait(&table->waitq, &wait);
 	return rc;
 }
 
@@ -4605,33 +4581,17 @@ static int efx_ef10_filter_remove_safe(struct efx_nic *efx,
 				       enum efx_filter_priority priority,
 				       u32 filter_id)
 {
-	struct efx_ef10_filter_table *table;
-	int rc;
-
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_write(&table->lock);
-	rc = efx_ef10_filter_remove_internal(efx, 1U << priority, filter_id,
-					     false);
-	up_write(&table->lock);
-	up_read(&efx->filter_sem);
-	return rc;
+	return efx_ef10_filter_remove_internal(efx, 1U << priority,
+					       filter_id, false);
 }
 
-/* Caller must hold efx->filter_sem for read */
 static void efx_ef10_filter_remove_unsafe(struct efx_nic *efx,
 					  enum efx_filter_priority priority,
 					  u32 filter_id)
 {
-	struct efx_ef10_filter_table *table = efx->filter_state;
-
 	if (filter_id == EFX_EF10_FILTER_ID_INVALID)
 		return;
-
-	down_write(&table->lock);
-	efx_ef10_filter_remove_internal(efx, 1U << priority, filter_id,
-					true);
-	up_write(&table->lock);
+	efx_ef10_filter_remove_internal(efx, 1U << priority, filter_id, true);
 }
 
 static int efx_ef10_filter_get_safe(struct efx_nic *efx,
@@ -4639,13 +4599,11 @@ static int efx_ef10_filter_get_safe(struct efx_nic *efx,
 				    u32 filter_id, struct efx_filter_spec *spec)
 {
 	unsigned int filter_idx = efx_ef10_filter_get_unsafe_id(filter_id);
+	struct efx_ef10_filter_table *table = efx->filter_state;
 	const struct efx_filter_spec *saved_spec;
-	struct efx_ef10_filter_table *table;
 	int rc;
 
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_read(&table->lock);
+	spin_lock_bh(&efx->filter_lock);
 	saved_spec = efx_ef10_filter_entry_spec(table, filter_idx);
 	if (saved_spec && saved_spec->priority == priority &&
 	    efx_ef10_filter_pri(table, saved_spec) ==
@@ -4655,15 +4613,13 @@ static int efx_ef10_filter_get_safe(struct efx_nic *efx,
 	} else {
 		rc = -ENOENT;
 	}
-	up_read(&table->lock);
-	up_read(&efx->filter_sem);
+	spin_unlock_bh(&efx->filter_lock);
 	return rc;
 }
 
 static int efx_ef10_filter_clear_rx(struct efx_nic *efx,
-				    enum efx_filter_priority priority)
+				     enum efx_filter_priority priority)
 {
-	struct efx_ef10_filter_table *table;
 	unsigned int priority_mask;
 	unsigned int i;
 	int rc;
@@ -4671,40 +4627,31 @@ static int efx_ef10_filter_clear_rx(struct efx_nic *efx,
 	priority_mask = (((1U << (priority + 1)) - 1) &
 			 ~(1U << EFX_FILTER_PRI_AUTO));
 
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_write(&table->lock);
 	for (i = 0; i < HUNT_FILTER_TBL_ROWS; i++) {
 		rc = efx_ef10_filter_remove_internal(efx, priority_mask,
 						     i, true);
 		if (rc && rc != -ENOENT)
-			break;
-		rc = 0;
+			return rc;
 	}
 
-	up_write(&table->lock);
-	up_read(&efx->filter_sem);
-	return rc;
+	return 0;
 }
 
 static u32 efx_ef10_filter_count_rx_used(struct efx_nic *efx,
 					 enum efx_filter_priority priority)
 {
-	struct efx_ef10_filter_table *table;
+	struct efx_ef10_filter_table *table = efx->filter_state;
 	unsigned int filter_idx;
 	s32 count = 0;
 
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_read(&table->lock);
+	spin_lock_bh(&efx->filter_lock);
 	for (filter_idx = 0; filter_idx < HUNT_FILTER_TBL_ROWS; filter_idx++) {
 		if (table->entry[filter_idx].spec &&
 		    efx_ef10_filter_entry_spec(table, filter_idx)->priority ==
 		    priority)
 			++count;
 	}
-	up_read(&table->lock);
-	up_read(&efx->filter_sem);
+	spin_unlock_bh(&efx->filter_lock);
 	return count;
 }
 
@@ -4719,15 +4666,12 @@ static s32 efx_ef10_filter_get_rx_ids(struct efx_nic *efx,
 				      enum efx_filter_priority priority,
 				      u32 *buf, u32 size)
 {
-	struct efx_ef10_filter_table *table;
+	struct efx_ef10_filter_table *table = efx->filter_state;
 	struct efx_filter_spec *spec;
 	unsigned int filter_idx;
 	s32 count = 0;
 
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_read(&table->lock);
-
+	spin_lock_bh(&efx->filter_lock);
 	for (filter_idx = 0; filter_idx < HUNT_FILTER_TBL_ROWS; filter_idx++) {
 		spec = efx_ef10_filter_entry_spec(table, filter_idx);
 		if (spec && spec->priority == priority) {
@@ -4741,77 +4685,201 @@ static s32 efx_ef10_filter_get_rx_ids(struct efx_nic *efx,
 					filter_idx);
 		}
 	}
-	up_read(&table->lock);
-	up_read(&efx->filter_sem);
+	spin_unlock_bh(&efx->filter_lock);
 	return count;
 }
 
 #ifdef CONFIG_RFS_ACCEL
 
+static efx_mcdi_async_completer efx_ef10_filter_rfs_insert_complete;
+
+static s32 efx_ef10_filter_rfs_insert(struct efx_nic *efx,
+				      struct efx_filter_spec *spec)
+{
+	struct efx_ef10_filter_table *table = efx->filter_state;
+	MCDI_DECLARE_BUF(inbuf, MC_CMD_FILTER_OP_EXT_IN_LEN);
+	struct efx_filter_spec *saved_spec;
+	unsigned int hash, i, depth = 1;
+	bool replacing = false;
+	int ins_index = -1;
+	u64 cookie;
+	s32 rc;
+
+	/* Must be an RX filter without RSS and not for a multicast
+	 * destination address (RFS only works for connected sockets).
+	 * These restrictions allow us to pass only a tiny amount of
+	 * data through to the completion function.
+	 */
+	EFX_WARN_ON_PARANOID(spec->flags !=
+			     (EFX_FILTER_FLAG_RX | EFX_FILTER_FLAG_RX_SCATTER));
+	EFX_WARN_ON_PARANOID(spec->priority != EFX_FILTER_PRI_HINT);
+	EFX_WARN_ON_PARANOID(efx_filter_is_mc_recipient(spec));
+
+	hash = efx_ef10_filter_hash(spec);
+
+	spin_lock_bh(&efx->filter_lock);
+
+	/* Find any existing filter with the same match tuple or else
+	 * a free slot to insert at.  If an existing filter is busy,
+	 * we have to give up.
+	 */
+	for (;;) {
+		i = (hash + depth) & (HUNT_FILTER_TBL_ROWS - 1);
+		saved_spec = efx_ef10_filter_entry_spec(table, i);
+
+		if (!saved_spec) {
+			if (ins_index < 0)
+				ins_index = i;
+		} else if (efx_ef10_filter_equal(spec, saved_spec)) {
+			if (table->entry[i].spec & EFX_EF10_FILTER_FLAG_BUSY) {
+				rc = -EBUSY;
+				goto fail_unlock;
+			}
+			if (spec->priority < saved_spec->priority) {
+				rc = -EPERM;
+				goto fail_unlock;
+			}
+			ins_index = i;
+			break;
+		}
+
+		/* Once we reach the maximum search depth, use the
+		 * first suitable slot or return -EBUSY if there was
+		 * none
+		 */
+		if (depth == EFX_EF10_FILTER_SEARCH_LIMIT) {
+			if (ins_index < 0) {
+				rc = -EBUSY;
+				goto fail_unlock;
+			}
+			break;
+		}
+
+		++depth;
+	}
+
+	/* Create a software table entry if necessary, and mark it
+	 * busy.  We might yet fail to insert, but any attempt to
+	 * insert a conflicting filter while we're waiting for the
+	 * firmware must find the busy entry.
+	 */
+	saved_spec = efx_ef10_filter_entry_spec(table, ins_index);
+	if (saved_spec) {
+		replacing = true;
+	} else {
+		saved_spec = kmalloc(sizeof(*spec), GFP_ATOMIC);
+		if (!saved_spec) {
+			rc = -ENOMEM;
+			goto fail_unlock;
+		}
+		*saved_spec = *spec;
+	}
+	efx_ef10_filter_set_entry(table, ins_index, saved_spec,
+				  EFX_EF10_FILTER_FLAG_BUSY);
+
+	spin_unlock_bh(&efx->filter_lock);
+
+	/* Pack up the variables needed on completion */
+	cookie = replacing << 31 | ins_index << 16 | spec->dmaq_id;
+
+	efx_ef10_filter_push_prep(efx, spec, inbuf,
+				  table->entry[ins_index].handle, replacing);
+	efx_mcdi_rpc_async(efx, MC_CMD_FILTER_OP, inbuf, sizeof(inbuf),
+			   MC_CMD_FILTER_OP_OUT_LEN,
+			   efx_ef10_filter_rfs_insert_complete, cookie);
+
+	return ins_index;
+
+fail_unlock:
+	spin_unlock_bh(&efx->filter_lock);
+	return rc;
+}
+
+static void
+efx_ef10_filter_rfs_insert_complete(struct efx_nic *efx, unsigned long cookie,
+				    int rc, efx_dword_t *outbuf,
+				    size_t outlen_actual)
+{
+	struct efx_ef10_filter_table *table = efx->filter_state;
+	unsigned int ins_index, dmaq_id;
+	struct efx_filter_spec *spec;
+	bool replacing;
+
+	/* Unpack the cookie */
+	replacing = cookie >> 31;
+	ins_index = (cookie >> 16) & (HUNT_FILTER_TBL_ROWS - 1);
+	dmaq_id = cookie & 0xffff;
+
+	spin_lock_bh(&efx->filter_lock);
+	spec = efx_ef10_filter_entry_spec(table, ins_index);
+	if (rc == 0) {
+		table->entry[ins_index].handle =
+			MCDI_QWORD(outbuf, FILTER_OP_OUT_HANDLE);
+		if (replacing)
+			spec->dmaq_id = dmaq_id;
+	} else if (!replacing) {
+		kfree(spec);
+		spec = NULL;
+	}
+	efx_ef10_filter_set_entry(table, ins_index, spec, 0);
+	spin_unlock_bh(&efx->filter_lock);
+
+	wake_up_all(&table->waitq);
+}
+
+static void
+efx_ef10_filter_rfs_expire_complete(struct efx_nic *efx,
+				    unsigned long filter_idx,
+				    int rc, efx_dword_t *outbuf,
+				    size_t outlen_actual);
+
 static bool efx_ef10_filter_rfs_expire_one(struct efx_nic *efx, u32 flow_id,
 					   unsigned int filter_idx)
 {
-	struct efx_filter_spec *spec, saved_spec;
-	struct efx_ef10_filter_table *table;
-	struct efx_arfs_rule *rule = NULL;
-	bool ret = true, force = false;
-	u16 arfs_id;
+	struct efx_ef10_filter_table *table = efx->filter_state;
+	struct efx_filter_spec *spec =
+		efx_ef10_filter_entry_spec(table, filter_idx);
+	MCDI_DECLARE_BUF(inbuf,
+			 MC_CMD_FILTER_OP_IN_HANDLE_OFST +
+			 MC_CMD_FILTER_OP_IN_HANDLE_LEN);
 
-	down_read(&efx->filter_sem);
-	table = efx->filter_state;
-	down_write(&table->lock);
-	spec = efx_ef10_filter_entry_spec(table, filter_idx);
+	if (!spec ||
+	    (table->entry[filter_idx].spec & EFX_EF10_FILTER_FLAG_BUSY) ||
+	    spec->priority != EFX_FILTER_PRI_HINT ||
+	    !rps_may_expire_flow(efx->net_dev, spec->dmaq_id,
+				 flow_id, filter_idx))
+		return false;
 
-	if (!spec || spec->priority != EFX_FILTER_PRI_HINT)
-		goto out_unlock;
+	MCDI_SET_DWORD(inbuf, FILTER_OP_IN_OP,
+		       MC_CMD_FILTER_OP_IN_OP_REMOVE);
+	MCDI_SET_QWORD(inbuf, FILTER_OP_IN_HANDLE,
+		       table->entry[filter_idx].handle);
+	if (efx_mcdi_rpc_async(efx, MC_CMD_FILTER_OP, inbuf, sizeof(inbuf), 0,
+			       efx_ef10_filter_rfs_expire_complete, filter_idx))
+		return false;
 
-	spin_lock_bh(&efx->rps_hash_lock);
-	if (!efx->rps_hash_table) {
-		/* In the absence of the table, we always return 0 to ARFS. */
-		arfs_id = 0;
-	} else {
-		rule = efx_rps_hash_find(efx, spec);
-		if (!rule)
-			/* ARFS table doesn't know of this filter, so remove it */
-			goto expire;
-		arfs_id = rule->arfs_id;
-		ret = efx_rps_check_rule(rule, filter_idx, &force);
-		if (force)
-			goto expire;
-		if (!ret) {
-			spin_unlock_bh(&efx->rps_hash_lock);
-			goto out_unlock;
-		}
+	table->entry[filter_idx].spec |= EFX_EF10_FILTER_FLAG_BUSY;
+	return true;
+}
+
+static void
+efx_ef10_filter_rfs_expire_complete(struct efx_nic *efx,
+				    unsigned long filter_idx,
+				    int rc, efx_dword_t *outbuf,
+				    size_t outlen_actual)
+{
+	struct efx_ef10_filter_table *table = efx->filter_state;
+	struct efx_filter_spec *spec =
+		efx_ef10_filter_entry_spec(table, filter_idx);
+
+	spin_lock_bh(&efx->filter_lock);
+	if (rc == 0) {
+		kfree(spec);
+		efx_ef10_filter_set_entry(table, filter_idx, NULL, 0);
 	}
-	if (!rps_may_expire_flow(efx->net_dev, spec->dmaq_id, flow_id, arfs_id))
-		ret = false;
-	else if (rule)
-		rule->filter_id = EFX_ARFS_FILTER_ID_REMOVING;
-expire:
-	saved_spec = *spec; /* remove operation will kfree spec */
-	spin_unlock_bh(&efx->rps_hash_lock);
-	/* At this point (since we dropped the lock), another thread might queue
-	 * up a fresh insertion request (but the actual insertion will be held
-	 * up by our possession of the filter table lock).  In that case, it
-	 * will set rule->filter_id to EFX_ARFS_FILTER_ID_PENDING, meaning that
-	 * the rule is not removed by efx_rps_hash_del() below.
-	 */
-	if (ret)
-		ret = efx_ef10_filter_remove_internal(efx, 1U << spec->priority,
-						      filter_idx, true) == 0;
-	/* While we can't safely dereference rule (we dropped the lock), we can
-	 * still test it for NULL.
-	 */
-	if (ret && rule) {
-		/* Expiring, so remove entry from ARFS table */
-		spin_lock_bh(&efx->rps_hash_lock);
-		efx_rps_hash_del(efx, &saved_spec);
-		spin_unlock_bh(&efx->rps_hash_lock);
-	}
-out_unlock:
-	up_write(&table->lock);
-	up_read(&efx->filter_sem);
-	return ret;
+	table->entry[filter_idx].spec &= ~EFX_EF10_FILTER_FLAG_BUSY;
+	wake_up_all(&table->waitq);
+	spin_unlock_bh(&efx->filter_lock);
 }
 
 #endif /* CONFIG_RFS_ACCEL */
@@ -4996,8 +5064,7 @@ static int efx_ef10_filter_table_probe(struct efx_nic *efx)
 		net_dev->hw_features &= ~NETIF_F_HW_VLAN_CTAG_FILTER;
 	}
 
-	table->entry = vzalloc(array_size(HUNT_FILTER_TBL_ROWS,
-					  sizeof(*table->entry)));
+	table->entry = vzalloc(HUNT_FILTER_TBL_ROWS * sizeof(*table->entry));
 	if (!table->entry) {
 		rc = -ENOMEM;
 		goto fail;
@@ -5007,9 +5074,9 @@ static int efx_ef10_filter_table_probe(struct efx_nic *efx)
 	table->vlan_filter =
 		!!(efx->net_dev->features & NETIF_F_HW_VLAN_CTAG_FILTER);
 	INIT_LIST_HEAD(&table->vlan_list);
-	init_rwsem(&table->lock);
 
 	efx->filter_state = table;
+	init_waitqueue_head(&table->waitq);
 
 	list_for_each_entry(vlan, &nic_data->vlan_list, list) {
 		rc = efx_ef10_filter_add_vlan(efx, vlan->vid);
@@ -5037,7 +5104,6 @@ static void efx_ef10_filter_table_restore(struct efx_nic *efx)
 	unsigned int invalid_filters = 0, failed = 0;
 	struct efx_ef10_filter_vlan *vlan;
 	struct efx_filter_spec *spec;
-	struct efx_rss_context *ctx;
 	unsigned int filter_idx;
 	u32 mcdi_flags;
 	int match_pri;
@@ -5051,8 +5117,7 @@ static void efx_ef10_filter_table_restore(struct efx_nic *efx)
 	if (!table)
 		return;
 
-	down_write(&table->lock);
-	mutex_lock(&efx->rss_lock);
+	spin_lock_bh(&efx->filter_lock);
 
 	for (filter_idx = 0; filter_idx < HUNT_FILTER_TBL_ROWS; filter_idx++) {
 		spec = efx_ef10_filter_entry_spec(table, filter_idx);
@@ -5068,32 +5133,20 @@ static void efx_ef10_filter_table_restore(struct efx_nic *efx)
 			invalid_filters++;
 			goto not_restored;
 		}
-		if (spec->rss_context)
-			ctx = efx_find_rss_context_entry(efx, spec->rss_context);
-		else
-			ctx = &efx->rss_context;
-		if (spec->flags & EFX_FILTER_FLAG_RX_RSS) {
-			if (!ctx) {
-				netif_warn(efx, drv, efx->net_dev,
-					   "Warning: unable to restore a filter with nonexistent RSS context %u.\n",
-					   spec->rss_context);
-				invalid_filters++;
-				goto not_restored;
-			}
-			if (ctx->context_id == EFX_EF10_RSS_CONTEXT_INVALID) {
-				netif_warn(efx, drv, efx->net_dev,
-					   "Warning: unable to restore a filter with RSS context %u as it was not created.\n",
-					   spec->rss_context);
-				invalid_filters++;
-				goto not_restored;
-			}
-		}
+		if (spec->rss_context != EFX_FILTER_RSS_CONTEXT_DEFAULT &&
+		    spec->rss_context != nic_data->rx_rss_context)
+			netif_warn(efx, drv, efx->net_dev,
+				   "Warning: unable to restore a filter with specific RSS context.\n");
+
+		table->entry[filter_idx].spec |= EFX_EF10_FILTER_FLAG_BUSY;
+		spin_unlock_bh(&efx->filter_lock);
 
 		rc = efx_ef10_filter_push(efx, spec,
 					  &table->entry[filter_idx].handle,
-					  ctx, false);
+					  false);
 		if (rc)
 			failed++;
+		spin_lock_bh(&efx->filter_lock);
 
 		if (rc) {
 not_restored:
@@ -5105,11 +5158,13 @@ not_restored:
 
 			kfree(spec);
 			efx_ef10_filter_set_entry(table, filter_idx, NULL, 0);
+		} else {
+			table->entry[filter_idx].spec &=
+				~EFX_EF10_FILTER_FLAG_BUSY;
 		}
 	}
 
-	mutex_unlock(&efx->rss_lock);
-	up_write(&table->lock);
+	spin_unlock_bh(&efx->filter_lock);
 
 	/* This can happen validly if the MC's capabilities have changed, so
 	 * is not an error.
@@ -5177,8 +5232,6 @@ static void efx_ef10_filter_mark_one_old(struct efx_nic *efx, uint16_t *id)
 	struct efx_ef10_filter_table *table = efx->filter_state;
 	unsigned int filter_idx;
 
-	efx_rwsem_assert_write_locked(&table->lock);
-
 	if (*id != EFX_EF10_FILTER_ID_INVALID) {
 		filter_idx = efx_ef10_filter_get_unsafe_id(*id);
 		if (!table->entry[filter_idx].spec)
@@ -5214,10 +5267,10 @@ static void efx_ef10_filter_mark_old(struct efx_nic *efx)
 	struct efx_ef10_filter_table *table = efx->filter_state;
 	struct efx_ef10_filter_vlan *vlan;
 
-	down_write(&table->lock);
+	spin_lock_bh(&efx->filter_lock);
 	list_for_each_entry(vlan, &table->vlan_list, list)
 		_efx_ef10_filter_vlan_mark_old(efx, vlan);
-	up_write(&table->lock);
+	spin_unlock_bh(&efx->filter_lock);
 }
 
 static void efx_ef10_filter_uc_addr_list(struct efx_nic *efx)
@@ -5290,14 +5343,14 @@ static int efx_ef10_filter_insert_addr_list(struct efx_nic *efx,
 		ids = vlan->uc;
 	}
 
-	filter_flags = efx_rss_active(&efx->rss_context) ? EFX_FILTER_FLAG_RX_RSS : 0;
+	filter_flags = efx_rss_enabled(efx) ? EFX_FILTER_FLAG_RX_RSS : 0;
 
 	/* Insert/renew filters */
 	for (i = 0; i < addr_count; i++) {
 		EFX_WARN_ON_PARANOID(ids[i] != EFX_EF10_FILTER_ID_INVALID);
 		efx_filter_init_rx(&spec, EFX_FILTER_PRI_AUTO, filter_flags, 0);
 		efx_filter_set_eth_local(&spec, vlan->vid, addr_list[i].addr);
-		rc = efx_ef10_filter_insert_locked(efx, &spec, true);
+		rc = efx_ef10_filter_insert(efx, &spec, true);
 		if (rc < 0) {
 			if (rollback) {
 				netif_info(efx, drv, efx->net_dev,
@@ -5326,7 +5379,7 @@ static int efx_ef10_filter_insert_addr_list(struct efx_nic *efx,
 		efx_filter_init_rx(&spec, EFX_FILTER_PRI_AUTO, filter_flags, 0);
 		eth_broadcast_addr(baddr);
 		efx_filter_set_eth_local(&spec, vlan->vid, baddr);
-		rc = efx_ef10_filter_insert_locked(efx, &spec, true);
+		rc = efx_ef10_filter_insert(efx, &spec, true);
 		if (rc < 0) {
 			netif_warn(efx, drv, efx->net_dev,
 				   "Broadcast filter insert failed rc=%d\n", rc);
@@ -5359,7 +5412,7 @@ static int efx_ef10_filter_insert_def(struct efx_nic *efx,
 	int rc;
 	u16 *id;
 
-	filter_flags = efx_rss_active(&efx->rss_context) ? EFX_FILTER_FLAG_RX_RSS : 0;
+	filter_flags = efx_rss_enabled(efx) ? EFX_FILTER_FLAG_RX_RSS : 0;
 
 	efx_filter_init_rx(&spec, EFX_FILTER_PRI_AUTO, filter_flags, 0);
 
@@ -5382,7 +5435,7 @@ static int efx_ef10_filter_insert_def(struct efx_nic *efx,
 	if (vlan->vid != EFX_FILTER_VID_UNSPEC)
 		efx_filter_set_eth_local(&spec, vlan->vid, NULL);
 
-	rc = efx_ef10_filter_insert_locked(efx, &spec, true);
+	rc = efx_ef10_filter_insert(efx, &spec, true);
 	if (rc < 0) {
 		const char *um = multicast ? "Multicast" : "Unicast";
 		const char *encap_name = "";
@@ -5442,7 +5495,7 @@ static int efx_ef10_filter_insert_def(struct efx_nic *efx,
 					   filter_flags, 0);
 			eth_broadcast_addr(baddr);
 			efx_filter_set_eth_local(&spec, vlan->vid, baddr);
-			rc = efx_ef10_filter_insert_locked(efx, &spec, true);
+			rc = efx_ef10_filter_insert(efx, &spec, true);
 			if (rc < 0) {
 				netif_warn(efx, drv, efx->net_dev,
 					   "Broadcast filter insert failed rc=%d\n",
@@ -5494,7 +5547,10 @@ static int efx_ef10_filter_insert_def(struct efx_nic *efx,
 	return rc;
 }
 
-/* Remove filters that weren't renewed. */
+/* Remove filters that weren't renewed.  Since nothing else changes the AUTO_OLD
+ * flag or removes these filters, we don't need to hold the filter_lock while
+ * scanning for these filters.
+ */
 static void efx_ef10_filter_remove_old(struct efx_nic *efx)
 {
 	struct efx_ef10_filter_table *table = efx->filter_state;
@@ -5503,7 +5559,6 @@ static void efx_ef10_filter_remove_old(struct efx_nic *efx)
 	int rc;
 	int i;
 
-	down_write(&table->lock);
 	for (i = 0; i < HUNT_FILTER_TBL_ROWS; i++) {
 		if (READ_ONCE(table->entry[i].spec) &
 		    EFX_EF10_FILTER_FLAG_AUTO_OLD) {
@@ -5515,7 +5570,6 @@ static void efx_ef10_filter_remove_old(struct efx_nic *efx)
 				remove_failed++;
 		}
 	}
-	up_write(&table->lock);
 
 	if (remove_failed)
 		netif_info(efx, drv, efx->net_dev,
@@ -6041,30 +6095,23 @@ static const struct efx_ef10_nvram_type_info efx_ef10_nvram_types[] = {
 	{ NVRAM_PARTITION_TYPE_EXPROM_CONFIG_PORT3, 0,   3, "sfc_exp_rom_cfg" },
 	{ NVRAM_PARTITION_TYPE_LICENSE,		   0,    0, "sfc_license" },
 	{ NVRAM_PARTITION_TYPE_PHY_MIN,		   0xff, 0, "sfc_phy_fw" },
-	/* MUM and SUC firmware share the same partition type */
-	{ NVRAM_PARTITION_TYPE_MUM_FIRMWARE,	   0,    0, "sfc_mumfw" },
-	{ NVRAM_PARTITION_TYPE_EXPANSION_UEFI,	   0,    0, "sfc_uefi" },
-	{ NVRAM_PARTITION_TYPE_STATUS,		   0,    0, "sfc_status" }
 };
-#define EF10_NVRAM_PARTITION_COUNT	ARRAY_SIZE(efx_ef10_nvram_types)
 
 static int efx_ef10_mtd_probe_partition(struct efx_nic *efx,
 					struct efx_mcdi_mtd_partition *part,
-					unsigned int type,
-					unsigned long *found)
+					unsigned int type)
 {
 	MCDI_DECLARE_BUF(inbuf, MC_CMD_NVRAM_METADATA_IN_LEN);
 	MCDI_DECLARE_BUF(outbuf, MC_CMD_NVRAM_METADATA_OUT_LENMAX);
 	const struct efx_ef10_nvram_type_info *info;
 	size_t size, erase_size, outlen;
-	int type_idx = 0;
 	bool protected;
 	int rc;
 
-	for (type_idx = 0; ; type_idx++) {
-		if (type_idx == EF10_NVRAM_PARTITION_COUNT)
+	for (info = efx_ef10_nvram_types; ; info++) {
+		if (info ==
+		    efx_ef10_nvram_types + ARRAY_SIZE(efx_ef10_nvram_types))
 			return -ENODEV;
-		info = efx_ef10_nvram_types + type_idx;
 		if ((type & ~info->type_mask) == info->type)
 			break;
 	}
@@ -6076,13 +6123,6 @@ static int efx_ef10_mtd_probe_partition(struct efx_nic *efx,
 		return rc;
 	if (protected)
 		return -ENODEV; /* hide it */
-
-	/* If we've already exposed a partition of this type, hide this
-	 * duplicate.  All operations on MTDs are keyed by the type anyway,
-	 * so we can't act on the duplicate.
-	 */
-	if (__test_and_set_bit(type_idx, found))
-		return -EEXIST;
 
 	part->nvram_type = type;
 
@@ -6105,9 +6145,6 @@ static int efx_ef10_mtd_probe_partition(struct efx_nic *efx,
 	part->common.mtd.flags = MTD_CAP_NORFLASH;
 	part->common.mtd.size = size;
 	part->common.mtd.erasesize = erase_size;
-	/* sfc_status is read-only */
-	if (!erase_size)
-		part->common.mtd.flags |= MTD_NO_ERASE;
 
 	return 0;
 }
@@ -6115,7 +6152,6 @@ static int efx_ef10_mtd_probe_partition(struct efx_nic *efx,
 static int efx_ef10_mtd_probe(struct efx_nic *efx)
 {
 	MCDI_DECLARE_BUF(outbuf, MC_CMD_NVRAM_PARTITIONS_OUT_LENMAX);
-	DECLARE_BITMAP(found, EF10_NVRAM_PARTITION_COUNT) = { 0 };
 	struct efx_mcdi_mtd_partition *parts;
 	size_t outlen, n_parts_total, i, n_parts;
 	unsigned int type;
@@ -6144,13 +6180,11 @@ static int efx_ef10_mtd_probe(struct efx_nic *efx)
 	for (i = 0; i < n_parts_total; i++) {
 		type = MCDI_ARRAY_DWORD(outbuf, NVRAM_PARTITIONS_OUT_TYPE_ID,
 					i);
-		rc = efx_ef10_mtd_probe_partition(efx, &parts[n_parts], type,
-						  found);
-		if (rc == -EEXIST || rc == -ENODEV)
-			continue;
-		if (rc)
+		rc = efx_ef10_mtd_probe_partition(efx, &parts[n_parts], type);
+		if (rc == 0)
+			n_parts++;
+		else if (rc != -ENODEV)
 			goto fail;
-		n_parts++;
 	}
 
 	rc = efx_mtd_add(efx, &parts[0].common, n_parts, sizeof(*parts));
@@ -6664,6 +6698,7 @@ const struct efx_nic_type efx_hunt_a0_vf_nic_type = {
 	.filter_get_rx_id_limit = efx_ef10_filter_get_rx_id_limit,
 	.filter_get_rx_ids = efx_ef10_filter_get_rx_ids,
 #ifdef CONFIG_RFS_ACCEL
+	.filter_rfs_insert = efx_ef10_filter_rfs_insert,
 	.filter_rfs_expire_one = efx_ef10_filter_rfs_expire_one,
 #endif
 #ifdef CONFIG_SFC_MTD
@@ -6749,9 +6784,6 @@ const struct efx_nic_type efx_hunt_a0_nic_type = {
 	.tx_limit_len = efx_ef10_tx_limit_len,
 	.rx_push_rss_config = efx_ef10_pf_rx_push_rss_config,
 	.rx_pull_rss_config = efx_ef10_rx_pull_rss_config,
-	.rx_push_rss_context_config = efx_ef10_rx_push_rss_context_config,
-	.rx_pull_rss_context_config = efx_ef10_rx_pull_rss_context_config,
-	.rx_restore_rss_contexts = efx_ef10_rx_restore_rss_contexts,
 	.rx_probe = efx_ef10_rx_probe,
 	.rx_init = efx_ef10_rx_init,
 	.rx_remove = efx_ef10_rx_remove,
@@ -6776,6 +6808,7 @@ const struct efx_nic_type efx_hunt_a0_nic_type = {
 	.filter_get_rx_id_limit = efx_ef10_filter_get_rx_id_limit,
 	.filter_get_rx_ids = efx_ef10_filter_get_rx_ids,
 #ifdef CONFIG_RFS_ACCEL
+	.filter_rfs_insert = efx_ef10_filter_rfs_insert,
 	.filter_rfs_expire_one = efx_ef10_filter_rfs_expire_one,
 #endif
 #ifdef CONFIG_SFC_MTD

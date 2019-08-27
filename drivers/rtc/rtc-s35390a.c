@@ -108,7 +108,7 @@ static int s35390a_get_reg(struct s35390a *s35390a, int reg, char *buf, int len)
 
 static int s35390a_init(struct s35390a *s35390a)
 {
-	u8 buf;
+	char buf;
 	int ret;
 	unsigned initcount = 0;
 
@@ -210,9 +210,8 @@ static int s35390a_reg2hr(struct s35390a *s35390a, char reg)
 	return hour;
 }
 
-static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
+static int s35390a_set_datetime(struct i2c_client *client, struct rtc_time *tm)
 {
-	struct i2c_client *client = to_i2c_client(dev);
 	struct s35390a	*s35390a = i2c_get_clientdata(client);
 	int i, err;
 	char buf[7], status;
@@ -242,9 +241,8 @@ static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	return err;
 }
 
-static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
+static int s35390a_get_datetime(struct i2c_client *client, struct rtc_time *tm)
 {
-	struct i2c_client *client = to_i2c_client(dev);
 	struct s35390a *s35390a = i2c_get_clientdata(client);
 	char buf[7], status;
 	int i, err;
@@ -273,12 +271,11 @@ static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_min, tm->tm_hour, tm->tm_mday, tm->tm_mon, tm->tm_year,
 		tm->tm_wday);
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
-static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
+static int s35390a_set_alarm(struct i2c_client *client, struct rtc_wkalrm *alm)
 {
-	struct i2c_client *client = to_i2c_client(dev);
 	struct s35390a *s35390a = i2c_get_clientdata(client);
 	char buf[3], sts = 0;
 	int err, i;
@@ -332,9 +329,8 @@ static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	return err;
 }
 
-static int s35390a_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
+static int s35390a_read_alarm(struct i2c_client *client, struct rtc_wkalrm *alm)
 {
-	struct i2c_client *client = to_i2c_client(dev);
 	struct s35390a *s35390a = i2c_get_clientdata(client);
 	char buf[3], sts;
 	int i, err;
@@ -388,6 +384,26 @@ static int s35390a_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	return 0;
 }
 
+static int s35390a_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
+{
+	return s35390a_read_alarm(to_i2c_client(dev), alm);
+}
+
+static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
+{
+	return s35390a_set_alarm(to_i2c_client(dev), alm);
+}
+
+static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
+{
+	return s35390a_get_datetime(to_i2c_client(dev), tm);
+}
+
+static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
+{
+	return s35390a_set_datetime(to_i2c_client(dev), tm);
+}
+
 static int s35390a_rtc_ioctl(struct device *dev, unsigned int cmd,
 			     unsigned long arg)
 {
@@ -434,6 +450,7 @@ static int s35390a_probe(struct i2c_client *client,
 	int err, err_read;
 	unsigned int i;
 	struct s35390a *s35390a;
+	struct rtc_time tm;
 	char buf, status1;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
@@ -490,6 +507,9 @@ static int s35390a_probe(struct i2c_client *client,
 			goto exit_dummy;
 		}
 	}
+
+	if (err_read > 0 || s35390a_get_datetime(client, &tm) < 0)
+		dev_warn(&client->dev, "clock needs to be set\n");
 
 	device_set_wakeup_capable(&client->dev, 1);
 

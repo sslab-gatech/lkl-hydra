@@ -56,8 +56,11 @@ static struct spi_board_info pcm037_spi_dev[] = {
 };
 
 /* Platform Data for MXC CSPI */
+static int pcm037_spi1_cs[] = { MXC_SPI_CS(0), MXC_SPI_CS(1), };
+
 static const struct spi_imx_master pcm037_spi1_pdata __initconst = {
-	.num_chipselect = 2,
+	.chipselect = pcm037_spi1_cs,
+	.num_chipselect = ARRAY_SIZE(pcm037_spi1_cs),
 };
 
 /* GPIO-keys input device */

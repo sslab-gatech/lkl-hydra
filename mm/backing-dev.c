@@ -100,7 +100,18 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(bdi_debug_stats);
+
+static int bdi_debug_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, bdi_debug_stats_show, inode->i_private);
+}
+
+static const struct file_operations bdi_debug_stats_fops = {
+	.open		= bdi_debug_stats_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static int bdi_debug_register(struct backing_dev_info *bdi, const char *name)
 {
@@ -115,7 +126,6 @@ static int bdi_debug_register(struct backing_dev_info *bdi, const char *name)
 					       bdi, &bdi_debug_stats_fops);
 	if (!bdi->debug_stats) {
 		debugfs_remove(bdi->debug_dir);
-		bdi->debug_dir = NULL;
 		return -ENOMEM;
 	}
 
@@ -359,8 +369,15 @@ static void wb_shutdown(struct bdi_writeback *wb)
 	spin_lock_bh(&wb->work_lock);
 	if (!test_and_clear_bit(WB_registered, &wb->state)) {
 		spin_unlock_bh(&wb->work_lock);
+		/*
+		 * Wait for wb shutdown to finish if someone else is just
+		 * running wb_shutdown(). Otherwise we could proceed to wb /
+		 * bdi destruction before wb_shutdown() is finished.
+		 */
+		wait_on_bit(&wb->state, WB_shutting_down, TASK_UNINTERRUPTIBLE);
 		return;
 	}
+	set_bit(WB_shutting_down, &wb->state);
 	spin_unlock_bh(&wb->work_lock);
 
 	cgwb_remove_from_bdi_list(wb);
@@ -372,6 +389,12 @@ static void wb_shutdown(struct bdi_writeback *wb)
 	mod_delayed_work(bdi_wq, &wb->dwork, 0);
 	flush_delayed_work(&wb->dwork);
 	WARN_ON(!list_empty(&wb->work_list));
+	/*
+	 * Make sure bit gets cleared after shutdown is finished. Matches with
+	 * the barrier provided by test_and_clear_bit() above.
+	 */
+	smp_wmb();
+	clear_bit(WB_shutting_down, &wb->state);
 }
 
 static void wb_exit(struct bdi_writeback *wb)
@@ -399,7 +422,6 @@ static void wb_exit(struct bdi_writeback *wb)
  * protected.
  */
 static DEFINE_SPINLOCK(cgwb_lock);
-static struct workqueue_struct *cgwb_release_wq;
 
 /**
  * wb_congested_get_create - get or create a wb_congested
@@ -438,10 +460,10 @@ retry:
 	if (new_congested) {
 		/* !found and storage for new one already allocated, insert */
 		congested = new_congested;
+		new_congested = NULL;
 		rb_link_node(&congested->rb_node, parent, node);
 		rb_insert_color(&congested->rb_node, &bdi->cgwb_congested_tree);
-		spin_unlock_irqrestore(&cgwb_lock, flags);
-		return congested;
+		goto found;
 	}
 
 	spin_unlock_irqrestore(&cgwb_lock, flags);
@@ -451,13 +473,13 @@ retry:
 	if (!new_congested)
 		return NULL;
 
-	refcount_set(&new_congested->refcnt, 1);
+	atomic_set(&new_congested->refcnt, 0);
 	new_congested->__bdi = bdi;
 	new_congested->blkcg_id = blkcg_id;
 	goto retry;
 
 found:
-	refcount_inc(&congested->refcnt);
+	atomic_inc(&congested->refcnt);
 	spin_unlock_irqrestore(&cgwb_lock, flags);
 	kfree(new_congested);
 	return congested;
@@ -473,8 +495,11 @@ void wb_congested_put(struct bdi_writeback_congested *congested)
 {
 	unsigned long flags;
 
-	if (!refcount_dec_and_lock_irqsave(&congested->refcnt, &cgwb_lock, &flags))
+	local_irq_save(flags);
+	if (!atomic_dec_and_lock(&congested->refcnt, &cgwb_lock)) {
+		local_irq_restore(flags);
 		return;
+	}
 
 	/* bdi might already have been destroyed leaving @congested unlinked */
 	if (congested->__bdi) {
@@ -491,17 +516,11 @@ static void cgwb_release_workfn(struct work_struct *work)
 {
 	struct bdi_writeback *wb = container_of(work, struct bdi_writeback,
 						release_work);
-	struct blkcg *blkcg = css_to_blkcg(wb->blkcg_css);
 
-	mutex_lock(&wb->bdi->cgwb_release_mutex);
 	wb_shutdown(wb);
 
 	css_put(wb->memcg_css);
 	css_put(wb->blkcg_css);
-	mutex_unlock(&wb->bdi->cgwb_release_mutex);
-
-	/* triggers blkg destruction if cgwb_refcnt becomes zero */
-	blkcg_cgwb_put(blkcg);
 
 	fprop_local_destroy_percpu(&wb->memcg_completions);
 	percpu_ref_exit(&wb->refcnt);
@@ -513,7 +532,7 @@ static void cgwb_release(struct percpu_ref *refcnt)
 {
 	struct bdi_writeback *wb = container_of(refcnt, struct bdi_writeback,
 						refcnt);
-	queue_work(cgwb_release_wq, &wb->release_work);
+	schedule_work(&wb->release_work);
 }
 
 static void cgwb_kill(struct bdi_writeback *wb)
@@ -547,7 +566,7 @@ static int cgwb_create(struct backing_dev_info *bdi,
 	memcg = mem_cgroup_from_css(memcg_css);
 	blkcg_css = cgroup_get_e_css(memcg_css->cgroup, &io_cgrp_subsys);
 	blkcg = css_to_blkcg(blkcg_css);
-	memcg_cgwb_list = &memcg->cgwb_list;
+	memcg_cgwb_list = mem_cgroup_cgwb_list(memcg);
 	blkcg_cgwb_list = &blkcg->cgwb_list;
 
 	/* look up again under lock and discard on blkcg mismatch */
@@ -601,7 +620,6 @@ static int cgwb_create(struct backing_dev_info *bdi,
 			list_add_tail_rcu(&wb->bdi_node, &bdi->wb_list);
 			list_add(&wb->memcg_node, memcg_cgwb_list);
 			list_add(&wb->blkcg_node, blkcg_cgwb_list);
-			blkcg_cgwb_get(blkcg);
 			css_get(memcg_css);
 			css_get(blkcg_css);
 		}
@@ -688,8 +706,6 @@ static int cgwb_bdi_init(struct backing_dev_info *bdi)
 
 	INIT_RADIX_TREE(&bdi->cgwb_tree, GFP_ATOMIC);
 	bdi->cgwb_congested_tree = RB_ROOT;
-	mutex_init(&bdi->cgwb_release_mutex);
-	init_rwsem(&bdi->wb_switch_rwsem);
 
 	ret = wb_init(&bdi->wb, bdi, 1, GFP_KERNEL);
 	if (!ret) {
@@ -710,10 +726,7 @@ static void cgwb_bdi_unregister(struct backing_dev_info *bdi)
 	spin_lock_irq(&cgwb_lock);
 	radix_tree_for_each_slot(slot, &bdi->cgwb_tree, &iter, 0)
 		cgwb_kill(*slot);
-	spin_unlock_irq(&cgwb_lock);
 
-	mutex_lock(&bdi->cgwb_release_mutex);
-	spin_lock_irq(&cgwb_lock);
 	while (!list_empty(&bdi->wb_list)) {
 		wb = list_first_entry(&bdi->wb_list, struct bdi_writeback,
 				      bdi_node);
@@ -722,7 +735,6 @@ static void cgwb_bdi_unregister(struct backing_dev_info *bdi)
 		spin_lock_irq(&cgwb_lock);
 	}
 	spin_unlock_irq(&cgwb_lock);
-	mutex_unlock(&bdi->cgwb_release_mutex);
 }
 
 /**
@@ -733,7 +745,8 @@ static void cgwb_bdi_unregister(struct backing_dev_info *bdi)
  */
 void wb_memcg_offline(struct mem_cgroup *memcg)
 {
-	struct list_head *memcg_cgwb_list = &memcg->cgwb_list;
+	LIST_HEAD(to_destroy);
+	struct list_head *memcg_cgwb_list = mem_cgroup_cgwb_list(memcg);
 	struct bdi_writeback *wb, *next;
 
 	spin_lock_irq(&cgwb_lock);
@@ -751,6 +764,7 @@ void wb_memcg_offline(struct mem_cgroup *memcg)
  */
 void wb_blkcg_offline(struct blkcg *blkcg)
 {
+	LIST_HEAD(to_destroy);
 	struct bdi_writeback *wb, *next;
 
 	spin_lock_irq(&cgwb_lock);
@@ -782,21 +796,6 @@ static void cgwb_bdi_register(struct backing_dev_info *bdi)
 	spin_unlock_irq(&cgwb_lock);
 }
 
-static int __init cgwb_init(void)
-{
-	/*
-	 * There can be many concurrent release work items overwhelming
-	 * system_wq.  Put them in a separate wq and limit concurrency.
-	 * There's no point in executing many of these in parallel.
-	 */
-	cgwb_release_wq = alloc_workqueue("cgwb_release", 0, 1);
-	if (!cgwb_release_wq)
-		return -ENOMEM;
-
-	return 0;
-}
-subsys_initcall(cgwb_init);
-
 #else	/* CONFIG_CGROUP_WRITEBACK */
 
 static int cgwb_bdi_init(struct backing_dev_info *bdi)
@@ -807,7 +806,7 @@ static int cgwb_bdi_init(struct backing_dev_info *bdi)
 	if (!bdi->wb_congested)
 		return -ENOMEM;
 
-	refcount_set(&bdi->wb_congested->refcnt, 1);
+	atomic_set(&bdi->wb_congested->refcnt, 1);
 
 	err = wb_init(&bdi->wb, bdi, 1, GFP_KERNEL);
 	if (err) {
@@ -1034,18 +1033,23 @@ EXPORT_SYMBOL(congestion_wait);
 
 /**
  * wait_iff_congested - Conditionally wait for a backing_dev to become uncongested or a pgdat to complete writes
+ * @pgdat: A pgdat to check if it is heavily congested
  * @sync: SYNC or ASYNC IO
  * @timeout: timeout in jiffies
  *
- * In the event of a congested backing_dev (any backing_dev) this waits
- * for up to @timeout jiffies for either a BDI to exit congestion of the
- * given @sync queue or a write to complete.
+ * In the event of a congested backing_dev (any backing_dev) and the given
+ * @pgdat has experienced recent congestion, this waits for up to @timeout
+ * jiffies for either a BDI to exit congestion of the given @sync queue
+ * or a write to complete.
+ *
+ * In the absence of pgdat congestion, cond_resched() is called to yield
+ * the processor if necessary but otherwise does not sleep.
  *
  * The return value is 0 if the sleep is for the full timeout. Otherwise,
  * it is the number of jiffies that were still remaining when the function
  * returned. return_value == timeout implies the function did not sleep.
  */
-long wait_iff_congested(int sync, long timeout)
+long wait_iff_congested(struct pglist_data *pgdat, int sync, long timeout)
 {
 	long ret;
 	unsigned long start = jiffies;
@@ -1053,10 +1057,12 @@ long wait_iff_congested(int sync, long timeout)
 	wait_queue_head_t *wqh = &congestion_wqh[sync];
 
 	/*
-	 * If there is no congestion, yield if necessary instead
+	 * If there is no congestion, or heavy congestion is not being
+	 * encountered in the current pgdat, yield if necessary instead
 	 * of sleeping on the congestion queue
 	 */
-	if (atomic_read(&nr_wb_congested[sync]) == 0) {
+	if (atomic_read(&nr_wb_congested[sync]) == 0 ||
+	    !test_bit(PGDAT_CONGESTED, &pgdat->flags)) {
 		cond_resched();
 
 		/* In case we scheduled, work out time remaining */

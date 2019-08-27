@@ -1978,6 +1978,7 @@ enum {
 enum {
 	CODEC_5665,
 	CODEC_5666,
+	CODEC_5668,
 };
 
 /* filter mask */
@@ -2002,7 +2003,7 @@ enum {
 	RT5665_CLK_SEL_SYS4,
 };
 
-int rt5665_sel_asrc_clk_src(struct snd_soc_component *component,
+int rt5665_sel_asrc_clk_src(struct snd_soc_codec *codec,
 		unsigned int filter_mask, unsigned int clk_src);
 
 #endif /* __RT5665_H__ */

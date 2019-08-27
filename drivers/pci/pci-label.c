@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Export the firmware instance and label associated with a PCI device to
- * sysfs
- *
+ * Purpose: Export the firmware instance and label associated with
+ * a pci device to sysfs
  * Copyright (C) 2010 Dell Inc.
  * by Narendra K <Narendra_K@dell.com>,
  * Jordan Hargrave <Jordan_Hargrave@dell.com>

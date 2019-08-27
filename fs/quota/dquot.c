@@ -711,18 +711,21 @@ EXPORT_SYMBOL(dquot_quota_sync);
 static unsigned long
 dqcache_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
 {
+	struct list_head *head;
 	struct dquot *dquot;
 	unsigned long freed = 0;
 
 	spin_lock(&dq_list_lock);
-	while (!list_empty(&free_dquots) && sc->nr_to_scan) {
-		dquot = list_first_entry(&free_dquots, struct dquot, dq_free);
+	head = free_dquots.prev;
+	while (head != &free_dquots && sc->nr_to_scan) {
+		dquot = list_entry(head, struct dquot, dq_free);
 		remove_dquot_hash(dquot);
 		remove_free_dquot(dquot);
 		remove_inuse(dquot);
 		do_destroy_dquot(dquot);
 		sc->nr_to_scan--;
 		freed++;
+		head = free_dquots.prev;
 	}
 	spin_unlock(&dq_list_lock);
 	return freed;
@@ -2963,7 +2966,7 @@ static int __init dquot_init(void)
 			NULL);
 
 	order = 0;
-	dquot_hash = (struct hlist_head *)__get_free_pages(GFP_KERNEL, order);
+	dquot_hash = (struct hlist_head *)__get_free_pages(GFP_ATOMIC, order);
 	if (!dquot_hash)
 		panic("Cannot create dquot hash table");
 

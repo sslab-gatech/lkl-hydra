@@ -279,7 +279,7 @@ static int smssdio_probe(struct sdio_func *func,
 		goto free;
 	}
 
-	ret = smscore_register_device(&params, &smsdev->coredev, GFP_DMA, NULL);
+	ret = smscore_register_device(&params, &smsdev->coredev, NULL);
 	if (ret < 0)
 		goto free;
 

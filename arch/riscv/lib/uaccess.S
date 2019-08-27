@@ -13,8 +13,7 @@ _epc:
 	.previous
 	.endm
 
-ENTRY(__asm_copy_to_user)
-ENTRY(__asm_copy_from_user)
+ENTRY(__copy_user)
 
 	/* Enable access to user memory */
 	li t6, SR_SUM
@@ -64,8 +63,7 @@ ENTRY(__asm_copy_from_user)
 	addi a0, a0, 1
 	bltu a1, a3, 5b
 	j 3b
-ENDPROC(__asm_copy_to_user)
-ENDPROC(__asm_copy_from_user)
+ENDPROC(__copy_user)
 
 
 ENTRY(__clear_user)
@@ -86,7 +84,7 @@ ENTRY(__clear_user)
 	bgeu t0, t1, 2f
 	bltu a0, t0, 4f
 1:
-	fixup REG_S, zero, (a0), 11f
+	fixup REG_S, zero, (a0), 10f
 	addi a0, a0, SZREG
 	bltu a0, t1, 1b
 2:
@@ -98,12 +96,12 @@ ENTRY(__clear_user)
 	li a0, 0
 	ret
 4: /* Edge case: unalignment */
-	fixup sb, zero, (a0), 11f
+	fixup sb, zero, (a0), 10f
 	addi a0, a0, 1
 	bltu a0, t0, 4b
 	j 1b
 5: /* Edge case: remainder */
-	fixup sb, zero, (a0), 11f
+	fixup sb, zero, (a0), 10f
 	addi a0, a0, 1
 	bltu a0, a3, 5b
 	j 3b
@@ -111,14 +109,9 @@ ENDPROC(__clear_user)
 
 	.section .fixup,"ax"
 	.balign 4
-	/* Fixup code for __copy_user(10) and __clear_user(11) */
 10:
 	/* Disable access to user memory */
 	csrs sstatus, t6
-	mv a0, a2
-	ret
-11:
-	csrs sstatus, t6
-	mv a0, a1
+	sub a0, a3, a0
 	ret
 	.previous

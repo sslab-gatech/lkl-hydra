@@ -20,7 +20,6 @@
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
 #include <asm/export.h>
-#include <asm/feature-fixups.h>
 
 /* Note: This code relies on -mminimal-toc */
 

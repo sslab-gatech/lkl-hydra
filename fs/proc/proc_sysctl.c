@@ -464,7 +464,7 @@ static struct inode *proc_sys_make_inode(struct super_block *sb,
 
 	inode = new_inode(sb);
 	if (!inode)
-		return ERR_PTR(-ENOMEM);
+		goto out;
 
 	inode->i_ino = get_next_ino();
 
@@ -474,7 +474,8 @@ static struct inode *proc_sys_make_inode(struct super_block *sb,
 	if (unlikely(head->unregistering)) {
 		spin_unlock(&sysctl_lock);
 		iput(inode);
-		return ERR_PTR(-ENOENT);
+		inode = NULL;
+		goto out;
 	}
 	ei->sysctl = head;
 	ei->sysctl_entry = table;
@@ -499,6 +500,7 @@ static struct inode *proc_sys_make_inode(struct super_block *sb,
 	if (root->set_ownership)
 		root->set_ownership(head, table, &inode->i_uid, &inode->i_gid);
 
+out:
 	return inode;
 }
 
@@ -547,14 +549,14 @@ static struct dentry *proc_sys_lookup(struct inode *dir, struct dentry *dentry,
 			goto out;
 	}
 
+	err = ERR_PTR(-ENOMEM);
 	inode = proc_sys_make_inode(dir->i_sb, h ? h : head, p);
-	if (IS_ERR(inode)) {
-		err = ERR_CAST(inode);
+	if (!inode)
 		goto out;
-	}
 
+	err = NULL;
 	d_set_d_op(dentry, &proc_sys_dentry_operations);
-	err = d_splice_alias(inode, dentry);
+	d_add(dentry, inode);
 
 out:
 	if (h)
@@ -682,24 +684,14 @@ static bool proc_sys_fill_cache(struct file *file,
 		if (IS_ERR(child))
 			return false;
 		if (d_in_lookup(child)) {
-			struct dentry *res;
 			inode = proc_sys_make_inode(dir->d_sb, head, table);
-			if (IS_ERR(inode)) {
+			if (!inode) {
 				d_lookup_done(child);
 				dput(child);
 				return false;
 			}
 			d_set_d_op(child, &proc_sys_dentry_operations);
-			res = d_splice_alias(inode, child);
-			d_lookup_done(child);
-			if (unlikely(res)) {
-				if (IS_ERR(res)) {
-					dput(child);
-					return false;
-				}
-				dput(child);
-				child = res;
-			}
+			d_add(child, inode);
 		}
 	}
 	inode = d_inode(child);
@@ -715,14 +707,14 @@ static bool proc_sys_link_fill_cache(struct file *file,
 				    struct ctl_table *table)
 {
 	bool ret = true;
-
 	head = sysctl_head_grab(head);
-	if (IS_ERR(head))
-		return false;
 
-	/* It is not an error if we can not follow the link ignore it */
-	if (sysctl_follow_link(&head, &table))
-		goto out;
+	if (S_ISLNK(table->mode)) {
+		/* It is not an error if we can not follow the link ignore it */
+		int err = sysctl_follow_link(&head, &table);
+		if (err)
+			goto out;
+	}
 
 	ret = proc_sys_fill_cache(file, ctx, head, table);
 out:
@@ -1094,7 +1086,7 @@ static int sysctl_check_table_array(const char *path, struct ctl_table *table)
 	if ((table->proc_handler == proc_douintvec) ||
 	    (table->proc_handler == proc_douintvec_minmax)) {
 		if (table->maxlen != sizeof(unsigned int))
-			err |= sysctl_err(path, table, "array not allowed");
+			err |= sysctl_err(path, table, "array now allowed");
 	}
 
 	return err;
@@ -1425,7 +1417,7 @@ static int register_leaf_sysctl_tables(const char *path, char *pos,
 	/* If there are mixed files and directories we need a new table */
 	if (nr_dirs && nr_files) {
 		struct ctl_table *new;
-		files = kcalloc(nr_files + 1, sizeof(struct ctl_table),
+		files = kzalloc(sizeof(struct ctl_table) * (nr_files + 1),
 				GFP_KERNEL);
 		if (!files)
 			goto out;

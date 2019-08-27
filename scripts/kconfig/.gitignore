@@ -1,8 +1,13 @@
 #
 # Generated files
 #
+*.lex.c
+*.tab.c
+*.tab.h
 *.moc
-*conf-cfg
+gconf.glade.h
+*.pot
+*.mo
 
 #
 # configuration programs
@@ -13,3 +18,4 @@ mconf
 nconf
 qconf
 gconf
+kxgettext

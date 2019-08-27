@@ -38,8 +38,7 @@
  *	  6) Support low-overhead kernel-based filtering to minimize the
  *	     information that must be passed to user-space.
  *
- * Audit userspace, documentation, tests, and bug/issue trackers:
- * 	https://github.com/linux-audit
+ * Example user-space utilities: http://people.redhat.com/sgrubb/audit/
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -60,6 +59,7 @@
 #include <linux/mutex.h>
 #include <linux/gfp.h>
 #include <linux/pid.h>
+#include <linux/slab.h>
 
 #include <linux/audit.h>
 
@@ -82,6 +82,9 @@
 #define AUDIT_INITIALIZED	1
 static int	audit_initialized;
 
+#define AUDIT_OFF	0
+#define AUDIT_ON	1
+#define AUDIT_LOCKED	2
 u32		audit_enabled = AUDIT_OFF;
 bool		audit_ever_enabled = !!AUDIT_OFF;
 
@@ -177,21 +180,9 @@ static char *audit_feature_names[2] = {
 	"loginuid_immutable",
 };
 
-/**
- * struct audit_ctl_mutex - serialize requests from userspace
- * @lock: the mutex used for locking
- * @owner: the task which owns the lock
- *
- * Description:
- * This is the lock struct used to ensure we only process userspace requests
- * in an orderly fashion.  We can't simply use a mutex/lock here because we
- * need to track lock ownership so we don't end up blocking the lock owner in
- * audit_log_start() or similar.
- */
-static struct audit_ctl_mutex {
-	struct mutex lock;
-	void *owner;
-} audit_cmd_mutex;
+
+/* Serialize requests from userspace. */
+DEFINE_MUTEX(audit_cmd_mutex);
 
 /* AUDIT_BUFSIZ is the size of the temporary buffer used for formatting
  * audit records.  Since printk uses a 1024 byte buffer, this buffer
@@ -233,36 +224,6 @@ int auditd_test_task(struct task_struct *task)
 	rcu_read_unlock();
 
 	return rc;
-}
-
-/**
- * audit_ctl_lock - Take the audit control lock
- */
-void audit_ctl_lock(void)
-{
-	mutex_lock(&audit_cmd_mutex.lock);
-	audit_cmd_mutex.owner = current;
-}
-
-/**
- * audit_ctl_unlock - Drop the audit control lock
- */
-void audit_ctl_unlock(void)
-{
-	audit_cmd_mutex.owner = NULL;
-	mutex_unlock(&audit_cmd_mutex.lock);
-}
-
-/**
- * audit_ctl_owner_current - Test to see if the current task owns the lock
- *
- * Description:
- * Return true if the current task owns the audit control lock, false if it
- * doesn't own the lock.
- */
-static bool audit_ctl_owner_current(void)
-{
-	return (current == audit_cmd_mutex.owner);
 }
 
 /**
@@ -399,7 +360,7 @@ static int audit_log_config_change(char *function_name, u32 new, u32 old,
 	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
 	if (unlikely(!ab))
 		return rc;
-	audit_log_format(ab, "%s=%u old=%u ", function_name, new, old);
+	audit_log_format(ab, "%s=%u old=%u", function_name, new, old);
 	audit_log_session_info(ab);
 	rc = audit_log_task_context(ab);
 	if (rc)
@@ -482,15 +443,15 @@ static int audit_set_failure(u32 state)
  * Drop any references inside the auditd connection tracking struct and free
  * the memory.
  */
-static void auditd_conn_free(struct rcu_head *rcu)
-{
+ static void auditd_conn_free(struct rcu_head *rcu)
+ {
 	struct auditd_connection *ac;
 
 	ac = container_of(rcu, struct auditd_connection, rcu);
 	put_pid(ac->pid);
 	put_net(ac->net);
 	kfree(ac);
-}
+ }
 
 /**
  * auditd_set - Set/Reset the auditd connection state
@@ -899,8 +860,8 @@ int audit_send_list(void *_dest)
 	struct sock *sk = audit_get_sk(dest->net);
 
 	/* wait for parent to finish and send an ACK */
-	audit_ctl_lock();
-	audit_ctl_unlock();
+	mutex_lock(&audit_cmd_mutex);
+	mutex_unlock(&audit_cmd_mutex);
 
 	while ((skb = __skb_dequeue(&dest->q)) != NULL)
 		netlink_unicast(sk, skb, dest->portid, 0);
@@ -941,8 +902,8 @@ static int audit_send_reply_thread(void *arg)
 	struct audit_reply *reply = (struct audit_reply *)arg;
 	struct sock *sk = audit_get_sk(reply->net);
 
-	audit_ctl_lock();
-	audit_ctl_unlock();
+	mutex_lock(&audit_cmd_mutex);
+	mutex_unlock(&audit_cmd_mutex);
 
 	/* Ignore failure. It'll only happen if the sender goes away,
 	   because our timeout is set to infinite. */
@@ -1066,7 +1027,7 @@ static void audit_log_common_recv_msg(struct audit_buffer **ab, u16 msg_type)
 	*ab = audit_log_start(NULL, GFP_KERNEL, msg_type);
 	if (unlikely(!*ab))
 		return;
-	audit_log_format(*ab, "pid=%d uid=%u ", pid, uid);
+	audit_log_format(*ab, "pid=%d uid=%u", pid, uid);
 	audit_log_session_info(*ab);
 	audit_log_task_context(*ab);
 }
@@ -1096,10 +1057,8 @@ static void audit_log_feature_change(int which, u32 old_feature, u32 new_feature
 	if (audit_enabled == AUDIT_OFF)
 		return;
 
-	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_FEATURE_CHANGE);
-	if (!ab)
-		return;
-	audit_log_task_info(ab);
+	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_FEATURE_CHANGE);
+	audit_log_task_info(ab, current);
 	audit_log_format(ab, " feature=%s old=%u new=%u old_lock=%u new_lock=%u res=%d",
 			 audit_feature_names[which], !!old_feature, !!new_feature,
 			 !!old_lock, !!new_lock, res);
@@ -1507,7 +1466,7 @@ static void audit_receive(struct sk_buff  *skb)
 	nlh = nlmsg_hdr(skb);
 	len = skb->len;
 
-	audit_ctl_lock();
+	mutex_lock(&audit_cmd_mutex);
 	while (nlmsg_ok(nlh, len)) {
 		err = audit_receive_msg(skb, nlh);
 		/* if err or if this message says it wants a response */
@@ -1516,7 +1475,7 @@ static void audit_receive(struct sk_buff  *skb)
 
 		nlh = nlmsg_next(nlh, &len);
 	}
-	audit_ctl_unlock();
+	mutex_unlock(&audit_cmd_mutex);
 }
 
 /* Run custom bind function on netlink socket group connect or bind requests. */
@@ -1588,9 +1547,6 @@ static int __init audit_init(void)
 	for (i = 0; i < AUDIT_INODE_BUCKETS; i++)
 		INIT_LIST_HEAD(&audit_inode_hash[i]);
 
-	mutex_init(&audit_cmd_mutex.lock);
-	audit_cmd_mutex.owner = NULL;
-
 	pr_info("initializing netlink subsys (%s)\n",
 		audit_default ? "enabled" : "disabled");
 	register_pernet_subsys(&audit_net_ops);
@@ -1611,26 +1567,19 @@ static int __init audit_init(void)
 }
 postcore_initcall(audit_init);
 
-/*
- * Process kernel command-line parameter at boot time.
- * audit={0|off} or audit={1|on}.
- */
+/* Process kernel command-line parameter at boot time.  audit=0 or audit=1. */
 static int __init audit_enable(char *str)
 {
-	if (!strcasecmp(str, "off") || !strcmp(str, "0"))
-		audit_default = AUDIT_OFF;
-	else if (!strcasecmp(str, "on") || !strcmp(str, "1"))
-		audit_default = AUDIT_ON;
-	else {
-		pr_err("audit: invalid 'audit' parameter value (%s)\n", str);
-		audit_default = AUDIT_ON;
-	}
+	long val;
+
+	if (kstrtol(str, 0, &val))
+		panic("audit: invalid 'audit' parameter value (%s)\n", str);
+	audit_default = (val ? AUDIT_ON : AUDIT_OFF);
 
 	if (audit_default == AUDIT_OFF)
 		audit_initialized = AUDIT_DISABLED;
 	if (audit_set_enabled(audit_default))
-		pr_err("audit: error setting audit state (%d)\n",
-		       audit_default);
+		panic("audit: error setting audit state (%d)\n", audit_default);
 
 	pr_info("%s\n", audit_default ?
 		"enabled (after initialization)" : "disabled (until reboot)");
@@ -1721,7 +1670,7 @@ static inline void audit_get_stamp(struct audit_context *ctx,
 				   struct timespec64 *t, unsigned int *serial)
 {
 	if (!ctx || !auditsc_get_stamp(ctx, t, serial)) {
-		ktime_get_coarse_real_ts64(t);
+		*t = current_kernel_time64();
 		*serial = audit_serial();
 	}
 }
@@ -1751,7 +1700,7 @@ struct audit_buffer *audit_log_start(struct audit_context *ctx, gfp_t gfp_mask,
 	if (audit_initialized != AUDIT_INITIALIZED)
 		return NULL;
 
-	if (unlikely(!audit_filter(type, AUDIT_FILTER_EXCLUDE)))
+	if (unlikely(!audit_filter(type, AUDIT_FILTER_TYPE)))
 		return NULL;
 
 	/* NOTE: don't ever fail/sleep on these two conditions:
@@ -1761,7 +1710,8 @@ struct audit_buffer *audit_log_start(struct audit_context *ctx, gfp_t gfp_mask,
 	 *    using a PID anchored in the caller's namespace
 	 * 2. generator holding the audit_cmd_mutex - we don't want to block
 	 *    while holding the mutex */
-	if (!(auditd_test_task(current) || audit_ctl_owner_current())) {
+	if (!(auditd_test_task(current) ||
+	      (current == __mutex_owner(&audit_cmd_mutex)))) {
 		long stime = audit_backlog_wait_time;
 
 		while (audit_backlog_limit &&
@@ -2042,7 +1992,7 @@ void audit_log_session_info(struct audit_buffer *ab)
 	unsigned int sessionid = audit_get_sessionid(current);
 	uid_t auid = from_kuid(&init_user_ns, audit_get_loginuid(current));
 
-	audit_log_format(ab, "auid=%u ses=%u", auid, sessionid);
+	audit_log_format(ab, " auid=%u ses=%u", auid, sessionid);
 }
 
 void audit_log_key(struct audit_buffer *ab, char *key)
@@ -2058,13 +2008,11 @@ void audit_log_cap(struct audit_buffer *ab, char *prefix, kernel_cap_t *cap)
 {
 	int i;
 
-	if (cap_isclear(*cap)) {
-		audit_log_format(ab, " %s=0", prefix);
-		return;
-	}
 	audit_log_format(ab, " %s=", prefix);
-	CAP_FOR_EACH_U32(i)
-		audit_log_format(ab, "%08x", cap->cap[CAP_LAST_U32 - i]);
+	CAP_FOR_EACH_U32(i) {
+		audit_log_format(ab, "%08x",
+				 cap->cap[CAP_LAST_U32 - i]);
+	}
 }
 
 static void audit_log_fcaps(struct audit_buffer *ab, struct audit_names *name)
@@ -2179,21 +2127,22 @@ void audit_log_name(struct audit_context *context, struct audit_names *n,
 	}
 
 	/* log the audit_names record type */
+	audit_log_format(ab, " nametype=");
 	switch(n->type) {
 	case AUDIT_TYPE_NORMAL:
-		audit_log_format(ab, " nametype=NORMAL");
+		audit_log_format(ab, "NORMAL");
 		break;
 	case AUDIT_TYPE_PARENT:
-		audit_log_format(ab, " nametype=PARENT");
+		audit_log_format(ab, "PARENT");
 		break;
 	case AUDIT_TYPE_CHILD_DELETE:
-		audit_log_format(ab, " nametype=DELETE");
+		audit_log_format(ab, "DELETE");
 		break;
 	case AUDIT_TYPE_CHILD_CREATE:
-		audit_log_format(ab, " nametype=CREATE");
+		audit_log_format(ab, "CREATE");
 		break;
 	default:
-		audit_log_format(ab, " nametype=UNKNOWN");
+		audit_log_format(ab, "UNKNOWN");
 		break;
 	}
 
@@ -2248,15 +2197,15 @@ out_null:
 	audit_log_format(ab, " exe=(null)");
 }
 
-struct tty_struct *audit_get_tty(void)
+struct tty_struct *audit_get_tty(struct task_struct *tsk)
 {
 	struct tty_struct *tty = NULL;
 	unsigned long flags;
 
-	spin_lock_irqsave(&current->sighand->siglock, flags);
-	if (current->signal)
-		tty = tty_kref_get(current->signal->tty);
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_lock_irqsave(&tsk->sighand->siglock, flags);
+	if (tsk->signal)
+		tty = tty_kref_get(tsk->signal->tty);
+	spin_unlock_irqrestore(&tsk->sighand->siglock, flags);
 	return tty;
 }
 
@@ -2265,24 +2214,25 @@ void audit_put_tty(struct tty_struct *tty)
 	tty_kref_put(tty);
 }
 
-void audit_log_task_info(struct audit_buffer *ab)
+void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk)
 {
 	const struct cred *cred;
-	char comm[sizeof(current->comm)];
+	char comm[sizeof(tsk->comm)];
 	struct tty_struct *tty;
 
 	if (!ab)
 		return;
 
+	/* tsk == current */
 	cred = current_cred();
-	tty = audit_get_tty();
+	tty = audit_get_tty(tsk);
 	audit_log_format(ab,
 			 " ppid=%d pid=%d auid=%u uid=%u gid=%u"
 			 " euid=%u suid=%u fsuid=%u"
 			 " egid=%u sgid=%u fsgid=%u tty=%s ses=%u",
-			 task_ppid_nr(current),
-			 task_tgid_nr(current),
-			 from_kuid(&init_user_ns, audit_get_loginuid(current)),
+			 task_ppid_nr(tsk),
+			 task_tgid_nr(tsk),
+			 from_kuid(&init_user_ns, audit_get_loginuid(tsk)),
 			 from_kuid(&init_user_ns, cred->uid),
 			 from_kgid(&init_user_ns, cred->gid),
 			 from_kuid(&init_user_ns, cred->euid),
@@ -2292,11 +2242,11 @@ void audit_log_task_info(struct audit_buffer *ab)
 			 from_kgid(&init_user_ns, cred->sgid),
 			 from_kgid(&init_user_ns, cred->fsgid),
 			 tty ? tty_name(tty) : "(none)",
-			 audit_get_sessionid(current));
+			 audit_get_sessionid(tsk));
 	audit_put_tty(tty);
 	audit_log_format(ab, " comm=");
-	audit_log_untrustedstring(ab, get_task_comm(comm, current));
-	audit_log_d_path_exe(ab, current->mm);
+	audit_log_untrustedstring(ab, get_task_comm(comm, tsk));
+	audit_log_d_path_exe(ab, tsk->mm);
 	audit_log_task_context(ab);
 }
 EXPORT_SYMBOL(audit_log_task_info);
@@ -2304,22 +2254,33 @@ EXPORT_SYMBOL(audit_log_task_info);
 /**
  * audit_log_link_denied - report a link restriction denial
  * @operation: specific link operation
+ * @link: the path that triggered the restriction
  */
-void audit_log_link_denied(const char *operation)
+void audit_log_link_denied(const char *operation, const struct path *link)
 {
 	struct audit_buffer *ab;
+	struct audit_names *name;
 
-	if (!audit_enabled || audit_dummy_context())
+	name = kzalloc(sizeof(*name), GFP_NOFS);
+	if (!name)
 		return;
 
 	/* Generate AUDIT_ANOM_LINK with subject, operation, outcome. */
-	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_ANOM_LINK);
+	ab = audit_log_start(current->audit_context, GFP_KERNEL,
+			     AUDIT_ANOM_LINK);
 	if (!ab)
-		return;
+		goto out;
 	audit_log_format(ab, "op=%s", operation);
-	audit_log_task_info(ab);
+	audit_log_task_info(ab, current);
 	audit_log_format(ab, " res=0");
 	audit_log_end(ab);
+
+	/* Generate AUDIT_PATH record with object. */
+	name->type = AUDIT_TYPE_NORMAL;
+	audit_copy_inode(name, link->dentry, d_backing_inode(link->dentry));
+	audit_log_name(current->audit_context, name, link, 0, NULL);
+out:
+	kfree(name);
 }
 
 /**

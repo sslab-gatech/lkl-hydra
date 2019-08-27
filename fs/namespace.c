@@ -23,10 +23,9 @@
 #include <linux/uaccess.h>
 #include <linux/proc_ns.h>
 #include <linux/magic.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/task_work.h>
 #include <linux/sched/task.h>
-#include <uapi/linux/mount.h>
 
 #include "pnode.h"
 #include "internal.h"
@@ -62,6 +61,9 @@ __setup("mphash_entries=", set_mphash_entries);
 static u64 event;
 static DEFINE_IDA(mnt_id_ida);
 static DEFINE_IDA(mnt_group_ida);
+static DEFINE_SPINLOCK(mnt_id_lock);
+static int mnt_id_start = 0;
+static int mnt_group_start = 1;
 
 static struct hlist_head *mount_hashtable __read_mostly;
 static struct hlist_head *mountpoint_hashtable __read_mostly;
@@ -99,30 +101,50 @@ static inline struct hlist_head *mp_hash(struct dentry *dentry)
 
 static int mnt_alloc_id(struct mount *mnt)
 {
-	int res = ida_alloc(&mnt_id_ida, GFP_KERNEL);
+	int res;
 
-	if (res < 0)
-		return res;
-	mnt->mnt_id = res;
-	return 0;
+retry:
+	ida_pre_get(&mnt_id_ida, GFP_KERNEL);
+	spin_lock(&mnt_id_lock);
+	res = ida_get_new_above(&mnt_id_ida, mnt_id_start, &mnt->mnt_id);
+	if (!res)
+		mnt_id_start = mnt->mnt_id + 1;
+	spin_unlock(&mnt_id_lock);
+	if (res == -EAGAIN)
+		goto retry;
+
+	return res;
 }
 
 static void mnt_free_id(struct mount *mnt)
 {
-	ida_free(&mnt_id_ida, mnt->mnt_id);
+	int id = mnt->mnt_id;
+	spin_lock(&mnt_id_lock);
+	ida_remove(&mnt_id_ida, id);
+	if (mnt_id_start > id)
+		mnt_id_start = id;
+	spin_unlock(&mnt_id_lock);
 }
 
 /*
  * Allocate a new peer group ID
+ *
+ * mnt_group_ida is protected by namespace_sem
  */
 static int mnt_alloc_group_id(struct mount *mnt)
 {
-	int res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
+	int res;
 
-	if (res < 0)
-		return res;
-	mnt->mnt_group_id = res;
-	return 0;
+	if (!ida_pre_get(&mnt_group_ida, GFP_KERNEL))
+		return -ENOMEM;
+
+	res = ida_get_new_above(&mnt_group_ida,
+				mnt_group_start,
+				&mnt->mnt_group_id);
+	if (!res)
+		mnt_group_start = mnt->mnt_group_id + 1;
+
+	return res;
 }
 
 /*
@@ -130,7 +152,10 @@ static int mnt_alloc_group_id(struct mount *mnt)
  */
 void mnt_release_group_id(struct mount *mnt)
 {
-	ida_free(&mnt_group_ida, mnt->mnt_group_id);
+	int id = mnt->mnt_group_id;
+	ida_remove(&mnt_group_ida, id);
+	if (mnt_group_start > id)
+		mnt_group_start = id;
 	mnt->mnt_group_id = 0;
 }
 
@@ -246,9 +271,13 @@ out_free_cache:
  * mnt_want/drop_write() will _keep_ the filesystem
  * r/w.
  */
-bool __mnt_is_readonly(struct vfsmount *mnt)
+int __mnt_is_readonly(struct vfsmount *mnt)
 {
-	return (mnt->mnt_flags & MNT_READONLY) || sb_rdonly(mnt->mnt_sb);
+	if (mnt->mnt_flags & MNT_READONLY)
+		return 1;
+	if (sb_rdonly(mnt->mnt_sb))
+		return 1;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(__mnt_is_readonly);
 
@@ -402,20 +431,74 @@ int __mnt_want_write_file(struct file *file)
 }
 
 /**
+ * mnt_want_write_file_path - get write access to a file's mount
+ * @file: the file who's mount on which to take a write
+ *
+ * This is like mnt_want_write, but it takes a file and can
+ * do some optimisations if the file is open for write already
+ *
+ * Called by the vfs for cases when we have an open file at hand, but will do an
+ * inode operation on it (important distinction for files opened on overlayfs,
+ * since the file operations will come from the real underlying file, while
+ * inode operations come from the overlay).
+ */
+int mnt_want_write_file_path(struct file *file)
+{
+	int ret;
+
+	sb_start_write(file->f_path.mnt->mnt_sb);
+	ret = __mnt_want_write_file(file);
+	if (ret)
+		sb_end_write(file->f_path.mnt->mnt_sb);
+	return ret;
+}
+
+static inline int may_write_real(struct file *file)
+{
+	struct dentry *dentry = file->f_path.dentry;
+	struct dentry *upperdentry;
+
+	/* Writable file? */
+	if (file->f_mode & FMODE_WRITER)
+		return 0;
+
+	/* Not overlayfs? */
+	if (likely(!(dentry->d_flags & DCACHE_OP_REAL)))
+		return 0;
+
+	/* File refers to upper, writable layer? */
+	upperdentry = d_real(dentry, NULL, 0, D_REAL_UPPER);
+	if (upperdentry &&
+	    (file_inode(file) == d_inode(upperdentry) ||
+	     file_inode(file) == d_inode(dentry)))
+		return 0;
+
+	/* Lower layer: can't write to real file, sorry... */
+	return -EPERM;
+}
+
+/**
  * mnt_want_write_file - get write access to a file's mount
  * @file: the file who's mount on which to take a write
  *
  * This is like mnt_want_write, but it takes a file and can
  * do some optimisations if the file is open for write already
+ *
+ * Mostly called by filesystems from their ioctl operation before performing
+ * modification.  On overlayfs this needs to check if the file is on a read-only
+ * lower layer and deny access in that case.
  */
 int mnt_want_write_file(struct file *file)
 {
 	int ret;
 
-	sb_start_write(file_inode(file)->i_sb);
-	ret = __mnt_want_write_file(file);
-	if (ret)
-		sb_end_write(file_inode(file)->i_sb);
+	ret = may_write_real(file);
+	if (!ret) {
+		sb_start_write(file_inode(file)->i_sb);
+		ret = __mnt_want_write_file(file);
+		if (ret)
+			sb_end_write(file_inode(file)->i_sb);
+	}
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mnt_want_write_file);
@@ -455,9 +538,14 @@ void __mnt_drop_write_file(struct file *file)
 	__mnt_drop_write(file->f_path.mnt);
 }
 
+void mnt_drop_write_file_path(struct file *file)
+{
+	mnt_drop_write(file->f_path.mnt);
+}
+
 void mnt_drop_write_file(struct file *file)
 {
-	__mnt_drop_write_file(file);
+	__mnt_drop_write(file->f_path.mnt);
 	sb_end_write(file_inode(file)->i_sb);
 }
 EXPORT_SYMBOL(mnt_drop_write_file);
@@ -504,12 +592,11 @@ static int mnt_make_readonly(struct mount *mnt)
 	return ret;
 }
 
-static int __mnt_unmake_readonly(struct mount *mnt)
+static void __mnt_unmake_readonly(struct mount *mnt)
 {
 	lock_mount_hash();
 	mnt->mnt.mnt_flags &= ~MNT_READONLY;
 	unlock_mount_hash();
-	return 0;
 }
 
 int sb_prepare_remount_readonly(struct super_block *sb)
@@ -572,21 +659,12 @@ int __legitimize_mnt(struct vfsmount *bastard, unsigned seq)
 		return 0;
 	mnt = real_mount(bastard);
 	mnt_add_count(mnt, 1);
-	smp_mb();			// see mntput_no_expire()
 	if (likely(!read_seqretry(&mount_lock, seq)))
 		return 0;
 	if (bastard->mnt_flags & MNT_SYNC_UMOUNT) {
 		mnt_add_count(mnt, -1);
 		return 1;
 	}
-	lock_mount_hash();
-	if (unlikely(bastard->mnt_flags & MNT_DOOMED)) {
-		mnt_add_count(mnt, -1);
-		unlock_mount_hash();
-		return 1;
-	}
-	unlock_mount_hash();
-	/* caller will mntput() */
 	return -1;
 }
 
@@ -693,6 +771,9 @@ static struct mountpoint *lookup_mountpoint(struct dentry *dentry)
 
 	hlist_for_each_entry(mp, chain, m_hash) {
 		if (mp->m_dentry == dentry) {
+			/* might be worth a WARN_ON() */
+			if (d_unlinked(dentry))
+				return ERR_PTR(-ENOENT);
 			mp->m_count++;
 			return mp;
 		}
@@ -706,9 +787,6 @@ static struct mountpoint *get_mountpoint(struct dentry *dentry)
 	int ret;
 
 	if (d_mountpoint(dentry)) {
-		/* might be worth a WARN_ON() */
-		if (d_unlinked(dentry))
-			return ERR_PTR(-ENOENT);
 mountpoint:
 		read_seqlock_excl(&mount_lock);
 		mp = lookup_mountpoint(dentry);
@@ -1011,8 +1089,7 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 			goto out_free;
 	}
 
-	mnt->mnt.mnt_flags = old->mnt.mnt_flags;
-	mnt->mnt.mnt_flags &= ~(MNT_WRITE_HOLD|MNT_MARKED|MNT_INTERNAL);
+	mnt->mnt.mnt_flags = old->mnt.mnt_flags & ~(MNT_WRITE_HOLD|MNT_MARKED);
 	/* Don't allow unprivileged users to change mount flags */
 	if (flag & CL_UNPRIVILEGED) {
 		mnt->mnt.mnt_flags |= MNT_LOCK_ATIME;
@@ -1117,27 +1194,12 @@ static DECLARE_DELAYED_WORK(delayed_mntput_work, delayed_mntput);
 static void mntput_no_expire(struct mount *mnt)
 {
 	rcu_read_lock();
-	if (likely(READ_ONCE(mnt->mnt_ns))) {
-		/*
-		 * Since we don't do lock_mount_hash() here,
-		 * ->mnt_ns can change under us.  However, if it's
-		 * non-NULL, then there's a reference that won't
-		 * be dropped until after an RCU delay done after
-		 * turning ->mnt_ns NULL.  So if we observe it
-		 * non-NULL under rcu_read_lock(), the reference
-		 * we are dropping is not the final one.
-		 */
-		mnt_add_count(mnt, -1);
+	mnt_add_count(mnt, -1);
+	if (likely(mnt->mnt_ns)) { /* shouldn't be the last one */
 		rcu_read_unlock();
 		return;
 	}
 	lock_mount_hash();
-	/*
-	 * make sure that if __legitimize_mnt() has not seen us grab
-	 * mount_lock, we'll see their refcount increment here.
-	 */
-	smp_mb();
-	mnt_add_count(mnt, -1);
 	if (mnt_get_count(mnt)) {
 		rcu_read_unlock();
 		unlock_mount_hash();
@@ -1358,7 +1420,7 @@ static void namespace_unlock(void)
 	if (likely(hlist_empty(&head)))
 		return;
 
-	synchronize_rcu_expedited();
+	synchronize_rcu();
 
 	group_pin_kill(&head);
 }
@@ -1527,7 +1589,7 @@ static int do_umount(struct mount *mnt, int flags)
 		 * Special case for "unmounting" root ...
 		 * we just try to remount it readonly.
 		 */
-		if (!ns_capable(sb->s_user_ns, CAP_SYS_ADMIN))
+		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
 		down_write(&sb->s_umount);
 		if (!sb_rdonly(sb))
@@ -1538,13 +1600,8 @@ static int do_umount(struct mount *mnt, int flags)
 
 	namespace_lock();
 	lock_mount_hash();
-
-	/* Recheck MNT_LOCKED with the locks held */
-	retval = -EINVAL;
-	if (mnt->mnt.mnt_flags & MNT_LOCKED)
-		goto out;
-
 	event++;
+
 	if (flags & MNT_DETACH) {
 		if (!list_empty(&mnt->mnt_list))
 			umount_tree(mnt, UMOUNT_PROPAGATE);
@@ -1558,7 +1615,6 @@ static int do_umount(struct mount *mnt, int flags)
 			retval = 0;
 		}
 	}
-out:
 	unlock_mount_hash();
 	namespace_unlock();
 	return retval;
@@ -1624,7 +1680,7 @@ static inline bool may_mandlock(void)
  * unixes. Our API is identical to OSF/1 to avoid making a mess of AMD
  */
 
-int ksys_umount(char __user *name, int flags)
+SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 {
 	struct path path;
 	struct mount *mnt;
@@ -1649,7 +1705,7 @@ int ksys_umount(char __user *name, int flags)
 		goto dput_and_out;
 	if (!check_mnt(mnt))
 		goto dput_and_out;
-	if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
+	if (mnt->mnt.mnt_flags & MNT_LOCKED)
 		goto dput_and_out;
 	retval = -EPERM;
 	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
@@ -1664,11 +1720,6 @@ out:
 	return retval;
 }
 
-SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
-{
-	return ksys_umount(name, flags);
-}
-
 #ifdef __ARCH_WANT_SYS_OLDUMOUNT
 
 /*
@@ -1676,7 +1727,7 @@ SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
  */
 SYSCALL_DEFINE1(oldumount, char __user *, name)
 {
-	return ksys_umount(name, 0);
+	return sys_umount(name, 0);
 }
 
 #endif
@@ -1732,14 +1783,8 @@ struct mount *copy_tree(struct mount *mnt, struct dentry *dentry,
 		for (s = r; s; s = next_mnt(s, r)) {
 			if (!(flag & CL_COPY_UNBINDABLE) &&
 			    IS_MNT_UNBINDABLE(s)) {
-				if (s->mnt.mnt_flags & MNT_LOCKED) {
-					/* Both unbindable and locked. */
-					q = ERR_PTR(-EPERM);
-					goto out;
-				} else {
-					s = skip_mnt_tree(s);
-					continue;
-				}
+				s = skip_mnt_tree(s);
+				continue;
 			}
 			if (!(flag & CL_COPY_MNT_NS_FILE) &&
 			    is_mnt_ns_file(s->mnt.mnt_root)) {
@@ -1792,7 +1837,7 @@ void drop_collected_mounts(struct vfsmount *mnt)
 {
 	namespace_lock();
 	lock_mount_hash();
-	umount_tree(real_mount(mnt), 0);
+	umount_tree(real_mount(mnt), UMOUNT_SYNC);
 	unlock_mount_hash();
 	namespace_unlock();
 }
@@ -2213,91 +2258,21 @@ out:
 	return err;
 }
 
-/*
- * Don't allow locked mount flags to be cleared.
- *
- * No locks need to be held here while testing the various MNT_LOCK
- * flags because those flags can never be cleared once they are set.
- */
-static bool can_change_locked_flags(struct mount *mnt, unsigned int mnt_flags)
+static int change_mount_flags(struct vfsmount *mnt, int ms_flags)
 {
-	unsigned int fl = mnt->mnt.mnt_flags;
+	int error = 0;
+	int readonly_request = 0;
 
-	if ((fl & MNT_LOCK_READONLY) &&
-	    !(mnt_flags & MNT_READONLY))
-		return false;
-
-	if ((fl & MNT_LOCK_NODEV) &&
-	    !(mnt_flags & MNT_NODEV))
-		return false;
-
-	if ((fl & MNT_LOCK_NOSUID) &&
-	    !(mnt_flags & MNT_NOSUID))
-		return false;
-
-	if ((fl & MNT_LOCK_NOEXEC) &&
-	    !(mnt_flags & MNT_NOEXEC))
-		return false;
-
-	if ((fl & MNT_LOCK_ATIME) &&
-	    ((fl & MNT_ATIME_MASK) != (mnt_flags & MNT_ATIME_MASK)))
-		return false;
-
-	return true;
-}
-
-static int change_mount_ro_state(struct mount *mnt, unsigned int mnt_flags)
-{
-	bool readonly_request = (mnt_flags & MNT_READONLY);
-
-	if (readonly_request == __mnt_is_readonly(&mnt->mnt))
+	if (ms_flags & MS_RDONLY)
+		readonly_request = 1;
+	if (readonly_request == __mnt_is_readonly(mnt))
 		return 0;
 
 	if (readonly_request)
-		return mnt_make_readonly(mnt);
-
-	return __mnt_unmake_readonly(mnt);
-}
-
-/*
- * Update the user-settable attributes on a mount.  The caller must hold
- * sb->s_umount for writing.
- */
-static void set_mount_attributes(struct mount *mnt, unsigned int mnt_flags)
-{
-	lock_mount_hash();
-	mnt_flags |= mnt->mnt.mnt_flags & ~MNT_USER_SETTABLE_MASK;
-	mnt->mnt.mnt_flags = mnt_flags;
-	touch_mnt_namespace(mnt->mnt_ns);
-	unlock_mount_hash();
-}
-
-/*
- * Handle reconfiguration of the mountpoint only without alteration of the
- * superblock it refers to.  This is triggered by specifying MS_REMOUNT|MS_BIND
- * to mount(2).
- */
-static int do_reconfigure_mnt(struct path *path, unsigned int mnt_flags)
-{
-	struct super_block *sb = path->mnt->mnt_sb;
-	struct mount *mnt = real_mount(path->mnt);
-	int ret;
-
-	if (!check_mnt(mnt))
-		return -EINVAL;
-
-	if (path->dentry != mnt->mnt.mnt_root)
-		return -EINVAL;
-
-	if (!can_change_locked_flags(mnt, mnt_flags))
-		return -EPERM;
-
-	down_write(&sb->s_umount);
-	ret = change_mount_ro_state(mnt, mnt_flags);
-	if (ret == 0)
-		set_mount_attributes(mnt, mnt_flags);
-	up_write(&sb->s_umount);
-	return ret;
+		error = mnt_make_readonly(real_mount(mnt));
+	else
+		__mnt_unmake_readonly(real_mount(mnt));
+	return error;
 }
 
 /*
@@ -2311,7 +2286,6 @@ static int do_remount(struct path *path, int ms_flags, int sb_flags,
 	int err;
 	struct super_block *sb = path->mnt->mnt_sb;
 	struct mount *mnt = real_mount(path->mnt);
-	void *sec_opts = NULL;
 
 	if (!check_mnt(mnt))
 		return -EINVAL;
@@ -2319,25 +2293,50 @@ static int do_remount(struct path *path, int ms_flags, int sb_flags,
 	if (path->dentry != path->mnt->mnt_root)
 		return -EINVAL;
 
-	if (!can_change_locked_flags(mnt, mnt_flags))
+	/* Don't allow changing of locked mnt flags.
+	 *
+	 * No locks need to be held here while testing the various
+	 * MNT_LOCK flags because those flags can never be cleared
+	 * once they are set.
+	 */
+	if ((mnt->mnt.mnt_flags & MNT_LOCK_READONLY) &&
+	    !(mnt_flags & MNT_READONLY)) {
 		return -EPERM;
-
-	if (data && !(sb->s_type->fs_flags & FS_BINARY_MOUNTDATA)) {
-		err = security_sb_eat_lsm_opts(data, &sec_opts);
-		if (err)
-			return err;
 	}
-	err = security_sb_remount(sb, sec_opts);
-	security_free_mnt_opts(&sec_opts);
+	if ((mnt->mnt.mnt_flags & MNT_LOCK_NODEV) &&
+	    !(mnt_flags & MNT_NODEV)) {
+		return -EPERM;
+	}
+	if ((mnt->mnt.mnt_flags & MNT_LOCK_NOSUID) &&
+	    !(mnt_flags & MNT_NOSUID)) {
+		return -EPERM;
+	}
+	if ((mnt->mnt.mnt_flags & MNT_LOCK_NOEXEC) &&
+	    !(mnt_flags & MNT_NOEXEC)) {
+		return -EPERM;
+	}
+	if ((mnt->mnt.mnt_flags & MNT_LOCK_ATIME) &&
+	    ((mnt->mnt.mnt_flags & MNT_ATIME_MASK) != (mnt_flags & MNT_ATIME_MASK))) {
+		return -EPERM;
+	}
+
+	err = security_sb_remount(sb, data);
 	if (err)
 		return err;
 
 	down_write(&sb->s_umount);
-	err = -EPERM;
-	if (ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)) {
+	if (ms_flags & MS_BIND)
+		err = change_mount_flags(path->mnt, ms_flags);
+	else if (!capable(CAP_SYS_ADMIN))
+		err = -EPERM;
+	else
 		err = do_remount_sb(sb, sb_flags, data, 0);
-		if (!err)
-			set_mount_attributes(mnt, mnt_flags);
+	if (!err) {
+		lock_mount_hash();
+		mnt_flags |= mnt->mnt.mnt_flags & ~MNT_USER_SETTABLE_MASK;
+		mnt->mnt.mnt_flags = mnt_flags;
+		touch_mnt_namespace(mnt->mnt_ns);
+		unlock_mount_hash();
 	}
 	up_write(&sb->s_umount);
 	return err;
@@ -2695,7 +2694,7 @@ static long exact_copy_from_user(void *to, const void __user * from,
 	const char __user *f = from;
 	char c;
 
-	if (!access_ok(from, n))
+	if (!access_ok(VERIFY_READ, from, n))
 		return n;
 
 	while (n) {
@@ -2810,7 +2809,7 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 		mnt_flags |= MNT_NODIRATIME;
 	if (flags & MS_STRICTATIME)
 		mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
-	if (flags & MS_RDONLY)
+	if (flags & SB_RDONLY)
 		mnt_flags |= MNT_READONLY;
 
 	/* The default atime for remount is preservation */
@@ -2830,9 +2829,7 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 			    SB_LAZYTIME |
 			    SB_I_VERSION);
 
-	if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
-		retval = do_reconfigure_mnt(&path, mnt_flags);
-	else if (flags & MS_REMOUNT)
+	if (flags & MS_REMOUNT)
 		retval = do_remount(&path, flags, sb_flags, mnt_flags,
 				    data_page);
 	else if (flags & MS_BIND)
@@ -3035,8 +3032,8 @@ struct dentry *mount_subtree(struct vfsmount *mnt, const char *name)
 }
 EXPORT_SYMBOL(mount_subtree);
 
-int ksys_mount(char __user *dev_name, char __user *dir_name, char __user *type,
-	       unsigned long flags, void __user *data)
+SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+		char __user *, type, unsigned long, flags, void __user *, data)
 {
 	int ret;
 	char *kernel_type;
@@ -3067,12 +3064,6 @@ out_dev:
 	kfree(kernel_type);
 out_type:
 	return ret;
-}
-
-SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
-		char __user *, type, unsigned long, flags, void __user *, data)
-{
-	return ksys_mount(dev_name, dir_name, type, flags, data);
 }
 
 /*

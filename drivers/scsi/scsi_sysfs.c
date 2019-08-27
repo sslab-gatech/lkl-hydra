@@ -367,6 +367,7 @@ store_shost_eh_deadline(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR(eh_deadline, S_IRUGO | S_IWUSR, show_shost_eh_deadline, store_shost_eh_deadline);
 
+shost_rd_attr(use_blk_mq, "%d\n");
 shost_rd_attr(unique_id, "%u\n");
 shost_rd_attr(cmd_per_lun, "%hd\n");
 shost_rd_attr(can_queue, "%hd\n");
@@ -381,16 +382,9 @@ static ssize_t
 show_host_busy(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct Scsi_Host *shost = class_to_shost(dev);
-	return snprintf(buf, 20, "%d\n", scsi_host_busy(shost));
+	return snprintf(buf, 20, "%d\n", atomic_read(&shost->host_busy));
 }
 static DEVICE_ATTR(host_busy, S_IRUGO, show_host_busy, NULL);
-
-static ssize_t
-show_use_blk_mq(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "1\n");
-}
-static DEVICE_ATTR(use_blk_mq, S_IRUGO, show_use_blk_mq, NULL);
 
 static struct attribute *scsi_sysfs_shost_attrs[] = {
 	&dev_attr_use_blk_mq.attr,
@@ -728,24 +722,8 @@ static ssize_t
 sdev_store_delete(struct device *dev, struct device_attribute *attr,
 		  const char *buf, size_t count)
 {
-	struct kernfs_node *kn;
-
-	kn = sysfs_break_active_protection(&dev->kobj, &attr->attr);
-	WARN_ON_ONCE(!kn);
-	/*
-	 * Concurrent writes into the "delete" sysfs attribute may trigger
-	 * concurrent calls to device_remove_file() and scsi_remove_device().
-	 * device_remove_file() handles concurrent removal calls by
-	 * serializing these and by ignoring the second and later removal
-	 * attempts.  Concurrent calls of scsi_remove_device() are
-	 * serialized. The second and later calls of scsi_remove_device() are
-	 * ignored because the first call of that function changes the device
-	 * state into SDEV_DEL.
-	 */
-	device_remove_file(dev, attr);
-	scsi_remove_device(to_scsi_device(dev));
-	if (kn)
-		sysfs_unbreak_active_protection(kn);
+	if (device_remove_file_self(dev, attr))
+		scsi_remove_device(to_scsi_device(dev));
 	return count;
 };
 static DEVICE_ATTR(delete, S_IWUSR, NULL, sdev_store_delete);
@@ -990,7 +968,7 @@ sdev_show_wwid(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(wwid, S_IRUGO, sdev_show_wwid, NULL);
 
 #define BLIST_FLAG_NAME(name)					\
-	[const_ilog2((__force __u64)BLIST_##name)] = #name
+	[ilog2((__force unsigned int)BLIST_##name)] = #name
 static const char *const sdev_bflags_name[] = {
 #include "scsi_devinfo_tbl.c"
 };
@@ -1314,7 +1292,8 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 	transport_add_device(&sdev->sdev_gendev);
 	sdev->is_visible = 1;
 
-	error = bsg_scsi_register_queue(rq, &sdev->sdev_gendev);
+	error = bsg_register_queue(rq, &sdev->sdev_gendev, NULL, NULL);
+
 	if (error)
 		/* we're treating error on bsg register as non-fatal,
 		 * so pretend nothing went wrong */
@@ -1329,13 +1308,6 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 			if (error)
 				return error;
 		}
-	}
-
-	if (sdev->host->hostt->sdev_groups) {
-		error = sysfs_create_groups(&sdev->sdev_gendev.kobj,
-				sdev->host->hostt->sdev_groups);
-		if (error)
-			return error;
 	}
 
 	scsi_autopm_put_device(sdev);
@@ -1376,10 +1348,6 @@ void __scsi_remove_device(struct scsi_device *sdev)
 
 		if (res != 0)
 			return;
-
-		if (sdev->host->hostt->sdev_groups)
-			sysfs_remove_groups(&sdev->sdev_gendev.kobj,
-					sdev->host->hostt->sdev_groups);
 
 		bsg_unregister_queue(sdev->request_queue);
 		device_unregister(&sdev->sdev_dev);

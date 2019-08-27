@@ -155,29 +155,30 @@ static int wl12xx_sdio_power_on(struct wl12xx_sdio_glue *glue)
 	struct mmc_card *card = func->card;
 
 	ret = pm_runtime_get_sync(&card->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&card->dev);
-		dev_err(glue->dev, "%s: failed to get_sync(%d)\n",
-			__func__, ret);
-
-		return ret;
+	if (ret) {
+		/*
+		 * Runtime PM might be temporarily disabled, or the device
+		 * might have a positive reference counter. Make sure it is
+		 * really powered on.
+		 */
+		ret = mmc_power_restore_host(card->host);
+		if (ret < 0) {
+			pm_runtime_put_sync(&card->dev);
+			goto out;
+		}
 	}
 
 	sdio_claim_host(func);
-	/*
-	 * To guarantee that the SDIO card is power cycled, as required to make
-	 * the FW programming to succeed, let's do a brute force HW reset.
-	 */
-	mmc_hw_reset(card->host);
-
 	sdio_enable_func(func);
 	sdio_release_host(func);
 
-	return 0;
+out:
+	return ret;
 }
 
 static int wl12xx_sdio_power_off(struct wl12xx_sdio_glue *glue)
 {
+	int ret;
 	struct sdio_func *func = dev_to_sdio_func(glue->dev);
 	struct mmc_card *card = func->card;
 
@@ -185,9 +186,16 @@ static int wl12xx_sdio_power_off(struct wl12xx_sdio_glue *glue)
 	sdio_disable_func(func);
 	sdio_release_host(func);
 
+	/* Power off the card manually in case it wasn't powered off above */
+	ret = mmc_power_save_host(card->host);
+	if (ret < 0)
+		goto out;
+
 	/* Let runtime PM know the card is powered off */
-	pm_runtime_put(&card->dev);
-	return 0;
+	pm_runtime_put_sync(&card->dev);
+
+out:
+	return ret;
 }
 
 static int wl12xx_sdio_set_power(struct device *child, bool enable)
@@ -240,7 +248,7 @@ static const struct of_device_id wlcore_sdio_of_match_table[] = {
 	{ }
 };
 
-static int wlcore_probe_of(struct device *dev, int *irq, int *wakeirq,
+static int wlcore_probe_of(struct device *dev, int *irq,
 			   struct wlcore_platdev_data *pdev_data)
 {
 	struct device_node *np = dev->of_node;
@@ -258,8 +266,6 @@ static int wlcore_probe_of(struct device *dev, int *irq, int *wakeirq,
 		return -EINVAL;
 	}
 
-	*wakeirq = irq_of_parse_and_map(np, 1);
-
 	/* optional clock frequency params */
 	of_property_read_u32(np, "ref-clock-frequency",
 			     &pdev_data->ref_clock_freq);
@@ -269,7 +275,7 @@ static int wlcore_probe_of(struct device *dev, int *irq, int *wakeirq,
 	return 0;
 }
 #else
-static int wlcore_probe_of(struct device *dev, int *irq, int *wakeirq,
+static int wlcore_probe_of(struct device *dev, int *irq,
 			   struct wlcore_platdev_data *pdev_data)
 {
 	return -ENODATA;
@@ -281,10 +287,10 @@ static int wl1271_probe(struct sdio_func *func,
 {
 	struct wlcore_platdev_data *pdev_data;
 	struct wl12xx_sdio_glue *glue;
-	struct resource res[2];
+	struct resource res[1];
 	mmc_pm_flag_t mmcflags;
 	int ret = -ENOMEM;
-	int irq, wakeirq, num_irqs;
+	int irq;
 	const char *chip_family;
 
 	/* We are only able to handle the wlan function */
@@ -309,7 +315,7 @@ static int wl1271_probe(struct sdio_func *func,
 	/* Use block mode for transferring over one block size of data */
 	func->card->quirks |= MMC_QUIRK_BLKSZ_FOR_BYTE_MODE;
 
-	ret = wlcore_probe_of(&func->dev, &irq, &wakeirq, pdev_data);
+	ret = wlcore_probe_of(&func->dev, &irq, pdev_data);
 	if (ret)
 		goto out;
 
@@ -352,17 +358,7 @@ static int wl1271_probe(struct sdio_func *func,
 		       irqd_get_trigger_type(irq_get_irq_data(irq));
 	res[0].name = "irq";
 
-
-	if (wakeirq > 0) {
-		res[1].start = wakeirq;
-		res[1].flags = IORESOURCE_IRQ |
-			       irqd_get_trigger_type(irq_get_irq_data(wakeirq));
-		res[1].name = "wakeirq";
-		num_irqs = 2;
-	} else {
-		num_irqs = 1;
-	}
-	ret = platform_device_add_resources(glue->core, res, num_irqs);
+	ret = platform_device_add_resources(glue->core, res, ARRAY_SIZE(res));
 	if (ret) {
 		dev_err(glue->dev, "can't add resources\n");
 		goto out_dev_put;
@@ -409,11 +405,6 @@ static int wl1271_suspend(struct device *dev)
 	struct wl1271 *wl = platform_get_drvdata(glue->core);
 	mmc_pm_flag_t sdio_flags;
 	int ret = 0;
-
-	if (!wl) {
-		dev_err(dev, "no wilink module was probed\n");
-		goto out;
-	}
 
 	dev_dbg(dev, "wl1271 suspend. wow_enabled: %d\n",
 		wl->wow_enabled);
@@ -478,7 +469,7 @@ static void __exit wl1271_exit(void)
 module_init(wl1271_init);
 module_exit(wl1271_exit);
 
-module_param(dump, bool, 0600);
+module_param(dump, bool, S_IRUSR | S_IWUSR);
 MODULE_PARM_DESC(dump, "Enable sdio read/write dumps.");
 
 MODULE_LICENSE("GPL");

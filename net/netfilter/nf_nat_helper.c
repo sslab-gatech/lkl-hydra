@@ -37,7 +37,7 @@ static void mangle_contents(struct sk_buff *skb,
 {
 	unsigned char *data;
 
-	SKB_LINEAR_ASSERT(skb);
+	BUG_ON(skb_is_nonlinear(skb));
 	data = skb_network_header(skb) + dataoff;
 
 	/* move post-replacement */
@@ -109,6 +109,8 @@ bool __nf_nat_mangle_tcp_packet(struct sk_buff *skb,
 	    rep_len - match_len > skb_tailroom(skb) &&
 	    !enlarge_skb(skb, rep_len - match_len))
 		return false;
+
+	SKB_LINEAR_ASSERT(skb);
 
 	tcph = (void *)skb->data + protoff;
 
@@ -189,7 +191,7 @@ EXPORT_SYMBOL(nf_nat_mangle_udp_packet);
 void nf_nat_follow_master(struct nf_conn *ct,
 			  struct nf_conntrack_expect *exp)
 {
-	struct nf_nat_range2 range;
+	struct nf_nat_range range;
 
 	/* This must be a fresh one. */
 	BUG_ON(ct->status & IPS_NAT_DONE_MASK);

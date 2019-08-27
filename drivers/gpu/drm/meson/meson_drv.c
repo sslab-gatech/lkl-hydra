@@ -41,7 +41,6 @@
 
 #include "meson_drv.h"
 #include "meson_plane.h"
-#include "meson_overlay.h"
 #include "meson_crtc.h"
 #include "meson_venc_cvbs.h"
 
@@ -69,14 +68,18 @@
  * - Powering Up HDMI controller and PHY
  */
 
+static void meson_fb_output_poll_changed(struct drm_device *dev)
+{
+	struct meson_drm *priv = dev->dev_private;
+
+	drm_fbdev_cma_hotplug_event(priv->fbdev);
+}
+
 static const struct drm_mode_config_funcs meson_mode_config_funcs = {
+	.output_poll_changed = meson_fb_output_poll_changed,
 	.atomic_check        = drm_atomic_helper_check,
 	.atomic_commit       = drm_atomic_helper_commit,
 	.fb_create           = drm_gem_fb_create,
-};
-
-static const struct drm_mode_config_helper_funcs meson_mode_config_helpers = {
-	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
 };
 
 static irqreturn_t meson_irq(int irq, void *arg)
@@ -186,91 +189,44 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "vpu");
 	regs = devm_ioremap_resource(dev, res);
-	if (IS_ERR(regs)) {
-		ret = PTR_ERR(regs);
-		goto free_drm;
-	}
+	if (IS_ERR(regs))
+		return PTR_ERR(regs);
 
 	priv->io_base = regs;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hhi");
-	if (!res) {
-		ret = -EINVAL;
-		goto free_drm;
-	}
 	/* Simply ioremap since it may be a shared register zone */
 	regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!regs) {
-		ret = -EADDRNOTAVAIL;
-		goto free_drm;
-	}
+	if (!regs)
+		return -EADDRNOTAVAIL;
 
 	priv->hhi = devm_regmap_init_mmio(dev, regs,
 					  &meson_regmap_config);
 	if (IS_ERR(priv->hhi)) {
 		dev_err(&pdev->dev, "Couldn't create the HHI regmap\n");
-		ret = PTR_ERR(priv->hhi);
-		goto free_drm;
+		return PTR_ERR(priv->hhi);
 	}
 
-	priv->canvas = meson_canvas_get(dev);
-	if (!IS_ERR(priv->canvas)) {
-		ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_osd1);
-		if (ret)
-			goto free_drm;
-		ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_0);
-		if (ret) {
-			meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
-			goto free_drm;
-		}
-		ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_1);
-		if (ret) {
-			meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
-			meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
-			goto free_drm;
-		}
-		ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_2);
-		if (ret) {
-			meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
-			meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
-			meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
-			goto free_drm;
-		}
-	} else {
-		priv->canvas = NULL;
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dmc");
+	/* Simply ioremap since it may be a shared register zone */
+	regs = devm_ioremap(dev, res->start, resource_size(res));
+	if (!regs)
+		return -EADDRNOTAVAIL;
 
-		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dmc");
-		if (!res) {
-			ret = -EINVAL;
-			goto free_drm;
-		}
-		/* Simply ioremap since it may be a shared register zone */
-		regs = devm_ioremap(dev, res->start, resource_size(res));
-		if (!regs) {
-			ret = -EADDRNOTAVAIL;
-			goto free_drm;
-		}
-
-		priv->dmc = devm_regmap_init_mmio(dev, regs,
-						  &meson_regmap_config);
-		if (IS_ERR(priv->dmc)) {
-			dev_err(&pdev->dev, "Couldn't create the DMC regmap\n");
-			ret = PTR_ERR(priv->dmc);
-			goto free_drm;
-		}
+	priv->dmc = devm_regmap_init_mmio(dev, regs,
+					  &meson_regmap_config);
+	if (IS_ERR(priv->dmc)) {
+		dev_err(&pdev->dev, "Couldn't create the DMC regmap\n");
+		return PTR_ERR(priv->dmc);
 	}
 
 	priv->vsync_irq = platform_get_irq(pdev, 0);
 
-	ret = drm_vblank_init(drm, 1);
-	if (ret)
-		goto free_drm;
-
+	drm_vblank_init(drm, 1);
 	drm_mode_config_init(drm);
 	drm->mode_config.max_width = 3840;
 	drm->mode_config.max_height = 2160;
 	drm->mode_config.funcs = &meson_mode_config_funcs;
-	drm->mode_config.helper_private	= &meson_mode_config_helpers;
 
 	/* Hardware Initialization */
 
@@ -297,10 +253,6 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (ret)
 		goto free_drm;
 
-	ret = meson_overlay_create(priv);
-	if (ret)
-		goto free_drm;
-
 	ret = meson_crtc_create(priv);
 	if (ret)
 		goto free_drm;
@@ -311,6 +263,13 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 
 	drm_mode_config_reset(drm);
 
+	priv->fbdev = drm_fbdev_cma_init(drm, 32,
+					 drm->mode_config.num_connector);
+	if (IS_ERR(priv->fbdev)) {
+		ret = PTR_ERR(priv->fbdev);
+		goto free_drm;
+	}
+
 	drm_kms_helper_poll_init(drm);
 
 	platform_set_drvdata(pdev, priv);
@@ -319,12 +278,10 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (ret)
 		goto free_drm;
 
-	drm_fbdev_generic_setup(drm, 32);
-
 	return 0;
 
 free_drm:
-	drm_dev_put(drm);
+	drm_dev_unref(drm);
 
 	return ret;
 }
@@ -339,17 +296,11 @@ static void meson_drv_unbind(struct device *dev)
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct meson_drm *priv = drm->dev_private;
 
-	if (priv->canvas) {
-		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
-		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
-		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
-		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_2);
-	}
-
 	drm_dev_unregister(drm);
 	drm_kms_helper_poll_fini(drm);
+	drm_fbdev_cma_fini(priv->fbdev);
 	drm_mode_config_cleanup(drm);
-	drm_dev_put(drm);
+	drm_dev_unref(drm);
 
 }
 
@@ -393,10 +344,8 @@ static int meson_probe_remote(struct platform_device *pdev,
 		remote_node = of_graph_get_remote_port_parent(ep);
 		if (!remote_node ||
 		    remote_node == parent || /* Ignore parent endpoint */
-		    !of_device_is_available(remote_node)) {
-			of_node_put(remote_node);
+		    !of_device_is_available(remote_node))
 			continue;
-		}
 
 		count += meson_probe_remote(pdev, match, remote, remote_node);
 
@@ -415,13 +364,10 @@ static int meson_drv_probe(struct platform_device *pdev)
 
 	for_each_endpoint_of_node(np, ep) {
 		remote = of_graph_get_remote_port_parent(ep);
-		if (!remote || !of_device_is_available(remote)) {
-			of_node_put(remote);
+		if (!remote || !of_device_is_available(remote))
 			continue;
-		}
 
 		count += meson_probe_remote(pdev, &match, np, remote);
-		of_node_put(remote);
 	}
 
 	if (count && !match)

@@ -23,7 +23,6 @@
 #include <linux/types.h>
 #include <asm/bootinfo-atari.h>
 #include <asm/raw_io.h>
-#include <asm/kmap.h>
 
 extern u_long atari_mch_cookie;
 extern u_long atari_mch_type;

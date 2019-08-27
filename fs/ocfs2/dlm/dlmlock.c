@@ -77,7 +77,8 @@ int dlm_init_lock_cache(void)
 
 void dlm_destroy_lock_cache(void)
 {
-	kmem_cache_destroy(dlm_lock_cache);
+	if (dlm_lock_cache)
+		kmem_cache_destroy(dlm_lock_cache);
 }
 
 /* Tell us whether we can grant a new lock request.

@@ -34,8 +34,6 @@ int ocxl_context_init(struct ocxl_context *ctx, struct ocxl_afu *afu,
 	mutex_init(&ctx->xsl_error_lock);
 	mutex_init(&ctx->irq_lock);
 	idr_init(&ctx->irq_idr);
-	ctx->tidr = 0;
-
 	/*
 	 * Keep a reference on the AFU to make sure it's valid for the
 	 * duration of the life of the context
@@ -67,7 +65,6 @@ int ocxl_context_attach(struct ocxl_context *ctx, u64 amr)
 {
 	int rc;
 
-	// Locks both status & tidr
 	mutex_lock(&ctx->status_mutex);
 	if (ctx->status != OPENED) {
 		rc = -EIO;
@@ -75,7 +72,7 @@ int ocxl_context_attach(struct ocxl_context *ctx, u64 amr)
 	}
 
 	rc = ocxl_link_add_pe(ctx->afu->fn->link, ctx->pasid,
-			current->mm->context.id, ctx->tidr, amr, current->mm,
+			current->mm->context.id, 0, amr, current->mm,
 			xsl_fault_error, ctx);
 	if (rc)
 		goto out;
@@ -86,7 +83,7 @@ out:
 	return rc;
 }
 
-static vm_fault_t map_afu_irq(struct vm_area_struct *vma, unsigned long address,
+static int map_afu_irq(struct vm_area_struct *vma, unsigned long address,
 		u64 offset, struct ocxl_context *ctx)
 {
 	u64 trigger_addr;
@@ -95,15 +92,15 @@ static vm_fault_t map_afu_irq(struct vm_area_struct *vma, unsigned long address,
 	if (!trigger_addr)
 		return VM_FAULT_SIGBUS;
 
-	return vmf_insert_pfn(vma, address, trigger_addr >> PAGE_SHIFT);
+	vm_insert_pfn(vma, address, trigger_addr >> PAGE_SHIFT);
+	return VM_FAULT_NOPAGE;
 }
 
-static vm_fault_t map_pp_mmio(struct vm_area_struct *vma, unsigned long address,
+static int map_pp_mmio(struct vm_area_struct *vma, unsigned long address,
 		u64 offset, struct ocxl_context *ctx)
 {
 	u64 pp_mmio_addr;
 	int pasid_off;
-	vm_fault_t ret;
 
 	if (offset >= ctx->afu->config.pp_mmio_stride)
 		return VM_FAULT_SIGBUS;
@@ -121,27 +118,27 @@ static vm_fault_t map_pp_mmio(struct vm_area_struct *vma, unsigned long address,
 		pasid_off * ctx->afu->config.pp_mmio_stride +
 		offset;
 
-	ret = vmf_insert_pfn(vma, address, pp_mmio_addr >> PAGE_SHIFT);
+	vm_insert_pfn(vma, address, pp_mmio_addr >> PAGE_SHIFT);
 	mutex_unlock(&ctx->status_mutex);
-	return ret;
+	return VM_FAULT_NOPAGE;
 }
 
-static vm_fault_t ocxl_mmap_fault(struct vm_fault *vmf)
+static int ocxl_mmap_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct ocxl_context *ctx = vma->vm_file->private_data;
 	u64 offset;
-	vm_fault_t ret;
+	int rc;
 
 	offset = vmf->pgoff << PAGE_SHIFT;
 	pr_debug("%s: pasid %d address 0x%lx offset 0x%llx\n", __func__,
 		ctx->pasid, vmf->address, offset);
 
 	if (offset < ctx->afu->irq_base_offset)
-		ret = map_pp_mmio(vma, vmf->address, offset, ctx);
+		rc = map_pp_mmio(vma, vmf->address, offset, ctx);
 	else
-		ret = map_afu_irq(vma, vmf->address, offset, ctx);
-	return ret;
+		rc = map_afu_irq(vma, vmf->address, offset, ctx);
+	return rc;
 }
 
 static const struct vm_operations_struct ocxl_vmops = {

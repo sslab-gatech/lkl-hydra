@@ -97,8 +97,7 @@ static void exec_syscall(Program *prog, Syscall *syscall) {
         cnt++;
     }
 
-    /* ret = lkl_syscall(lkl_syscall_nr[syscall->nr], params); */
-    ret = handle_syscalls(syscall->nr, params);
+    ret = lkl_syscall(lkl_syscall_nr[syscall->nr], params);
     if (syscall->ret_index != -1)
         prog->variables[syscall->ret_index]->value = reinterpret_cast<uint8_t*>(ret);
 

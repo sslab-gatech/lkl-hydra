@@ -108,7 +108,6 @@ ReadISAC(struct IsdnCardState *cs, u_char offset)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
-		/* fall through */
 	case R685:
 		return (readreg(cs->hw.gazel.isac, off2));
 	case R753:
@@ -126,7 +125,6 @@ WriteISAC(struct IsdnCardState *cs, u_char offset, u_char value)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
-		/* fall through */
 	case R685:
 		writereg(cs->hw.gazel.isac, off2, value);
 		break;
@@ -205,7 +203,6 @@ ReadHSCX(struct IsdnCardState *cs, int hscx, u_char offset)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
-		/* fall through */
 	case R685:
 		return (readreg(cs->hw.gazel.hscx[hscx], off2));
 	case R753:
@@ -223,7 +220,6 @@ WriteHSCX(struct IsdnCardState *cs, int hscx, u_char offset, u_char value)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
-		/* fall through */
 	case R685:
 		writereg(cs->hw.gazel.hscx[hscx], off2, value);
 		break;

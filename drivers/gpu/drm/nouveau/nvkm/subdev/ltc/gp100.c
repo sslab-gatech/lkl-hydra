@@ -23,7 +23,7 @@
  */
 #include "priv.h"
 
-void
+static void
 gp100_ltc_intr(struct nvkm_ltc *ltc)
 {
 	struct nvkm_device *device = ltc->subdev.device;
@@ -38,7 +38,7 @@ gp100_ltc_intr(struct nvkm_ltc *ltc)
 	}
 }
 
-int
+static int
 gp100_ltc_oneinit(struct nvkm_ltc *ltc)
 {
 	struct nvkm_device *device = ltc->subdev.device;
@@ -48,7 +48,7 @@ gp100_ltc_oneinit(struct nvkm_ltc *ltc)
 	return 0;
 }
 
-void
+static void
 gp100_ltc_init(struct nvkm_ltc *ltc)
 {
 	/*XXX: PMU LS call to setup tagram address */

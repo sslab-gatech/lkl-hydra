@@ -17,8 +17,14 @@
 
 #ifdef CONFIG_KEYS
 
-struct kernel_pkey_query;
-struct kernel_pkey_params;
+/*
+ * key under-construction record
+ * - passed to the request_key actor if supplied
+ */
+struct key_construction {
+	struct key	*key;	/* key being constructed */
+	struct key	*authkey;/* authorisation for key being constructed */
+};
 
 /*
  * Pre-parsed payload, used by key add, update and instantiate.
@@ -41,7 +47,8 @@ struct key_preparsed_payload {
 	time64_t	expiry;		/* Expiry time of key */
 } __randomize_layout;
 
-typedef int (*request_key_actor_t)(struct key *auth_key, void *aux);
+typedef int (*request_key_actor_t)(struct key_construction *key,
+				   const char *op, void *aux);
 
 /*
  * Preparsed matching criterion.
@@ -148,14 +155,6 @@ struct key_type {
 	 */
 	struct key_restriction *(*lookup_restriction)(const char *params);
 
-	/* Asymmetric key accessor functions. */
-	int (*asym_query)(const struct kernel_pkey_params *params,
-			  struct kernel_pkey_query *info);
-	int (*asym_eds_op)(struct kernel_pkey_params *params,
-			   const void *in, void *out);
-	int (*asym_verify_signature)(struct kernel_pkey_params *params,
-				     const void *in, const void *in2);
-
 	/* internal fields */
 	struct list_head	link;		/* link in types list */
 	struct lock_class_key	lock_class;	/* key->sem lock class */
@@ -171,20 +170,20 @@ extern int key_instantiate_and_link(struct key *key,
 				    const void *data,
 				    size_t datalen,
 				    struct key *keyring,
-				    struct key *authkey);
+				    struct key *instkey);
 extern int key_reject_and_link(struct key *key,
 			       unsigned timeout,
 			       unsigned error,
 			       struct key *keyring,
-			       struct key *authkey);
-extern void complete_request_key(struct key *authkey, int error);
+			       struct key *instkey);
+extern void complete_request_key(struct key_construction *cons, int error);
 
 static inline int key_negate_and_link(struct key *key,
 				      unsigned timeout,
 				      struct key *keyring,
-				      struct key *authkey)
+				      struct key *instkey)
 {
-	return key_reject_and_link(key, timeout, ENOKEY, keyring, authkey);
+	return key_reject_and_link(key, timeout, ENOKEY, keyring, instkey);
 }
 
 extern int generic_key_instantiate(struct key *key, struct key_preparsed_payload *prep);

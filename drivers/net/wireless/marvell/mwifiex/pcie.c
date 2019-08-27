@@ -170,7 +170,7 @@ static int mwifiex_pcie_suspend(struct device *dev)
 	if (!mwifiex_enable_hs(adapter)) {
 		mwifiex_dbg(adapter, ERROR,
 			    "cmd: failed to suspend\n");
-		clear_bit(MWIFIEX_IS_HS_ENABLING, &adapter->work_flags);
+		adapter->hs_enabling = false;
 		mwifiex_disable_wake(adapter);
 		return -EFAULT;
 	}
@@ -178,8 +178,8 @@ static int mwifiex_pcie_suspend(struct device *dev)
 	flush_workqueue(adapter->workqueue);
 
 	/* Indicate device suspended */
-	set_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
-	clear_bit(MWIFIEX_IS_HS_ENABLING, &adapter->work_flags);
+	adapter->is_suspended = true;
+	adapter->hs_enabling = false;
 
 	return 0;
 }
@@ -207,13 +207,13 @@ static int mwifiex_pcie_resume(struct device *dev)
 
 	adapter = card->adapter;
 
-	if (!test_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags)) {
+	if (!adapter->is_suspended) {
 		mwifiex_dbg(adapter, WARN,
 			    "Device already resumed\n");
 		return 0;
 	}
 
-	clear_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
+	adapter->is_suspended = false;
 
 	mwifiex_cancel_hs(mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_STA),
 			  MWIFIEX_ASYNC_CMD);
@@ -320,19 +320,6 @@ static void mwifiex_pcie_shutdown(struct pci_dev *pdev)
 	return;
 }
 
-static void mwifiex_pcie_coredump(struct device *dev)
-{
-	struct pci_dev *pdev;
-	struct pcie_service_card *card;
-
-	pdev = container_of(dev, struct pci_dev, dev);
-	card = pci_get_drvdata(pdev);
-
-	if (!test_and_set_bit(MWIFIEX_IFACE_WORK_DEVICE_DUMP,
-			      &card->work_flags))
-		schedule_work(&card->work);
-}
-
 static const struct pci_device_id mwifiex_ids[] = {
 	{
 		PCIE_VENDOR_ID_MARVELL, PCIE_DEVICE_ID_MARVELL_88W8766P,
@@ -428,12 +415,11 @@ static struct pci_driver __refdata mwifiex_pcie = {
 	.id_table = mwifiex_ids,
 	.probe    = mwifiex_pcie_probe,
 	.remove   = mwifiex_pcie_remove,
-	.driver   = {
-		.coredump = mwifiex_pcie_coredump,
 #ifdef CONFIG_PM_SLEEP
+	.driver   = {
 		.pm = &mwifiex_pcie_pm_ops,
-#endif
 	},
+#endif
 	.shutdown = mwifiex_pcie_shutdown,
 	.err_handler = &mwifiex_pcie_err_handler,
 };
@@ -1895,8 +1881,7 @@ static int mwifiex_pcie_process_event_ready(struct mwifiex_adapter *adapter)
 		mwifiex_dbg(adapter, EVENT,
 			    "info: Event length: %d\n", evt_len);
 
-		if (evt_len > MWIFIEX_EVENT_HEADER_LEN &&
-		    evt_len < MAX_EVENT_SIZE)
+		if ((evt_len > 0) && (evt_len  < MAX_EVENT_SIZE))
 			memcpy(adapter->event_body, skb_cmd->data +
 			       MWIFIEX_EVENT_HEADER_LEN, evt_len -
 			       MWIFIEX_EVENT_HEADER_LEN);
@@ -2430,7 +2415,7 @@ static irqreturn_t mwifiex_pcie_interrupt(int irq, void *context)
 	}
 	adapter = card->adapter;
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags))
+	if (adapter->surprise_removed)
 		goto exit;
 
 	if (card->msix_enable)

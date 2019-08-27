@@ -516,7 +516,7 @@ static int hist_entry__hierarchy_fprintf(struct hist_entry *he,
 	}
 	printed += putc('\n', fp);
 
-	if (he->leaf && hist_entry__has_callchains(he) && symbol_conf.use_callchain) {
+	if (symbol_conf.use_callchain && he->leaf) {
 		u64 total = hists__total_period(hists);
 
 		printed += hist_entry_callchain__fprintf(he, total, 0, fp);
@@ -529,7 +529,7 @@ out:
 
 static int hist_entry__fprintf(struct hist_entry *he, size_t size,
 			       char *bf, size_t bfsz, FILE *fp,
-			       bool ignore_callchains)
+			       bool use_callchain)
 {
 	int ret;
 	int callchain_ret = 0;
@@ -550,7 +550,7 @@ static int hist_entry__fprintf(struct hist_entry *he, size_t size,
 
 	ret = fprintf(fp, "%s\n", bf);
 
-	if (hist_entry__has_callchains(he) && !ignore_callchains)
+	if (use_callchain)
 		callchain_ret = hist_entry_callchain__fprintf(he, total_period,
 							      0, fp);
 
@@ -755,7 +755,7 @@ int hists__fprintf_headers(struct hists *hists, FILE *fp)
 
 size_t hists__fprintf(struct hists *hists, bool show_header, int max_rows,
 		      int max_cols, float min_pcnt, FILE *fp,
-		      bool ignore_callchains)
+		      bool use_callchain)
 {
 	struct rb_node *nd;
 	size_t ret = 0;
@@ -799,7 +799,7 @@ size_t hists__fprintf(struct hists *hists, bool show_header, int max_rows,
 		if (percent < min_pcnt)
 			continue;
 
-		ret += hist_entry__fprintf(h, max_cols, line, linesz, fp, ignore_callchains);
+		ret += hist_entry__fprintf(h, max_cols, line, linesz, fp, use_callchain);
 
 		if (max_rows && ++nr_rows >= max_rows)
 			break;
@@ -819,7 +819,8 @@ size_t hists__fprintf(struct hists *hists, bool show_header, int max_rows,
 		}
 
 		if (h->ms.map == NULL && verbose > 1) {
-			map_groups__fprintf(h->thread->mg, fp);
+			__map_groups__fprintf_maps(h->thread->mg,
+						   MAP__FUNCTION, fp);
 			fprintf(fp, "%.10s end\n", graph_dotted_line);
 		}
 	}
@@ -839,11 +840,15 @@ size_t events_stats__fprintf(struct events_stats *stats, FILE *fp)
 	for (i = 0; i < PERF_RECORD_HEADER_MAX; ++i) {
 		const char *name;
 
+		if (stats->nr_events[i] == 0)
+			continue;
+
 		name = perf_event__name(i);
 		if (!strcmp(name, "UNKNOWN"))
 			continue;
 
-		ret += fprintf(fp, "%16s events: %10d\n", name, stats->nr_events[i]);
+		ret += fprintf(fp, "%16s events: %10d\n", name,
+			       stats->nr_events[i]);
 	}
 
 	return ret;

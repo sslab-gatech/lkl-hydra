@@ -9,7 +9,7 @@ fi
 echo "--------------------"
 echo "running psock_fanout test"
 echo "--------------------"
-./in_netns.sh ./psock_fanout
+./psock_fanout
 if [ $? -ne 0 ]; then
 	echo "[FAIL]"
 else
@@ -19,17 +19,7 @@ fi
 echo "--------------------"
 echo "running psock_tpacket test"
 echo "--------------------"
-./in_netns.sh ./psock_tpacket
-if [ $? -ne 0 ]; then
-	echo "[FAIL]"
-else
-	echo "[PASS]"
-fi
-
-echo "--------------------"
-echo "running txring_overwrite test"
-echo "--------------------"
-./in_netns.sh ./txring_overwrite
+./psock_tpacket
 if [ $? -ne 0 ]; then
 	echo "[FAIL]"
 else

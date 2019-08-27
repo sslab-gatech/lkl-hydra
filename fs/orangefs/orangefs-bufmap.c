@@ -71,9 +71,9 @@ static void put(struct slot_map *m, int slot)
 	spin_lock(&m->q.lock);
 	__clear_bit(slot, m->map);
 	v = ++m->c;
-	if (v > 0)
+	if (unlikely(v == 1))	/* no free slots -> one free slot */
 		wake_up_locked(&m->q);
-	if (unlikely(v == -1))     /* finished dying */
+	else if (unlikely(v == -1))	/* finished dying */
 		wake_up_all_locked(&m->q);
 	spin_unlock(&m->q.lock);
 }
@@ -105,7 +105,7 @@ static int wait_for_free(struct slot_map *m)
 			left = t;
 		else
 			left = t + (left - n);
-		if (signal_pending(current))
+		if (unlikely(signal_pending(current)))
 			left = -EINTR;
 	} while (left > 0);
 
@@ -138,7 +138,7 @@ static int get(struct slot_map *m)
 
 /* used to describe mapped buffers */
 struct orangefs_bufmap_desc {
-	void __user *uaddr;		/* user space address pointer */
+	void *uaddr;			/* user space address pointer */
 	struct page **page_array;	/* array of mapped pages */
 	int array_count;		/* size of above arrays */
 	struct list_head list_link;
@@ -184,7 +184,7 @@ orangefs_bufmap_free(struct orangefs_bufmap *bufmap)
 }
 
 /*
- * XXX: Can the size and shift change while the caller gives up the
+ * XXX: Can the size and shift change while the caller gives up the 
  * XXX: lock between calling this and doing something useful?
  */
 
@@ -214,6 +214,20 @@ int orangefs_bufmap_shift_query(void)
 
 static DECLARE_WAIT_QUEUE_HEAD(bufmap_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(readdir_waitq);
+
+/*
+ * orangefs_get_bufmap_init
+ *
+ * If bufmap_init is 1, then the shared memory system, including the
+ * buffer_index_array, is available.  Otherwise, it is not.
+ *
+ * returns the value of bufmap_init
+ */
+int orangefs_get_bufmap_init(void)
+{
+	return __orangefs_bufmap ? 1 : 0;
+}
+
 
 static struct orangefs_bufmap *
 orangefs_bufmap_alloc(struct ORANGEFS_dev_map_desc *user_desc)
@@ -482,7 +496,7 @@ void orangefs_readdir_index_put(int buffer_index)
 }
 
 /*
- * we've been handed an iovec, we need to copy it to
+ * we've been handed an iovec, we need to copy it to 
  * the shared memory descriptor at "buffer_index".
  */
 int orangefs_bufmap_copy_from_iovec(struct iov_iter *iter,

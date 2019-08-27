@@ -134,7 +134,7 @@ static void __init estimate_frequencies(void)
 	}
 }
 
-void read_persistent_clock64(struct timespec64 *ts)
+void read_persistent_clock(struct timespec *ts)
 {
 	ts->tv_sec = mc146818_get_cmos_time();
 	ts->tv_nsec = 0;
@@ -250,6 +250,8 @@ void __init plat_time_init(void)
 	freq = freqround(freq, 5000);
 	printk("CPU frequency %d.%02d MHz\n", freq/1000000,
 	       (freq%1000000)*100/1000000);
+
+	mips_scroll_message();
 
 #ifdef CONFIG_I8253
 	/* Only Malta has a PIT. */

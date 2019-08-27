@@ -28,7 +28,7 @@ struct udf_ext_cache {
  */
 
 struct udf_inode_info {
-	struct timespec64	i_crtime;
+	struct timespec		i_crtime;
 	/* Physical address of inode */
 	struct kernel_lb_addr		i_location;
 	__u64			i_unique;

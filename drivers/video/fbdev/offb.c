@@ -280,7 +280,6 @@ static void offb_destroy(struct fb_info *info)
 	if (info->screen_base)
 		iounmap(info->screen_base);
 	release_mem_region(info->apertures->ranges[0].base, info->apertures->ranges[0].size);
-	fb_dealloc_cmap(&info->cmap);
 	framebuffer_release(info);
 }
 
@@ -318,28 +317,28 @@ static void __iomem *offb_map_reg(struct device_node *np, int index,
 }
 
 static void offb_init_palette_hacks(struct fb_info *info, struct device_node *dp,
-				    unsigned long address)
+				    const char *name, unsigned long address)
 {
 	struct offb_par *par = (struct offb_par *) info->par;
 
-	if (of_node_name_prefix(dp, "ATY,Rage128")) {
+	if (dp && !strncmp(name, "ATY,Rage128", 11)) {
 		par->cmap_adr = offb_map_reg(dp, 2, 0, 0x1fff);
 		if (par->cmap_adr)
 			par->cmap_type = cmap_r128;
-	} else if (of_node_name_prefix(dp, "ATY,RageM3pA") ||
-		   of_node_name_prefix(dp, "ATY,RageM3p12A")) {
+	} else if (dp && (!strncmp(name, "ATY,RageM3pA", 12)
+			  || !strncmp(name, "ATY,RageM3p12A", 14))) {
 		par->cmap_adr = offb_map_reg(dp, 2, 0, 0x1fff);
 		if (par->cmap_adr)
 			par->cmap_type = cmap_M3A;
-	} else if (of_node_name_prefix(dp, "ATY,RageM3pB")) {
+	} else if (dp && !strncmp(name, "ATY,RageM3pB", 12)) {
 		par->cmap_adr = offb_map_reg(dp, 2, 0, 0x1fff);
 		if (par->cmap_adr)
 			par->cmap_type = cmap_M3B;
-	} else if (of_node_name_prefix(dp, "ATY,Rage6")) {
+	} else if (dp && !strncmp(name, "ATY,Rage6", 9)) {
 		par->cmap_adr = offb_map_reg(dp, 1, 0, 0x1fff);
 		if (par->cmap_adr)
 			par->cmap_type = cmap_radeon;
-	} else if (of_node_name_prefix(dp, "ATY,")) {
+	} else if (!strncmp(name, "ATY,", 4)) {
 		unsigned long base = address & 0xff000000UL;
 		par->cmap_adr =
 			ioremap(base + 0x7ff000, 0x1000) + 0xcc0;
@@ -350,7 +349,7 @@ static void offb_init_palette_hacks(struct fb_info *info, struct device_node *dp
 		par->cmap_adr = offb_map_reg(dp, 0, 0x6000, 0x1000);
 		if (par->cmap_adr)
 			par->cmap_type = cmap_gxt2000;
-	} else if (of_node_name_prefix(dp, "vga,Display-")) {
+	} else if (dp && !strncmp(name, "vga,Display-", 12)) {
 		/* Look for AVIVO initialized by SLOF */
 		struct device_node *pciparent = of_get_parent(dp);
 		const u32 *vid, *did;
@@ -419,13 +418,9 @@ static void __init offb_init_fb(const char *name,
 	var = &info->var;
 	info->par = par;
 
-	if (name) {
-		strcpy(fix->id, "OFfb ");
-		strncat(fix->id, name, sizeof(fix->id) - sizeof("OFfb "));
-		fix->id[sizeof(fix->id) - 1] = '\0';
-	} else
-		snprintf(fix->id, sizeof(fix->id), "OFfb %pOFn", dp);
-
+	strcpy(fix->id, "OFfb ");
+	strncat(fix->id, name, sizeof(fix->id) - sizeof("OFfb "));
+	fix->id[sizeof(fix->id) - 1] = '\0';
 
 	var->xres = var->xres_virtual = width;
 	var->yres = var->yres_virtual = height;
@@ -438,7 +433,7 @@ static void __init offb_init_fb(const char *name,
 
 	par->cmap_type = cmap_unknown;
 	if (depth == 8)
-		offb_init_palette_hacks(info, dp, address);
+		offb_init_palette_hacks(info, dp, name, address);
 	else
 		fix->visual = FB_VISUAL_TRUECOLOR;
 
@@ -523,7 +518,6 @@ static void __init offb_init_fb(const char *name,
 	return;
 
 out_err:
-	fb_dealloc_cmap(&info->cmap);
 	iounmap(info->screen_base);
 out_aper:
 	iounmap(par->cmap_adr);
@@ -648,7 +642,7 @@ static void __init offb_init_nodriver(struct device_node *dp, int no_real_node)
 		/* kludge for valkyrie */
 		if (strcmp(dp->name, "valkyrie") == 0)
 			address += 0x1000;
-		offb_init_fb(no_real_node ? "bootx" : NULL,
+		offb_init_fb(no_real_node ? "bootx" : dp->name,
 			     width, height, depth, pitch, address,
 			     foreign_endian, no_real_node ? NULL : dp);
 	}

@@ -1,24 +1,31 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Pinctrl GPIO driver for Intel Baytrail
+ * Copyright (c) 2012-2013, Intel Corporation.
  *
- * Copyright (c) 2012-2013, Intel Corporation
  * Author: Mathias Nyman <mathias.nyman@linux.intel.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
-#include <linux/acpi.h>
-#include <linux/bitops.h>
-#include <linux/gpio/driver.h>
-#include <linux/init.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/types.h>
+#include <linux/bitops.h>
+#include <linux/interrupt.h>
+#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
+#include <linux/acpi.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
-#include <linux/property.h>
 #include <linux/seq_file.h>
-
+#include <linux/io.h>
+#include <linux/pm_runtime.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
 #include <linux/pinctrl/pinconf.h>
@@ -683,7 +690,7 @@ static const struct pinctrl_pin_desc byt_ncore_pins[] = {
 	PINCTRL_PIN(27, "GPIO_NCORE27"),
 };
 
-static const unsigned int byt_ncore_pins_map[BYT_NGPIO_NCORE] = {
+static unsigned const byt_ncore_pins_map[BYT_NGPIO_NCORE] = {
 	19, 18, 17, 20, 21, 22, 24, 25, 23, 16,
 	14, 15, 12, 26, 27, 1, 4, 8, 11, 0,
 	3, 6, 10, 13, 2, 5, 9, 7,
@@ -705,7 +712,7 @@ static const struct byt_pinctrl_soc_data *byt_soc_data[] = {
 	&byt_score_soc_data,
 	&byt_sus_soc_data,
 	&byt_ncore_soc_data,
-	NULL
+	NULL,
 };
 
 static struct byt_community *byt_get_community(struct byt_gpio *vg,
@@ -927,7 +934,7 @@ static int byt_set_mux(struct pinctrl_dev *pctldev, unsigned int func_selector,
 	return 0;
 }
 
-static u32 byt_get_gpio_mux(struct byt_gpio *vg, unsigned int offset)
+static u32 byt_get_gpio_mux(struct byt_gpio *vg, unsigned offset)
 {
 	/* SCORE pin 92-93 */
 	if (!strcmp(vg->soc_data->uid, BYT_SCORE_ACPI_UID) &&
@@ -1311,7 +1318,7 @@ static const struct pinctrl_desc byt_pinctrl_desc = {
 	.owner		= THIS_MODULE,
 };
 
-static int byt_gpio_get(struct gpio_chip *chip, unsigned int offset)
+static int byt_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	struct byt_gpio *vg = gpiochip_get_data(chip);
 	void __iomem *reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
@@ -1325,7 +1332,7 @@ static int byt_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(val & BYT_LEVEL);
 }
 
-static void byt_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void byt_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	struct byt_gpio *vg = gpiochip_get_data(chip);
 	void __iomem *reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
@@ -1359,9 +1366,9 @@ static int byt_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 	raw_spin_unlock_irqrestore(&vg->lock, flags);
 
 	if (!(value & BYT_OUTPUT_EN))
-		return 0;
+		return GPIOF_DIR_OUT;
 	if (!(value & BYT_INPUT_EN))
-		return 1;
+		return GPIOF_DIR_IN;
 
 	return -EINVAL;
 }
@@ -1496,7 +1503,7 @@ static void byt_irq_ack(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct byt_gpio *vg = gpiochip_get_data(gc);
-	unsigned int offset = irqd_to_hwirq(d);
+	unsigned offset = irqd_to_hwirq(d);
 	void __iomem *reg;
 
 	reg = byt_gpio_reg(vg, offset, BYT_INT_STAT_REG);
@@ -1520,7 +1527,7 @@ static void byt_irq_unmask(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct byt_gpio *vg = gpiochip_get_data(gc);
-	unsigned int offset = irqd_to_hwirq(d);
+	unsigned offset = irqd_to_hwirq(d);
 	unsigned long flags;
 	void __iomem *reg;
 	u32 value;
@@ -1535,13 +1542,11 @@ static void byt_irq_unmask(struct irq_data *d)
 	switch (irqd_get_trigger_type(d)) {
 	case IRQ_TYPE_LEVEL_HIGH:
 		value |= BYT_TRIG_LVL;
-		/* fall through */
 	case IRQ_TYPE_EDGE_RISING:
 		value |= BYT_TRIG_POS;
 		break;
 	case IRQ_TYPE_LEVEL_LOW:
 		value |= BYT_TRIG_LVL;
-		/* fall through */
 	case IRQ_TYPE_EDGE_FALLING:
 		value |= BYT_TRIG_NEG;
 		break;
@@ -1686,8 +1691,7 @@ static void byt_gpio_irq_init_hw(struct byt_gpio *vg)
 		value = readl(reg);
 		if (value)
 			dev_err(&vg->pdev->dev,
-				"GPIO interrupt error, pins misconfigured. INT_STAT%u: 0x%08x\n",
-				base / 32, value);
+				"GPIO interrupt error, pins misconfigured\n");
 	}
 }
 
@@ -1776,11 +1780,13 @@ static const struct acpi_device_id byt_gpio_acpi_match[] = {
 	{ "INT33FC", (kernel_ulong_t)byt_soc_data },
 	{ }
 };
+MODULE_DEVICE_TABLE(acpi, byt_gpio_acpi_match);
 
 static int byt_pinctrl_probe(struct platform_device *pdev)
 {
 	const struct byt_pinctrl_soc_data *soc_data = NULL;
 	const struct byt_pinctrl_soc_data **soc_table;
+	const struct acpi_device_id *acpi_id;
 	struct acpi_device *acpi_dev;
 	struct byt_gpio *vg;
 	int i, ret;
@@ -1789,7 +1795,11 @@ static int byt_pinctrl_probe(struct platform_device *pdev)
 	if (!acpi_dev)
 		return -ENODEV;
 
-	soc_table = (const struct byt_pinctrl_soc_data **)device_get_match_data(&pdev->dev);
+	acpi_id = acpi_match_device(byt_gpio_acpi_match, &pdev->dev);
+	if (!acpi_id)
+		return -ENODEV;
+
+	soc_table = (const struct byt_pinctrl_soc_data **)acpi_id->driver_data;
 
 	for (i = 0; soc_table[i]; i++) {
 		if (!strcmp(acpi_dev->pnp.unique_id, soc_table[i]->uid)) {
@@ -1838,7 +1848,8 @@ static int byt_pinctrl_probe(struct platform_device *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int byt_gpio_suspend(struct device *dev)
 {
-	struct byt_gpio *vg = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct byt_gpio *vg = platform_get_drvdata(pdev);
 	int i;
 
 	for (i = 0; i < vg->soc_data->npins; i++) {
@@ -1866,7 +1877,8 @@ static int byt_gpio_suspend(struct device *dev)
 
 static int byt_gpio_resume(struct device *dev)
 {
-	struct byt_gpio *vg = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct byt_gpio *vg = platform_get_drvdata(pdev);
 	int i;
 
 	for (i = 0; i < vg->soc_data->npins; i++) {

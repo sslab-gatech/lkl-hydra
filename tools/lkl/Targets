@@ -14,13 +14,13 @@ LDLIBS_lklfuse-y := -lfuse
 # LDLIBS_fs2tar-y := -larchive
 # LDLIBS_fs2tar-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
 
-# progs-y += fsfuzz
-# LDLIBS_fsfuzz-y := -larchive
-# LDLIBS_fsfuzz-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
+progs-y += fsfuzz
+LDLIBS_fsfuzz-y := -larchive
+LDLIBS_fsfuzz-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
 
-# progs-y += tfuzz
-# LDLIBS_tfuzz-y := -larchive
-# LDLIBS_tfuzz-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
+progs-y += tfuzz
+LDLIBS_tfuzz-y := -larchive
+LDLIBS_tfuzz-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
 
 progs-y += executor
 LDLIBS_executor-y := -larchive
@@ -34,9 +34,9 @@ progs-y += combined-consistency
 LDLIBS_combined-consistency-y := -larchive -lz
 LDLIBS_combined-consistency-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
 
-# progs-$(LKL_HOST_CONFIG_ARCHIVE) += cptofs
-# LDLIBS_cptofs-y := -larchive
-# LDLIBS_cptofs-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
+progs-$(LKL_HOST_CONFIG_ARCHIVE) += cptofs
+LDLIBS_cptofs-y := -larchive
+LDLIBS_cptofs-$(LKL_HOST_CONFIG_NEEDS_LARGP) += -largp
 
 progs-y += tests/boot
 progs-y += tests/disk

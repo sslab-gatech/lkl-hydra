@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2017-2018 Bartosz Golaszewski <brgl@bgdev.pl>
+ * Copyright (C) 2017 Bartosz Golaszewski <brgl@bgdev.pl>
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
-#include <linux/slab.h>
 #include <linux/irq_sim.h>
 #include <linux/irq.h>
 
@@ -34,20 +37,9 @@ static struct irq_chip irq_sim_irqchip = {
 static void irq_sim_handle_irq(struct irq_work *work)
 {
 	struct irq_sim_work_ctx *work_ctx;
-	unsigned int offset = 0;
-	struct irq_sim *sim;
-	int irqnum;
 
 	work_ctx = container_of(work, struct irq_sim_work_ctx, work);
-	sim = container_of(work_ctx, struct irq_sim, work_ctx);
-
-	while (!bitmap_empty(work_ctx->pending, sim->irq_count)) {
-		offset = find_next_bit(work_ctx->pending,
-				       sim->irq_count, offset);
-		clear_bit(offset, work_ctx->pending);
-		irqnum = irq_sim_irqnum(sim, offset);
-		handle_simple_irq(irq_to_desc(irqnum));
-	}
+	handle_simple_irq(irq_to_desc(work_ctx->irq));
 }
 
 /**
@@ -57,8 +49,7 @@ static void irq_sim_handle_irq(struct irq_work *work)
  * @sim:        The interrupt simulator object to initialize.
  * @num_irqs:   Number of interrupts to allocate
  *
- * On success: return the base of the allocated interrupt range.
- * On failure: a negative errno.
+ * Returns 0 on success and a negative error number on failure.
  */
 int irq_sim_init(struct irq_sim *sim, unsigned int num_irqs)
 {
@@ -74,13 +65,6 @@ int irq_sim_init(struct irq_sim *sim, unsigned int num_irqs)
 		return sim->irq_base;
 	}
 
-	sim->work_ctx.pending = bitmap_zalloc(num_irqs, GFP_KERNEL);
-	if (!sim->work_ctx.pending) {
-		kfree(sim->irqs);
-		irq_free_descs(sim->irq_base, num_irqs);
-		return -ENOMEM;
-	}
-
 	for (i = 0; i < num_irqs; i++) {
 		sim->irqs[i].irqnum = sim->irq_base + i;
 		sim->irqs[i].enabled = false;
@@ -94,7 +78,7 @@ int irq_sim_init(struct irq_sim *sim, unsigned int num_irqs)
 	init_irq_work(&sim->work_ctx.work, irq_sim_handle_irq);
 	sim->irq_count = num_irqs;
 
-	return sim->irq_base;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(irq_sim_init);
 
@@ -107,7 +91,6 @@ EXPORT_SYMBOL_GPL(irq_sim_init);
 void irq_sim_fini(struct irq_sim *sim)
 {
 	irq_work_sync(&sim->work_ctx.work);
-	bitmap_free(sim->work_ctx.pending);
 	irq_free_descs(sim->irq_base, sim->irq_count);
 	kfree(sim->irqs);
 }
@@ -127,8 +110,7 @@ static void devm_irq_sim_release(struct device *dev, void *res)
  * @sim:        The interrupt simulator object to initialize.
  * @num_irqs:   Number of interrupts to allocate
  *
- * On success: return the base of the allocated interrupt range.
- * On failure: a negative errno.
+ * Returns 0 on success and a negative error number on failure.
  */
 int devm_irq_sim_init(struct device *dev, struct irq_sim *sim,
 		      unsigned int num_irqs)
@@ -141,7 +123,7 @@ int devm_irq_sim_init(struct device *dev, struct irq_sim *sim,
 		return -ENOMEM;
 
 	rv = irq_sim_init(sim, num_irqs);
-	if (rv < 0) {
+	if (rv) {
 		devres_free(dr);
 		return rv;
 	}
@@ -149,7 +131,7 @@ int devm_irq_sim_init(struct device *dev, struct irq_sim *sim,
 	dr->sim = sim;
 	devres_add(dev, dr);
 
-	return rv;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(devm_irq_sim_init);
 
@@ -162,7 +144,7 @@ EXPORT_SYMBOL_GPL(devm_irq_sim_init);
 void irq_sim_fire(struct irq_sim *sim, unsigned int offset)
 {
 	if (sim->irqs[offset].enabled) {
-		set_bit(offset, sim->work_ctx.pending);
+		sim->work_ctx.irq = irq_sim_irqnum(sim, offset);
 		irq_work_queue(&sim->work_ctx.work);
 	}
 }

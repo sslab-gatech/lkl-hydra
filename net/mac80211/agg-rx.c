@@ -245,7 +245,6 @@ void ___ieee80211_start_rx_ba_session(struct sta_info *sta,
 	};
 	int i, ret = -EOPNOTSUPP;
 	u16 status = WLAN_STATUS_REQUEST_DECLINED;
-	u16 max_buf_size;
 
 	if (tid >= IEEE80211_FIRST_TSPEC_TSID) {
 		ht_dbg(sta->sdata,
@@ -269,18 +268,13 @@ void ___ieee80211_start_rx_ba_session(struct sta_info *sta,
 		goto end;
 	}
 
-	if (sta->sta.he_cap.has_he)
-		max_buf_size = IEEE80211_MAX_AMPDU_BUF;
-	else
-		max_buf_size = IEEE80211_MAX_AMPDU_BUF_HT;
-
 	/* sanity check for incoming parameters:
 	 * check if configuration can support the BA policy
 	 * and if buffer size does not exceeds max value */
 	/* XXX: check own ht delayed BA capability?? */
 	if (((ba_policy != 1) &&
 	     (!(sta->sta.ht_cap.cap & IEEE80211_HT_CAP_DELAY_BA))) ||
-	    (buf_size > max_buf_size)) {
+	    (buf_size > IEEE80211_MAX_AMPDU_BUF)) {
 		status = WLAN_STATUS_INVALID_QOS_PARAM;
 		ht_dbg_ratelimited(sta->sdata,
 				   "AddBA Req with bad params from %pM on tid %u. policy %d, buffer size %d\n",
@@ -289,7 +283,7 @@ void ___ieee80211_start_rx_ba_session(struct sta_info *sta,
 	}
 	/* determine default buffer size */
 	if (buf_size == 0)
-		buf_size = max_buf_size;
+		buf_size = IEEE80211_MAX_AMPDU_BUF;
 
 	/* make sure the size doesn't exceed the maximum supported by the hw */
 	if (buf_size > sta->sta.max_rx_aggregation_subframes)
@@ -304,23 +298,13 @@ void ___ieee80211_start_rx_ba_session(struct sta_info *sta,
 
 	if (test_bit(tid, sta->ampdu_mlme.agg_session_valid)) {
 		if (sta->ampdu_mlme.tid_rx_token[tid] == dialog_token) {
-			struct tid_ampdu_rx *tid_rx;
-
 			ht_dbg_ratelimited(sta->sdata,
 					   "updated AddBA Req from %pM on tid %u\n",
 					   sta->sta.addr, tid);
 			/* We have no API to update the timeout value in the
-			 * driver so reject the timeout update if the timeout
-			 * changed. If if did not change, i.e., no real update,
-			 * just reply with success.
+			 * driver so reject the timeout update.
 			 */
-			rcu_read_lock();
-			tid_rx = rcu_dereference(sta->ampdu_mlme.tid_rx[tid]);
-			if (tid_rx && tid_rx->timeout == timeout)
-				status = WLAN_STATUS_SUCCESS;
-			else
-				status = WLAN_STATUS_REQUEST_DECLINED;
-			rcu_read_unlock();
+			status = WLAN_STATUS_REQUEST_DECLINED;
 			goto end;
 		}
 

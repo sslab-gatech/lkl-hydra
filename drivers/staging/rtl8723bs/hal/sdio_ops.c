@@ -1,7 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2012 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  *
  *******************************************************************************/
 #define _SDIO_OPS_C_
@@ -1023,7 +1031,7 @@ void sd_int_dpc(struct adapter *adapter)
 		u8 freepage[4];
 
 		_sdio_local_read(adapter, SDIO_REG_FREE_TXPG, 4, freepage);
-		complete(&(adapter->xmitpriv.xmit_comp));
+		up(&(adapter->xmitpriv.xmit_sema));
 	}
 
 	if (hal->sdio_hisr & SDIO_HISR_CPWM1) {

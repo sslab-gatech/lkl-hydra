@@ -111,7 +111,7 @@ intel_pch_panel_fitting(struct intel_crtc *intel_crtc,
 	/* Native modes don't need fitting */
 	if (adjusted_mode->crtc_hdisplay == pipe_config->pipe_src_w &&
 	    adjusted_mode->crtc_vdisplay == pipe_config->pipe_src_h &&
-	    pipe_config->output_format != INTEL_OUTPUT_FORMAT_YCBCR420)
+	    !pipe_config->ycbcr420)
 		goto done;
 
 	switch (fitting_mode) {
@@ -375,22 +375,39 @@ out:
 	pipe_config->gmch_pfit.lvds_border_bits = border;
 }
 
+enum drm_connector_status
+intel_panel_detect(struct drm_i915_private *dev_priv)
+{
+	/* Assume that the BIOS does not lie through the OpRegion... */
+	if (!i915_modparams.panel_ignore_lid && dev_priv->opregion.lid_state) {
+		return *dev_priv->opregion.lid_state & 0x1 ?
+			connector_status_connected :
+			connector_status_disconnected;
+	}
+
+	switch (i915_modparams.panel_ignore_lid) {
+	case -2:
+		return connector_status_connected;
+	case -1:
+		return connector_status_disconnected;
+	default:
+		return connector_status_unknown;
+	}
+}
+
 /**
  * scale - scale values from one range to another
+ *
  * @source_val: value in range [@source_min..@source_max]
- * @source_min: minimum legal value for @source_val
- * @source_max: maximum legal value for @source_val
- * @target_min: corresponding target value for @source_min
- * @target_max: corresponding target value for @source_max
  *
  * Return @source_val in range [@source_min..@source_max] scaled to range
  * [@target_min..@target_max].
  */
-static u32 scale(u32 source_val,
-		 u32 source_min, u32 source_max,
-		 u32 target_min, u32 target_max)
+static uint32_t scale(uint32_t source_val,
+		      uint32_t source_min, uint32_t source_max,
+		      uint32_t target_min, uint32_t target_max)
 {
-	u64 target_val;
+	uint64_t target_val;
 
 	WARN_ON(source_min > source_max);
 	WARN_ON(target_min > target_max);
@@ -399,9 +416,8 @@ static u32 scale(u32 source_val,
 	source_val = clamp(source_val, source_min, source_max);
 
 	/* avoid overflows */
-	target_val = mul_u32_u32(source_val - source_min,
-				 target_max - target_min);
-	target_val = DIV_ROUND_CLOSEST_ULL(target_val, source_max - source_min);
+	target_val = DIV_ROUND_CLOSEST_ULL((uint64_t)(source_val - source_min) *
+			(target_max - target_min), source_max - source_min);
 	target_val += target_min;
 
 	return target_val;
@@ -481,7 +497,7 @@ static u32 i9xx_get_backlight(struct intel_connector *connector)
 	u32 val;
 
 	val = I915_READ(BLC_PWM_CTL) & BACKLIGHT_DUTY_CYCLE_MASK;
-	if (INTEL_GEN(dev_priv) < 4)
+	if (INTEL_INFO(dev_priv)->gen < 4)
 		val >>= 1;
 
 	if (panel->backlight.combination_mode) {
@@ -505,7 +521,7 @@ static u32 _vlv_get_backlight(struct drm_i915_private *dev_priv, enum pipe pipe)
 static u32 vlv_get_backlight(struct intel_connector *connector)
 {
 	struct drm_i915_private *dev_priv = to_i915(connector->base.dev);
-	enum pipe pipe = intel_connector_get_pipe(connector);
+	enum pipe pipe = intel_get_pipe_from_connector(connector);
 
 	return _vlv_get_backlight(dev_priv, pipe);
 }
@@ -763,7 +779,7 @@ static void pwm_disable_backlight(const struct drm_connector_state *old_conn_sta
 	struct intel_panel *panel = &connector->panel;
 
 	/* Disable the backlight */
-	intel_panel_actually_set_backlight(old_conn_state, 0);
+	pwm_config(panel->backlight.pwm, 0, CRC_PMIC_PWM_PERIOD_NS);
 	usleep_range(2000, 3000);
 	pwm_disable(panel->backlight.pwm);
 }
@@ -1703,9 +1719,9 @@ cnp_setup_backlight(struct intel_connector *connector, enum pipe unused)
 	u32 pwm_ctl, val;
 
 	/*
-	 * CNP has the BXT implementation of backlight, but with only one
-	 * controller. TODO: ICP has multiple controllers but we only use
-	 * controller 0 for now.
+	 * CNP has the BXT implementation of backlight, but with only
+	 * one controller. Future platforms could have multiple controllers
+	 * so let's make this extensible and prepared for the future.
 	 */
 	panel->backlight.controller = 0;
 
@@ -1814,8 +1830,11 @@ int intel_panel_setup_backlight(struct drm_connector *connector, enum pipe pipe)
 	return 0;
 }
 
-static void intel_panel_destroy_backlight(struct intel_panel *panel)
+void intel_panel_destroy_backlight(struct drm_connector *connector)
 {
+	struct intel_connector *intel_connector = to_intel_connector(connector);
+	struct intel_panel *panel = &intel_connector->panel;
+
 	/* dispose of the pwm */
 	if (panel->backlight.pwm)
 		pwm_put(panel->backlight.pwm);
@@ -1846,7 +1865,7 @@ intel_panel_init_backlight_funcs(struct intel_panel *panel)
 		panel->backlight.set = bxt_set_backlight;
 		panel->backlight.get = bxt_get_backlight;
 		panel->backlight.hz_to_pwm = bxt_hz_to_pwm;
-	} else if (HAS_PCH_CNP(dev_priv) || HAS_PCH_ICP(dev_priv)) {
+	} else if (HAS_PCH_CNP(dev_priv)) {
 		panel->backlight.setup = cnp_setup_backlight;
 		panel->backlight.enable = cnp_enable_backlight;
 		panel->backlight.disable = cnp_disable_backlight;
@@ -1905,11 +1924,13 @@ intel_panel_init_backlight_funcs(struct intel_panel *panel)
 
 int intel_panel_init(struct intel_panel *panel,
 		     struct drm_display_mode *fixed_mode,
+		     struct drm_display_mode *alt_fixed_mode,
 		     struct drm_display_mode *downclock_mode)
 {
 	intel_panel_init_backlight_funcs(panel);
 
 	panel->fixed_mode = fixed_mode;
+	panel->alt_fixed_mode = alt_fixed_mode;
 	panel->downclock_mode = downclock_mode;
 
 	return 0;
@@ -1920,10 +1941,12 @@ void intel_panel_fini(struct intel_panel *panel)
 	struct intel_connector *intel_connector =
 		container_of(panel, struct intel_connector, panel);
 
-	intel_panel_destroy_backlight(panel);
-
 	if (panel->fixed_mode)
 		drm_mode_destroy(intel_connector->base.dev, panel->fixed_mode);
+
+	if (panel->alt_fixed_mode)
+		drm_mode_destroy(intel_connector->base.dev,
+				panel->alt_fixed_mode);
 
 	if (panel->downclock_mode)
 		drm_mode_destroy(intel_connector->base.dev,

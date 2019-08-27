@@ -4,9 +4,6 @@ heapsize=4096
 TCID="ion_test.sh"
 errcode=0
 
-# Kselftest framework requirement - SKIP code is 4.
-ksft_skip=4
-
 run_test()
 {
 	heaptype=$1
@@ -28,7 +25,7 @@ check_root()
 	uid=$(id -u)
 	if [ $uid -ne 0 ]; then
 		echo $TCID: must be run as root >&2
-		exit $ksft_skip
+		exit 0
 	fi
 }
 
@@ -38,7 +35,7 @@ check_device()
 	if [ ! -e $DEVICE ]; then
 		echo $TCID: No $DEVICE device found >&2
 		echo $TCID: May be CONFIG_ION is not set >&2
-		exit $ksft_skip
+		exit 0
 	fi
 }
 

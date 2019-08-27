@@ -1,18 +1,28 @@
 /*
- * SPDX-License-Identifier: MIT
+ * Copyright © 2017 Intel Corporation
  *
- * Copyright © 2017-2018 Intel Corporation
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
  */
-
 #ifndef __I915_PMU_H__
 #define __I915_PMU_H__
-
-#include <linux/hrtimer.h>
-#include <linux/perf_event.h>
-#include <linux/spinlock_types.h>
-#include <drm/i915_drm.h>
-
-struct drm_i915_private;
 
 enum {
 	__I915_SAMPLE_FREQ_ACT = 0,
@@ -30,8 +40,6 @@ enum {
 #define I915_PMU_MASK_BITS \
 	((1 << I915_PMU_SAMPLE_BITS) + \
 	 (I915_PMU_LAST + 1 - __I915_PMU_OTHER(0)))
-
-#define I915_ENGINE_SAMPLE_COUNT (I915_SAMPLE_SEMA + 1)
 
 struct i915_pmu_sample {
 	u64 cur;
@@ -67,14 +75,6 @@ struct i915_pmu {
 	 * event types.
 	 */
 	u64 enable;
-
-	/**
-	 * @timer_last:
-	 *
-	 * Timestmap of the previous timer invocation.
-	 */
-	ktime_t timer_last;
-
 	/**
 	 * @enable_count: Reference counts for the enabled events.
 	 *
@@ -100,14 +100,6 @@ struct i915_pmu {
 	 * @suspended_jiffies_last: Cached suspend time from PM core.
 	 */
 	unsigned long suspended_jiffies_last;
-	/**
-	 * @i915_attr: Memory block holding device attributes.
-	 */
-	void *i915_attr;
-	/**
-	 * @pmu_attr: Memory block holding device attributes.
-	 */
-	void *pmu_attr;
 };
 
 #ifdef CONFIG_PERF_EVENTS

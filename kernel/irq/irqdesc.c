@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 1992, 1998-2006 Linus Torvalds, Ingo Molnar
  * Copyright (C) 2005-2006, Thomas Gleixner, Russell King
  *
- * This file contains the interrupt descriptor management code. Detailed
- * information is available in Documentation/core-api/genericirq.rst
+ * This file contains the interrupt descriptor management code
+ *
+ * Detailed information is available in Documentation/core-api/genericirq.rst
  *
  */
 #include <linux/irq.h>
@@ -210,22 +210,6 @@ static ssize_t type_show(struct kobject *kobj,
 }
 IRQ_ATTR_RO(type);
 
-static ssize_t wakeup_show(struct kobject *kobj,
-			   struct kobj_attribute *attr, char *buf)
-{
-	struct irq_desc *desc = container_of(kobj, struct irq_desc, kobj);
-	ssize_t ret = 0;
-
-	raw_spin_lock_irq(&desc->lock);
-	ret = sprintf(buf, "%s\n",
-		      irqd_is_wakeup_set(&desc->irq_data) ? "enabled" : "disabled");
-	raw_spin_unlock_irq(&desc->lock);
-
-	return ret;
-
-}
-IRQ_ATTR_RO(wakeup);
-
 static ssize_t name_show(struct kobject *kobj,
 			 struct kobj_attribute *attr, char *buf)
 {
@@ -269,7 +253,6 @@ static struct attribute *irq_attrs[] = {
 	&chip_name_attr.attr,
 	&hwirq_attr.attr,
 	&type_attr.attr,
-	&wakeup_attr.attr,
 	&name_attr.attr,
 	&actions_attr.attr,
 	NULL
@@ -443,40 +426,35 @@ static void free_desc(unsigned int irq)
 	 * We free the descriptor, masks and stat fields via RCU. That
 	 * allows demultiplex interrupts to do rcu based management of
 	 * the child interrupts.
-	 * This also allows us to use rcu in kstat_irqs_usr().
 	 */
 	call_rcu(&desc->rcu, delayed_free_desc);
 }
 
 static int alloc_descs(unsigned int start, unsigned int cnt, int node,
-		       const struct irq_affinity_desc *affinity,
-		       struct module *owner)
+		       const struct cpumask *affinity, struct module *owner)
 {
+	const struct cpumask *mask = NULL;
 	struct irq_desc *desc;
+	unsigned int flags;
 	int i;
 
 	/* Validate affinity mask(s) */
 	if (affinity) {
-		for (i = 0; i < cnt; i++) {
-			if (cpumask_empty(&affinity[i].mask))
+		for (i = 0, mask = affinity; i < cnt; i++, mask++) {
+			if (cpumask_empty(mask))
 				return -EINVAL;
 		}
 	}
 
-	for (i = 0; i < cnt; i++) {
-		const struct cpumask *mask = NULL;
-		unsigned int flags = 0;
+	flags = affinity ? IRQD_AFFINITY_MANAGED | IRQD_MANAGED_SHUTDOWN : 0;
+	mask = NULL;
 
+	for (i = 0; i < cnt; i++) {
 		if (affinity) {
-			if (affinity->is_managed) {
-				flags = IRQD_AFFINITY_MANAGED |
-					IRQD_MANAGED_SHUTDOWN;
-			}
-			mask = &affinity->mask;
-			node = cpu_to_node(cpumask_first(mask));
+			node = cpu_to_node(cpumask_first(affinity));
+			mask = affinity;
 			affinity++;
 		}
-
 		desc = alloc_desc(start + i, node, flags, mask, owner);
 		if (!desc)
 			goto err;
@@ -579,7 +557,7 @@ static void free_desc(unsigned int irq)
 }
 
 static inline int alloc_descs(unsigned int start, unsigned int cnt, int node,
-			      const struct irq_affinity_desc *affinity,
+			      const struct cpumask *affinity,
 			      struct module *owner)
 {
 	u32 i;
@@ -709,7 +687,7 @@ EXPORT_SYMBOL_GPL(irq_free_descs);
  */
 int __ref
 __irq_alloc_descs(int irq, unsigned int from, unsigned int cnt, int node,
-		  struct module *owner, const struct irq_affinity_desc *affinity)
+		  struct module *owner, const struct cpumask *affinity)
 {
 	int start, ret;
 
@@ -933,17 +911,17 @@ unsigned int kstat_irqs(unsigned int irq)
  * kstat_irqs_usr - Get the statistics for an interrupt
  * @irq:	The interrupt number
  *
- * Returns the sum of interrupt counts on all cpus since boot for @irq.
- * Contrary to kstat_irqs() this can be called from any context.
- * It uses rcu since a concurrent removal of an interrupt descriptor is
- * observing an rcu grace period before delayed_free_desc()/irq_kobj_release().
+ * Returns the sum of interrupt counts on all cpus since boot for
+ * @irq. Contrary to kstat_irqs() this can be called from any
+ * preemptible context. It's protected against concurrent removal of
+ * an interrupt descriptor when sparse irqs are enabled.
  */
 unsigned int kstat_irqs_usr(unsigned int irq)
 {
 	unsigned int sum;
 
-	rcu_read_lock();
+	irq_lock_sparse();
 	sum = kstat_irqs(irq);
-	rcu_read_unlock();
+	irq_unlock_sparse();
 	return sum;
 }

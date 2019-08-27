@@ -394,3 +394,4 @@ int ax25_check_iframes_acked(ax25_cb *ax25, unsigned short nr)
 	}
 	return 0;
 }
+

@@ -26,7 +26,6 @@
 #include <linux/platform_device.h>
 #include <linux/adb.h>
 #include <linux/cuda.h>
-#include <linux/pmu.h>
 #include <linux/rtc.h>
 
 #include <asm/setup.h>
@@ -57,6 +56,7 @@ static unsigned long mac_orig_videoaddr;
 /* Mac specific timer functions */
 extern u32 mac_gettimeoffset(void);
 extern int mac_hwclk(int, struct rtc_time *);
+extern int mac_set_clock_mmss(unsigned long);
 extern void iop_preinit(void);
 extern void iop_init(void);
 extern void via_init(void);
@@ -157,6 +157,7 @@ void __init config_mac(void)
 	mach_get_model = mac_get_model;
 	arch_gettimeoffset = mac_gettimeoffset;
 	mach_hwclk = mac_hwclk;
+	mach_set_clock_mmss = mac_set_clock_mmss;
 	mach_reset = mac_reset;
 	mach_halt = mac_poweroff;
 	mach_power_off = mac_poweroff;
@@ -698,7 +699,7 @@ static struct mac_model mac_data_table[] = {
 		.name		= "PowerBook 190",
 		.adb_type	= MAC_ADB_PB2,
 		.via_type	= MAC_VIA_QUADRA,
-		.scsi_type	= MAC_SCSI_OLD,
+		.scsi_type	= MAC_SCSI_LATE,
 		.ide_type	= MAC_IDE_BABOON,
 		.scc_type	= MAC_SCC_QUADRA,
 		.floppy_type	= MAC_FLOPPY_SWIM_ADDR2,
@@ -707,7 +708,7 @@ static struct mac_model mac_data_table[] = {
 		.name		= "PowerBook 520",
 		.adb_type	= MAC_ADB_PB2,
 		.via_type	= MAC_VIA_QUADRA,
-		.scsi_type	= MAC_SCSI_OLD,
+		.scsi_type	= MAC_SCSI_LATE,
 		.scc_type	= MAC_SCC_QUADRA,
 		.ether_type	= MAC_ETHER_SONIC,
 		.floppy_type	= MAC_FLOPPY_SWIM_ADDR2,
@@ -889,9 +890,6 @@ static void __init mac_identify(void)
 #ifdef CONFIG_ADB_CUDA
 	find_via_cuda();
 #endif
-#ifdef CONFIG_ADB_PMU
-	find_via_pmu();
-#endif
 }
 
 static void __init mac_report_hardware(void)
@@ -938,6 +936,18 @@ static const struct resource mac_scsi_old_rsrc[] __initconst = {
 		.flags = IORESOURCE_MEM,
 		.start = 0x50006000,
 		.end   = 0x50007FFF,
+	},
+};
+
+static const struct resource mac_scsi_late_rsrc[] __initconst = {
+	{
+		.flags = IORESOURCE_IRQ,
+		.start = IRQ_MAC_SCSI,
+		.end   = IRQ_MAC_SCSI,
+	}, {
+		.flags = IORESOURCE_MEM,
+		.start = 0x50010000,
+		.end   = 0x50011FFF,
 	},
 };
 
@@ -991,7 +1001,7 @@ int __init mac_platform_init(void)
 		struct resource swim_rsrc = {
 			.flags = IORESOURCE_MEM,
 			.start = (resource_size_t)swim_base,
-			.end   = (resource_size_t)swim_base + 0x1FFF,
+			.end   = (resource_size_t)swim_base + 0x2000,
 		};
 
 		platform_device_register_simple("swim", -1, &swim_rsrc, 1);
@@ -1050,6 +1060,13 @@ int __init mac_platform_init(void)
 		platform_device_register_simple("mac_scsi", 0,
 			mac_scsi_old_rsrc, ARRAY_SIZE(mac_scsi_old_rsrc));
 		break;
+	case MAC_SCSI_LATE:
+		/* PDMA logic in 68040 PowerBooks is somehow different to
+		 * '030 models. It's probably more like Quadras (see mac_esp).
+		 */
+		platform_device_register_simple("mac_scsi", 0,
+			mac_scsi_late_rsrc, ARRAY_SIZE(mac_scsi_late_rsrc));
+		break;
 	case MAC_SCSI_LC:
 		/* Addresses from Mac LC data in Designing Cards & Drivers 3ed.
 		 * Also from the Developer Notes for Classic II, LC III,
@@ -1070,10 +1087,6 @@ int __init mac_platform_init(void)
 	if (macintosh_config->ether_type == MAC_ETHER_SONIC ||
 	    macintosh_config->expansion_type == MAC_EXP_PDS_COMM)
 		platform_device_register_simple("macsonic", -1, NULL, 0);
-
-	if (macintosh_config->expansion_type == MAC_EXP_PDS ||
-	    macintosh_config->expansion_type == MAC_EXP_PDS_COMM)
-		platform_device_register_simple("mac89x0", -1, NULL, 0);
 
 	if (macintosh_config->ether_type == MAC_ETHER_MACE)
 		platform_device_register_simple("macmace", -1, NULL, 0);

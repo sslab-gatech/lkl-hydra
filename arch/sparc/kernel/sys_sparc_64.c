@@ -39,7 +39,7 @@
 
 /* #define DEBUG_UNIMP_SYSCALL */
 
-SYSCALL_DEFINE0(getpagesize)
+asmlinkage unsigned long sys_getpagesize(void)
 {
 	return PAGE_SIZE;
 }
@@ -276,7 +276,7 @@ static unsigned long mmap_rnd(void)
 	return rnd << PAGE_SHIFT;
 }
 
-void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
+void arch_pick_mmap_layout(struct mm_struct *mm)
 {
 	unsigned long random_factor = mmap_rnd();
 	unsigned long gap;
@@ -285,7 +285,7 @@ void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
 	 * Fall back to the standard layout if the personality
 	 * bit is set, or if the expected stack growth is unlimited:
 	 */
-	gap = rlim_stack->rlim_cur;
+	gap = rlimit(RLIMIT_STACK);
 	if (!test_thread_flag(TIF_32BIT) ||
 	    (current->personality & ADDR_COMPAT_LAYOUT) ||
 	    gap == RLIM_INFINITY ||
@@ -310,7 +310,7 @@ void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
  * sys_pipe() is the normal C calling standard for creating
  * a pipe. It's not the way unix traditionally does this, though.
  */
-SYSCALL_DEFINE0(sparc_pipe)
+SYSCALL_DEFINE1(sparc_pipe_real, struct pt_regs *, regs)
 {
 	int fd[2];
 	int error;
@@ -318,7 +318,7 @@ SYSCALL_DEFINE0(sparc_pipe)
 	error = do_pipe_flags(fd, 0);
 	if (error)
 		goto out;
-	current_pt_regs()->u_regs[UREG_I1] = fd[1];
+	regs->u_regs[UREG_I1] = fd[1];
 	error = fd[0];
 out:
 	return error;
@@ -458,7 +458,7 @@ SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		goto out;
 	if (off & ~PAGE_MASK)
 		goto out;
-	retval = ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+	retval = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 out:
 	return retval;
 }
@@ -480,10 +480,10 @@ SYSCALL_DEFINE5(64_mremap, unsigned long, addr,	unsigned long, old_len,
 	return sys_mremap(addr, old_len, new_len, flags, new_addr);
 }
 
-SYSCALL_DEFINE0(nis_syscall)
+/* we come to here via sys_nis_syscall so it can setup the regs argument */
+asmlinkage unsigned long c_sys_nis_syscall(struct pt_regs *regs)
 {
 	static int count;
-	struct pt_regs *regs = current_pt_regs();
 	
 	/* Don't make the system unusable, if someone goes stuck */
 	if (count++ > 5)
@@ -502,6 +502,7 @@ SYSCALL_DEFINE0(nis_syscall)
 asmlinkage void sparc_breakpoint(struct pt_regs *regs)
 {
 	enum ctx_state prev_state = exception_enter();
+	siginfo_t info;
 
 	if (test_thread_flag(TIF_32BIT)) {
 		regs->tpc &= 0xffffffff;
@@ -510,36 +511,39 @@ asmlinkage void sparc_breakpoint(struct pt_regs *regs)
 #ifdef DEBUG_SPARC_BREAKPOINT
         printk ("TRAP: Entering kernel PC=%lx, nPC=%lx\n", regs->tpc, regs->tnpc);
 #endif
-	force_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *)regs->tpc, 0, current);
+	info.si_signo = SIGTRAP;
+	info.si_errno = 0;
+	info.si_code = TRAP_BRKPT;
+	info.si_addr = (void __user *)regs->tpc;
+	info.si_trapno = 0;
+	force_sig_info(SIGTRAP, &info, current);
 #ifdef DEBUG_SPARC_BREAKPOINT
 	printk ("TRAP: Returning to space: PC=%lx nPC=%lx\n", regs->tpc, regs->tnpc);
 #endif
 	exception_exit(prev_state);
 }
 
+extern void check_pending(int signum);
+
 SYSCALL_DEFINE2(getdomainname, char __user *, name, int, len)
 {
-	int nlen, err;
-	char tmp[__NEW_UTS_LEN + 1];
+        int nlen, err;
 
 	if (len < 0)
 		return -EINVAL;
 
-	down_read(&uts_sem);
-
+ 	down_read(&uts_sem);
+ 	
 	nlen = strlen(utsname()->domainname) + 1;
 	err = -EINVAL;
 	if (nlen > len)
-		goto out_unlock;
-	memcpy(tmp, utsname()->domainname, nlen);
+		goto out;
 
-	up_read(&uts_sem);
+	err = -EFAULT;
+	if (!copy_to_user(name, utsname()->domainname, nlen))
+		err = 0;
 
-	if (copy_to_user(name, tmp, nlen))
-		return -EFAULT;
-	return 0;
-
-out_unlock:
+out:
 	up_read(&uts_sem);
 	return err;
 }
@@ -569,8 +573,7 @@ SYSCALL_DEFINE5(utrap_install, utrap_entry_t, type,
 	}
 	if (!current_thread_info()->utraps) {
 		current_thread_info()->utraps =
-			kcalloc(UT_TRAP_INSTRUCTION_31 + 1, sizeof(long),
-				GFP_KERNEL);
+			kzalloc((UT_TRAP_INSTRUCTION_31+1)*sizeof(long), GFP_KERNEL);
 		if (!current_thread_info()->utraps)
 			return -ENOMEM;
 		current_thread_info()->utraps[0] = 1;
@@ -580,9 +583,8 @@ SYSCALL_DEFINE5(utrap_install, utrap_entry_t, type,
 			unsigned long *p = current_thread_info()->utraps;
 
 			current_thread_info()->utraps =
-				kmalloc_array(UT_TRAP_INSTRUCTION_31 + 1,
-					      sizeof(long),
-					      GFP_KERNEL);
+				kmalloc((UT_TRAP_INSTRUCTION_31+1)*sizeof(long),
+					GFP_KERNEL);
 			if (!current_thread_info()->utraps) {
 				current_thread_info()->utraps = p;
 				return -ENOMEM;
@@ -606,9 +608,9 @@ SYSCALL_DEFINE5(utrap_install, utrap_entry_t, type,
 	return 0;
 }
 
-SYSCALL_DEFINE1(memory_ordering, unsigned long, model)
+asmlinkage long sparc_memory_ordering(unsigned long model,
+				      struct pt_regs *regs)
 {
-	struct pt_regs *regs = current_pt_regs();
 	if (model >= 3)
 		return -EINVAL;
 	regs->tstate = (regs->tstate & ~TSTATE_MM) | (model << 14);
@@ -642,7 +644,7 @@ SYSCALL_DEFINE5(rt_sigaction, int, sig, const struct sigaction __user *, act,
 	return ret;
 }
 
-SYSCALL_DEFINE0(kern_features)
+asmlinkage long sys_kern_features(void)
 {
 	return KERN_FEATURE_MIXED_MODE_STACK;
 }

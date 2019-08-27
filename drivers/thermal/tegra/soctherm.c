@@ -241,6 +241,31 @@ struct tegra_soctherm {
 };
 
 /**
+ * clk_writel() - writes a value to a CAR register
+ * @ts: pointer to a struct tegra_soctherm
+ * @v: the value to write
+ * @reg: the register offset
+ *
+ * Writes @v to @reg.  No return value.
+ */
+static inline void clk_writel(struct tegra_soctherm *ts, u32 value, u32 reg)
+{
+	writel(value, (ts->clk_regs + reg));
+}
+
+/**
+ * clk_readl() - reads specified register from CAR IP block
+ * @ts: pointer to a struct tegra_soctherm
+ * @reg: register address to be read
+ *
+ * Return: the value of the register
+ */
+static inline u32 clk_readl(struct tegra_soctherm *ts, u32 reg)
+{
+	return readl(ts->clk_regs + reg);
+}
+
+/**
  * ccroc_writel() - writes a value to a CCROC register
  * @ts: pointer to a struct tegra_soctherm
  * @v: the value to write
@@ -803,7 +828,17 @@ static int regs_show(struct seq_file *s, void *data)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(regs);
+static int regs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, regs_show, inode->i_private);
+}
+
+static const struct file_operations regs_fops = {
+	.open		= regs_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static void soctherm_debug_init(struct platform_device *pdev)
 {
@@ -891,7 +926,7 @@ static int throt_set_cdev_state(struct thermal_cooling_device *cdev,
 	return 0;
 }
 
-static const struct thermal_cooling_device_ops throt_cooling_ops = {
+static struct thermal_cooling_device_ops throt_cooling_ops = {
 	.get_max_state = throt_get_cdev_max_state,
 	.get_cur_state = throt_get_cdev_cur_state,
 	.set_cur_state = throt_set_cdev_state,
@@ -1172,9 +1207,9 @@ static void tegra_soctherm_throttle(struct device *dev)
 	} else {
 		writel(v, ts->regs + THROT_GLOBAL_CFG);
 
-		v = readl(ts->clk_regs + CAR_SUPER_CCLKG_DIVIDER);
+		v = clk_readl(ts, CAR_SUPER_CCLKG_DIVIDER);
 		v = REG_SET_MASK(v, CDIVG_USE_THERM_CONTROLS_MASK, 1);
-		writel(v, ts->clk_regs + CAR_SUPER_CCLKG_DIVIDER);
+		clk_writel(ts, v, CAR_SUPER_CCLKG_DIVIDER);
 	}
 
 	/* initialize stats collection */
@@ -1308,8 +1343,8 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 		return PTR_ERR(tegra->clock_soctherm);
 	}
 
-	tegra->calib = devm_kcalloc(&pdev->dev,
-				    soc->num_tsensors, sizeof(u32),
+	tegra->calib = devm_kzalloc(&pdev->dev,
+				    sizeof(u32) * soc->num_tsensors,
 				    GFP_KERNEL);
 	if (!tegra->calib)
 		return -ENOMEM;
@@ -1328,8 +1363,8 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 			return err;
 	}
 
-	tegra->thermctl_tzs = devm_kcalloc(&pdev->dev,
-					   soc->num_ttgs, sizeof(*z),
+	tegra->thermctl_tzs = devm_kzalloc(&pdev->dev,
+					   sizeof(*z) * soc->num_ttgs,
 					   GFP_KERNEL);
 	if (!tegra->thermctl_tzs)
 		return -ENOMEM;

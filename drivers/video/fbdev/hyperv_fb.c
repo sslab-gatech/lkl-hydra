@@ -912,9 +912,6 @@ static struct hv_driver hvfb_drv = {
 	.id_table = id_table,
 	.probe = hvfb_probe,
 	.remove = hvfb_remove,
-	.driver = {
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-	},
 };
 
 static int hvfb_pci_stub_probe(struct pci_dev *pdev,
@@ -932,9 +929,6 @@ static struct pci_driver hvfb_pci_stub_driver = {
 	.id_table =	pci_stub_id_table,
 	.probe =	hvfb_pci_stub_probe,
 	.remove =	hvfb_pci_stub_remove,
-	.driver = {
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-	}
 };
 
 static int __init hvfb_drv_init(void)

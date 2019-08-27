@@ -241,7 +241,8 @@ v9fs_vfs_create_dotl(struct inode *dir, struct dentry *dentry, umode_t omode,
 
 static int
 v9fs_vfs_atomic_open_dotl(struct inode *dir, struct dentry *dentry,
-			  struct file *file, unsigned flags, umode_t omode)
+			  struct file *file, unsigned flags, umode_t omode,
+			  int *opened)
 {
 	int err = 0;
 	kgid_t gid;
@@ -351,13 +352,13 @@ v9fs_vfs_atomic_open_dotl(struct inode *dir, struct dentry *dentry,
 	}
 	mutex_unlock(&v9inode->v_mutex);
 	/* Since we are opening a file, assign the open fid to the file */
-	err = finish_open(file, dentry, generic_file_open);
+	err = finish_open(file, dentry, generic_file_open, opened);
 	if (err)
 		goto err_clunk_old_fid;
 	file->private_data = ofid;
 	if (v9ses->cache == CACHE_LOOSE || v9ses->cache == CACHE_FSCACHE)
 		v9fs_cache_inode_set_cookie(inode, file);
-	file->f_mode |= FMODE_CREATED;
+	*opened |= FILE_CREATED;
 out:
 	v9fs_put_acl(dacl, pacl);
 	dput(res);

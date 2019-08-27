@@ -96,7 +96,6 @@ struct wdm_device {
 	struct mutex		rlock;
 	wait_queue_head_t	wait;
 	struct work_struct	rxwork;
-	struct work_struct	service_outs_intr;
 	int			werr;
 	int			rerr;
 	int                     resp_count;
@@ -142,26 +141,26 @@ found:
 static void wdm_out_callback(struct urb *urb)
 {
 	struct wdm_device *desc;
-	unsigned long flags;
-
 	desc = urb->context;
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	desc->werr = urb->status;
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+	spin_unlock(&desc->iuspin);
 	kfree(desc->outbuf);
 	desc->outbuf = NULL;
 	clear_bit(WDM_IN_USE, &desc->flags);
 	wake_up(&desc->wait);
 }
 
+/* forward declaration */
+static int service_outstanding_interrupt(struct wdm_device *desc);
+
 static void wdm_in_callback(struct urb *urb)
 {
-	unsigned long flags;
 	struct wdm_device *desc = urb->context;
 	int status = urb->status;
 	int length = urb->actual_length;
 
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	clear_bit(WDM_RESPONDING, &desc->flags);
 
 	if (status) {
@@ -210,6 +209,8 @@ static void wdm_in_callback(struct urb *urb)
 		}
 	}
 skip_error:
+	set_bit(WDM_READ, &desc->flags);
+	wake_up(&desc->wait);
 
 	if (desc->rerr) {
 		/*
@@ -218,17 +219,14 @@ skip_error:
 		 * We should respond to further attempts from the device to send
 		 * data, so that we can get unstuck.
 		 */
-		schedule_work(&desc->service_outs_intr);
-	} else {
-		set_bit(WDM_READ, &desc->flags);
-		wake_up(&desc->wait);
+		service_outstanding_interrupt(desc);
 	}
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+
+	spin_unlock(&desc->iuspin);
 }
 
 static void wdm_int_callback(struct urb *urb)
 {
-	unsigned long flags;
 	int rv = 0;
 	int responding;
 	int status = urb->status;
@@ -288,7 +286,7 @@ static void wdm_int_callback(struct urb *urb)
 		goto exit;
 	}
 
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	responding = test_and_set_bit(WDM_RESPONDING, &desc->flags);
 	if (!desc->resp_count++ && !responding
 		&& !test_bit(WDM_DISCONNECTING, &desc->flags)
@@ -296,7 +294,7 @@ static void wdm_int_callback(struct urb *urb)
 		rv = usb_submit_urb(desc->response, GFP_ATOMIC);
 		dev_dbg(&desc->intf->dev, "submit response URB %d\n", rv);
 	}
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+	spin_unlock(&desc->iuspin);
 	if (rv < 0) {
 		clear_bit(WDM_RESPONDING, &desc->flags);
 		if (rv == -EPERM)
@@ -760,21 +758,6 @@ static void wdm_rxwork(struct work_struct *work)
 	}
 }
 
-static void service_interrupt_work(struct work_struct *work)
-{
-	struct wdm_device *desc;
-
-	desc = container_of(work, struct wdm_device, service_outs_intr);
-
-	spin_lock_irq(&desc->iuspin);
-	service_outstanding_interrupt(desc);
-	if (!desc->resp_count) {
-		set_bit(WDM_READ, &desc->flags);
-		wake_up(&desc->wait);
-	}
-	spin_unlock_irq(&desc->iuspin);
-}
-
 /* --- hotplug --- */
 
 static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor *ep,
@@ -796,7 +779,6 @@ static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor
 	desc->inum = cpu_to_le16((u16)intf->cur_altsetting->desc.bInterfaceNumber);
 	desc->intf = intf;
 	INIT_WORK(&desc->rxwork, wdm_rxwork);
-	INIT_WORK(&desc->service_outs_intr, service_interrupt_work);
 
 	rv = -EINVAL;
 	if (!usb_endpoint_is_int_in(ep))
@@ -982,7 +964,6 @@ static void wdm_disconnect(struct usb_interface *intf)
 	mutex_lock(&desc->wlock);
 	kill_urbs(desc);
 	cancel_work_sync(&desc->rxwork);
-	cancel_work_sync(&desc->service_outs_intr);
 	mutex_unlock(&desc->wlock);
 	mutex_unlock(&desc->rlock);
 
@@ -1025,7 +1006,6 @@ static int wdm_suspend(struct usb_interface *intf, pm_message_t message)
 		/* callback submits work - order is essential */
 		kill_urbs(desc);
 		cancel_work_sync(&desc->rxwork);
-		cancel_work_sync(&desc->service_outs_intr);
 	}
 	if (!PMSG_IS_AUTO(message)) {
 		mutex_unlock(&desc->wlock);
@@ -1085,7 +1065,6 @@ static int wdm_pre_reset(struct usb_interface *intf)
 	mutex_lock(&desc->wlock);
 	kill_urbs(desc);
 	cancel_work_sync(&desc->rxwork);
-	cancel_work_sync(&desc->service_outs_intr);
 	return 0;
 }
 

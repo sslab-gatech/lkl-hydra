@@ -51,7 +51,7 @@
 struct nfs_access_entry {
 	struct rb_node		rb_node;
 	struct list_head	lru;
-	const struct cred *	cred;
+	struct rpc_cred *	cred;
 	__u32			mask;
 	struct rcu_head		rcu_head;
 };
@@ -62,7 +62,6 @@ struct nfs_lock_context {
 	struct nfs_open_context *open_context;
 	fl_owner_t lockowner;
 	atomic_t io_count;
-	struct rcu_head	rcu_head;
 };
 
 struct nfs4_state;
@@ -70,8 +69,7 @@ struct nfs_open_context {
 	struct nfs_lock_context lock_context;
 	fl_owner_t flock_owner;
 	struct dentry *dentry;
-	const struct cred *cred;
-	struct rpc_cred *ll_cred;	/* low-level cred - use to check for expiry */
+	struct rpc_cred *cred;
 	struct nfs4_state *state;
 	fmode_t mode;
 
@@ -84,12 +82,11 @@ struct nfs_open_context {
 
 	struct list_head list;
 	struct nfs4_threshold	*mdsthreshold;
-	struct rcu_head	rcu_head;
 };
 
 struct nfs_open_dir_context {
 	struct list_head list;
-	const struct cred *cred;
+	struct rpc_cred *cred;
 	unsigned long attr_gencount;
 	__u64 dir_cookie;
 	__u64 dup_cookie;
@@ -188,17 +185,6 @@ struct nfs_inode {
 	struct inode		vfs_inode;
 };
 
-struct nfs4_copy_state {
-	struct list_head	copies;
-	nfs4_stateid		stateid;
-	struct completion	completion;
-	uint64_t		count;
-	struct nfs_writeverf	verf;
-	int			error;
-	int			flags;
-	struct nfs4_state	*parent_state;
-};
-
 /*
  * Access bit flags
  */
@@ -212,24 +198,14 @@ struct nfs4_copy_state {
 /*
  * Cache validity bit flags
  */
-#define NFS_INO_INVALID_DATA	BIT(1)		/* cached data is invalid */
-#define NFS_INO_INVALID_ATIME	BIT(2)		/* cached atime is invalid */
-#define NFS_INO_INVALID_ACCESS	BIT(3)		/* cached access cred invalid */
-#define NFS_INO_INVALID_ACL	BIT(4)		/* cached acls are invalid */
-#define NFS_INO_REVAL_PAGECACHE	BIT(5)		/* must revalidate pagecache */
-#define NFS_INO_REVAL_FORCED	BIT(6)		/* force revalidation ignoring a delegation */
-#define NFS_INO_INVALID_LABEL	BIT(7)		/* cached label is invalid */
-#define NFS_INO_INVALID_CHANGE	BIT(8)		/* cached change is invalid */
-#define NFS_INO_INVALID_CTIME	BIT(9)		/* cached ctime is invalid */
-#define NFS_INO_INVALID_MTIME	BIT(10)		/* cached mtime is invalid */
-#define NFS_INO_INVALID_SIZE	BIT(11)		/* cached size is invalid */
-#define NFS_INO_INVALID_OTHER	BIT(12)		/* other attrs are invalid */
-
-#define NFS_INO_INVALID_ATTR	(NFS_INO_INVALID_CHANGE \
-		| NFS_INO_INVALID_CTIME \
-		| NFS_INO_INVALID_MTIME \
-		| NFS_INO_INVALID_SIZE \
-		| NFS_INO_INVALID_OTHER)	/* inode metadata is invalid */
+#define NFS_INO_INVALID_ATTR	0x0001		/* cached attrs are invalid */
+#define NFS_INO_INVALID_DATA	0x0002		/* cached data is invalid */
+#define NFS_INO_INVALID_ATIME	0x0004		/* cached atime is invalid */
+#define NFS_INO_INVALID_ACCESS	0x0008		/* cached access cred invalid */
+#define NFS_INO_INVALID_ACL	0x0010		/* cached acls are invalid */
+#define NFS_INO_REVAL_PAGECACHE	0x0020		/* must revalidate pagecache */
+#define NFS_INO_REVAL_FORCED	0x0040		/* force revalidation ignoring a delegation */
+#define NFS_INO_INVALID_LABEL	0x0080		/* cached label is invalid */
 
 /*
  * Bit offsets in flags field
@@ -316,11 +292,10 @@ static inline void nfs_mark_for_revalidate(struct inode *inode)
 	struct nfs_inode *nfsi = NFS_I(inode);
 
 	spin_lock(&inode->i_lock);
-	nfsi->cache_validity |= NFS_INO_REVAL_PAGECACHE
-		| NFS_INO_INVALID_ACCESS
-		| NFS_INO_INVALID_ACL
-		| NFS_INO_INVALID_CHANGE
-		| NFS_INO_INVALID_CTIME;
+	nfsi->cache_validity |= NFS_INO_INVALID_ATTR |
+				NFS_INO_REVAL_PAGECACHE |
+				NFS_INO_INVALID_ACCESS |
+				NFS_INO_INVALID_ACL;
 	if (S_ISDIR(inode->i_mode))
 		nfsi->cache_validity |= NFS_INO_INVALID_DATA;
 	spin_unlock(&inode->i_lock);
@@ -391,7 +366,7 @@ extern void nfs_setsecurity(struct inode *inode, struct nfs_fattr *fattr,
 				struct nfs4_label *label);
 extern struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx);
 extern void put_nfs_open_context(struct nfs_open_context *ctx);
-extern struct nfs_open_context *nfs_find_open_context(struct inode *inode, const struct cred *cred, fmode_t mode);
+extern struct nfs_open_context *nfs_find_open_context(struct inode *inode, struct rpc_cred *cred, fmode_t mode);
 extern struct nfs_open_context *alloc_nfs_open_context(struct dentry *dentry, fmode_t f_mode, struct file *filp);
 extern void nfs_inode_attach_open_context(struct nfs_open_context *ctx);
 extern void nfs_file_set_open_context(struct file *filp, struct nfs_open_context *ctx);
@@ -462,7 +437,7 @@ static inline struct nfs_open_context *nfs_file_open_context(struct file *filp)
 	return filp->private_data;
 }
 
-static inline const struct cred *nfs_file_cred(struct file *file)
+static inline struct rpc_cred *nfs_file_cred(struct file *file)
 {
 	if (file != NULL) {
 		struct nfs_open_context *ctx =
@@ -491,7 +466,7 @@ extern const struct dentry_operations nfs_dentry_operations;
 extern void nfs_force_lookup_revalidate(struct inode *dir);
 extern int nfs_instantiate(struct dentry *dentry, struct nfs_fh *fh,
 			struct nfs_fattr *fattr, struct nfs4_label *label);
-extern int nfs_may_open(struct inode *inode, const struct cred *cred, int openflags);
+extern int nfs_may_open(struct inode *inode, struct rpc_cred *cred, int openflags);
 extern void nfs_access_zap_cache(struct inode *inode);
 
 /*

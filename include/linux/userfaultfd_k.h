@@ -28,15 +28,13 @@
 #define UFFD_SHARED_FCNTL_FLAGS (O_CLOEXEC | O_NONBLOCK)
 #define UFFD_FLAGS_SET (EFD_SHARED_FCNTL_FLAGS)
 
-extern vm_fault_t handle_userfault(struct vm_fault *vmf, unsigned long reason);
+extern int handle_userfault(struct vm_fault *vmf, unsigned long reason);
 
 extern ssize_t mcopy_atomic(struct mm_struct *dst_mm, unsigned long dst_start,
-			    unsigned long src_start, unsigned long len,
-			    bool *mmap_changing);
+			    unsigned long src_start, unsigned long len);
 extern ssize_t mfill_zeropage(struct mm_struct *dst_mm,
 			      unsigned long dst_start,
-			      unsigned long len,
-			      bool *mmap_changing);
+			      unsigned long len);
 
 /* mm helpers */
 static inline bool is_mergeable_vm_userfaultfd_ctx(struct vm_area_struct *vma,
@@ -77,8 +75,7 @@ extern void userfaultfd_unmap_complete(struct mm_struct *mm,
 #else /* CONFIG_USERFAULTFD */
 
 /* mm helpers */
-static inline vm_fault_t handle_userfault(struct vm_fault *vmf,
-				unsigned long reason)
+static inline int handle_userfault(struct vm_fault *vmf, unsigned long reason)
 {
 	return VM_FAULT_SIGBUS;
 }

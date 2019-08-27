@@ -118,12 +118,9 @@ void tty_buffer_free_all(struct tty_port *port)
 	struct tty_bufhead *buf = &port->buf;
 	struct tty_buffer *p, *next;
 	struct llist_node *llist;
-	unsigned int freed = 0;
-	int still_used;
 
 	while ((p = buf->head) != NULL) {
 		buf->head = p->next;
-		freed += p->size;
 		if (p->size > 0)
 			kfree(p);
 	}
@@ -135,9 +132,7 @@ void tty_buffer_free_all(struct tty_port *port)
 	buf->head = &buf->sentinel;
 	buf->tail = &buf->sentinel;
 
-	still_used = atomic_xchg(&buf->mem_used, 0);
-	WARN(still_used != freed, "we still have not freed %d bytes!",
-			still_used - freed);
+	atomic_set(&buf->mem_used, 0);
 }
 
 /**
@@ -473,15 +468,11 @@ receive_buf(struct tty_port *port, struct tty_buffer *head, int count)
 {
 	unsigned char *p = char_buf_ptr(head, head->read);
 	char	      *f = NULL;
-	int n;
 
 	if (~head->flags & TTYB_NORMAL)
 		f = flag_buf_ptr(head, head->read);
 
-	n = port->client_ops->receive_buf(port, p, f, count);
-	if (n > 0)
-		memset(p, 0, n);
-	return n;
+	return port->client_ops->receive_buf(port, p, f, count);
 }
 
 /**

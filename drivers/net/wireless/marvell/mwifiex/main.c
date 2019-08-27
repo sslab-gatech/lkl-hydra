@@ -404,8 +404,7 @@ process_start:
 		    !skb_queue_empty(&adapter->tx_data_q)) {
 			mwifiex_process_tx_queue(adapter);
 			if (adapter->hs_activated) {
-				clear_bit(MWIFIEX_IS_HS_CONFIGURED,
-					  &adapter->work_flags);
+				adapter->is_hs_configured = false;
 				mwifiex_hs_activated_event
 					(mwifiex_get_priv
 					(adapter, MWIFIEX_BSS_ROLE_ANY),
@@ -421,8 +420,7 @@ process_start:
 			(mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_STA))) {
 			mwifiex_process_bypass_tx(adapter);
 			if (adapter->hs_activated) {
-				clear_bit(MWIFIEX_IS_HS_CONFIGURED,
-					  &adapter->work_flags);
+				adapter->is_hs_configured = false;
 				mwifiex_hs_activated_event
 					(mwifiex_get_priv
 					 (adapter, MWIFIEX_BSS_ROLE_ANY),
@@ -437,8 +435,7 @@ process_start:
 			(mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_STA))) {
 			mwifiex_wmm_process_tx(adapter);
 			if (adapter->hs_activated) {
-				clear_bit(MWIFIEX_IS_HS_CONFIGURED,
-					  &adapter->work_flags);
+				adapter->is_hs_configured = false;
 				mwifiex_hs_activated_event
 					(mwifiex_get_priv
 					 (adapter, MWIFIEX_BSS_ROLE_ANY),
@@ -650,7 +647,7 @@ err_dnld_fw:
 	if (adapter->if_ops.unregister_dev)
 		adapter->if_ops.unregister_dev(adapter);
 
-	set_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = true;
 	mwifiex_terminate_workqueue(adapter);
 
 	if (adapter->hw_status == MWIFIEX_HW_STATUS_READY) {
@@ -861,7 +858,7 @@ mwifiex_clone_skb_for_tx_status(struct mwifiex_private *priv,
 /*
  * CFG802.11 network device handler for data transmission.
  */
-static netdev_tx_t
+static int
 mwifiex_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct mwifiex_private *priv = mwifiex_netdev_get_priv(dev);
@@ -873,7 +870,7 @@ mwifiex_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		    "data: %lu BSS(%d-%d): Data <= kernel\n",
 		    jiffies, priv->bss_type, priv->bss_num);
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &priv->adapter->work_flags)) {
+	if (priv->adapter->surprise_removed) {
 		kfree_skb(skb);
 		priv->stats.tx_dropped++;
 		return 0;
@@ -943,33 +940,16 @@ mwifiex_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 int mwifiex_set_mac_address(struct mwifiex_private *priv,
-			    struct net_device *dev, bool external,
-			    u8 *new_mac)
+			    struct net_device *dev)
 {
 	int ret;
-	u64 mac_addr, old_mac_addr;
+	u64 mac_addr;
 
-	old_mac_addr = ether_addr_to_u64(priv->curr_addr);
+	if (priv->bss_type != MWIFIEX_BSS_TYPE_P2P)
+		goto done;
 
-	if (external) {
-		mac_addr = ether_addr_to_u64(new_mac);
-	} else {
-		/* Internal mac address change */
-		if (priv->bss_type == MWIFIEX_BSS_TYPE_ANY)
-			return -ENOTSUPP;
-
-		mac_addr = old_mac_addr;
-
-		if (priv->bss_type == MWIFIEX_BSS_TYPE_P2P)
-			mac_addr |= BIT_ULL(MWIFIEX_MAC_LOCAL_ADMIN_BIT);
-
-		if (mwifiex_get_intf_num(priv->adapter, priv->bss_type) > 1) {
-			/* Set mac address based on bss_type/bss_num */
-			mac_addr ^= BIT_ULL(priv->bss_type + 8);
-			mac_addr += priv->bss_num;
-		}
-	}
-
+	mac_addr = ether_addr_to_u64(priv->curr_addr);
+	mac_addr |= BIT_ULL(MWIFIEX_MAC_LOCAL_ADMIN_BIT);
 	u64_to_ether_addr(mac_addr, priv->curr_addr);
 
 	/* Send request to firmware */
@@ -977,13 +957,13 @@ int mwifiex_set_mac_address(struct mwifiex_private *priv,
 			       HostCmd_ACT_GEN_SET, 0, NULL, true);
 
 	if (ret) {
-		u64_to_ether_addr(old_mac_addr, priv->curr_addr);
 		mwifiex_dbg(priv->adapter, ERROR,
 			    "set mac address failed: ret=%d\n", ret);
 		return ret;
 	}
 
-	ether_addr_copy(dev->dev_addr, priv->curr_addr);
+done:
+	memcpy(dev->dev_addr, priv->curr_addr, ETH_ALEN);
 	return 0;
 }
 
@@ -995,7 +975,8 @@ mwifiex_ndo_set_mac_address(struct net_device *dev, void *addr)
 	struct mwifiex_private *priv = mwifiex_netdev_get_priv(dev);
 	struct sockaddr *hw_addr = addr;
 
-	return mwifiex_set_mac_address(priv, dev, true, hw_addr->sa_data);
+	memcpy(priv->curr_addr, hw_addr->sa_data, ETH_ALEN);
+	return mwifiex_set_mac_address(priv, dev);
 }
 
 /*
@@ -1282,8 +1263,7 @@ static struct net_device_stats *mwifiex_get_stats(struct net_device *dev)
 
 static u16
 mwifiex_netdev_select_wmm_queue(struct net_device *dev, struct sk_buff *skb,
-				struct net_device *sb_dev,
-				select_queue_fallback_t fallback)
+				void *accel_priv, select_queue_fallback_t fallback)
 {
 	skb->priority = cfg80211_classify8021d(skb, NULL);
 	return mwifiex_1d_to_wmm_queue[skb->priority];
@@ -1337,10 +1317,7 @@ void mwifiex_init_priv_params(struct mwifiex_private *priv,
 	priv->assocresp_idx = MWIFIEX_AUTO_IDX_MASK;
 	priv->gen_idx = MWIFIEX_AUTO_IDX_MASK;
 	priv->num_tx_timeout = 0;
-	if (is_valid_ether_addr(dev->dev_addr))
-		ether_addr_copy(priv->curr_addr, dev->dev_addr);
-	else
-		ether_addr_copy(priv->curr_addr, priv->adapter->perm_addr);
+	ether_addr_copy(priv->curr_addr, priv->adapter->perm_addr);
 
 	if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_STA ||
 	    GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP) {
@@ -1375,7 +1352,7 @@ static void mwifiex_rx_work_queue(struct work_struct *work)
 	struct mwifiex_adapter *adapter =
 		container_of(work, struct mwifiex_adapter, rx_work);
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags))
+	if (adapter->surprise_removed)
 		return;
 	mwifiex_process_rx(adapter);
 }
@@ -1391,7 +1368,7 @@ static void mwifiex_main_work_queue(struct work_struct *work)
 	struct mwifiex_adapter *adapter =
 		container_of(work, struct mwifiex_adapter, main_work);
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags))
+	if (adapter->surprise_removed)
 		return;
 	mwifiex_main_process(adapter);
 }
@@ -1408,7 +1385,7 @@ static void mwifiex_uninit_sw(struct mwifiex_adapter *adapter)
 	if (adapter->if_ops.disable_int)
 		adapter->if_ops.disable_int(adapter);
 
-	set_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = true;
 	mwifiex_terminate_workqueue(adapter);
 	adapter->int_status = 0;
 
@@ -1496,11 +1473,11 @@ mwifiex_reinit_sw(struct mwifiex_adapter *adapter)
 		adapter->if_ops.up_dev(adapter);
 
 	adapter->hw_status = MWIFIEX_HW_STATUS_INITIALIZING;
-	clear_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = false;
 	init_waitqueue_head(&adapter->init_wait_q);
-	clear_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
+	adapter->is_suspended = false;
 	adapter->hs_activated = false;
-	clear_bit(MWIFIEX_IS_CMD_TIMEDOUT, &adapter->work_flags);
+	adapter->is_cmd_timedout = 0;
 	init_waitqueue_head(&adapter->hs_activate_wait_q);
 	init_waitqueue_head(&adapter->cmd_wait_q.wait);
 	adapter->cmd_wait_q.status = 0;
@@ -1555,7 +1532,7 @@ err_init_fw:
 		adapter->if_ops.unregister_dev(adapter);
 
 err_kmalloc:
-	set_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = true;
 	mwifiex_terminate_workqueue(adapter);
 	if (adapter->hw_status == MWIFIEX_HW_STATUS_READY) {
 		mwifiex_dbg(adapter, ERROR,
@@ -1652,9 +1629,9 @@ mwifiex_add_card(void *card, struct completion *fw_done,
 	adapter->fw_done = fw_done;
 
 	adapter->hw_status = MWIFIEX_HW_STATUS_INITIALIZING;
-	clear_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = false;
 	init_waitqueue_head(&adapter->init_wait_q);
-	clear_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
+	adapter->is_suspended = false;
 	adapter->hs_activated = false;
 	init_waitqueue_head(&adapter->hs_activate_wait_q);
 	init_waitqueue_head(&adapter->cmd_wait_q.wait);
@@ -1702,7 +1679,7 @@ err_init_fw:
 	if (adapter->if_ops.unregister_dev)
 		adapter->if_ops.unregister_dev(adapter);
 err_registerdev:
-	set_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags);
+	adapter->surprise_removed = true;
 	mwifiex_terminate_workqueue(adapter);
 	if (adapter->hw_status == MWIFIEX_HW_STATUS_READY) {
 		pr_debug("info: %s: shutdown mwifiex\n", __func__);

@@ -2,7 +2,6 @@
 /*
 * Portions of this file
 * Copyright(c) 2016 Intel Deutschland GmbH
-* Copyright (C) 2018 Intel Corporation
 */
 
 #if !defined(__MAC80211_DRIVER_TRACE) || defined(TRACE_HEADER_MULTI_READ)
@@ -92,7 +91,7 @@
 				STA_ENTRY						\
 				__field(u16, tid)					\
 				__field(u16, ssn)					\
-				__field(u16, buf_size)					\
+				__field(u8, buf_size)					\
 				__field(bool, amsdu)					\
 				__field(u16, timeout)					\
 				__field(u16, action)
@@ -1052,10 +1051,10 @@ TRACE_EVENT(drv_ampdu_action,
 );
 
 TRACE_EVENT(drv_get_survey,
-	TP_PROTO(struct ieee80211_local *local, int _idx,
+	TP_PROTO(struct ieee80211_local *local, int idx,
 		 struct survey_info *survey),
 
-	TP_ARGS(local, _idx, survey),
+	TP_ARGS(local, idx, survey),
 
 	TP_STRUCT__entry(
 		LOCAL_ENTRY
@@ -1064,7 +1063,7 @@ TRACE_EVENT(drv_get_survey,
 
 	TP_fast_assign(
 		LOCAL_ASSIGN;
-		__entry->idx = _idx;
+		__entry->idx = idx;
 	),
 
 	TP_printk(
@@ -1414,29 +1413,11 @@ DEFINE_EVENT(release_evt, drv_allow_buffered_frames,
 	TP_ARGS(local, sta, tids, num_frames, reason, more_data)
 );
 
-TRACE_EVENT(drv_mgd_prepare_tx,
+DEFINE_EVENT(local_sdata_evt, drv_mgd_prepare_tx,
 	TP_PROTO(struct ieee80211_local *local,
-		 struct ieee80211_sub_if_data *sdata,
-		 u16 duration),
+		 struct ieee80211_sub_if_data *sdata),
 
-	TP_ARGS(local, sdata, duration),
-
-	TP_STRUCT__entry(
-		LOCAL_ENTRY
-		VIF_ENTRY
-		__field(u32, duration)
-	),
-
-	TP_fast_assign(
-		LOCAL_ASSIGN;
-		VIF_ASSIGN;
-		__entry->duration = duration;
-	),
-
-	TP_printk(
-		LOCAL_PR_FMT VIF_PR_FMT " duration: %u",
-		LOCAL_PR_ARG, VIF_PR_ARG, __entry->duration
-	)
+	TP_ARGS(local, sdata)
 );
 
 DEFINE_EVENT(local_sdata_evt, drv_mgd_protect_tdls_discover,
@@ -1880,18 +1861,6 @@ TRACE_EVENT(drv_del_nan_func,
 		", instance_id: %u",
 		LOCAL_PR_ARG, VIF_PR_ARG, __entry->instance_id
 	)
-);
-
-DEFINE_EVENT(local_sdata_evt, drv_start_pmsr,
-	TP_PROTO(struct ieee80211_local *local,
-		 struct ieee80211_sub_if_data *sdata),
-	TP_ARGS(local, sdata)
-);
-
-DEFINE_EVENT(local_sdata_evt, drv_abort_pmsr,
-	TP_PROTO(struct ieee80211_local *local,
-		 struct ieee80211_sub_if_data *sdata),
-	TP_ARGS(local, sdata)
 );
 
 /*
@@ -2609,29 +2578,6 @@ TRACE_EVENT(drv_wake_tx_queue,
 	TP_printk(
 		LOCAL_PR_FMT  VIF_PR_FMT  STA_PR_FMT " ac:%d tid:%d",
 		LOCAL_PR_ARG, VIF_PR_ARG, STA_PR_ARG, __entry->ac, __entry->tid
-	)
-);
-
-TRACE_EVENT(drv_get_ftm_responder_stats,
-	TP_PROTO(struct ieee80211_local *local,
-		 struct ieee80211_sub_if_data *sdata,
-		 struct cfg80211_ftm_responder_stats *ftm_stats),
-
-	TP_ARGS(local, sdata, ftm_stats),
-
-	TP_STRUCT__entry(
-		LOCAL_ENTRY
-		VIF_ENTRY
-	),
-
-	TP_fast_assign(
-		LOCAL_ASSIGN;
-		VIF_ASSIGN;
-	),
-
-	TP_printk(
-		LOCAL_PR_FMT VIF_PR_FMT,
-		LOCAL_PR_ARG, VIF_PR_ARG
 	)
 );
 

@@ -183,10 +183,10 @@ struct atiixp_modem;
  */
 
 struct atiixp_dma_desc {
-	__le32 addr;	/* DMA buffer address */
+	u32 addr;	/* DMA buffer address */
 	u16 status;	/* status bits */
 	u16 size;	/* size of the packet in dwords */
-	__le32 next;	/* address of the next packet descriptor */
+	u32 next;	/* address of the next packet descriptor */
 };
 
 /*

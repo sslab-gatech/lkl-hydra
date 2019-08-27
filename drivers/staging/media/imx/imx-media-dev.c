@@ -29,14 +29,47 @@
 
 static inline struct imx_media_dev *notifier2dev(struct v4l2_async_notifier *n)
 {
-	return container_of(n, struct imx_media_dev, notifier);
+	return container_of(n, struct imx_media_dev, subdev_notifier);
 }
 
 /*
- * Adds a subdev to the root notifier's async subdev list. If fwnode is
- * non-NULL, adds the async as a V4L2_ASYNC_MATCH_FWNODE match type,
- * otherwise as a V4L2_ASYNC_MATCH_DEVNAME match type using the dev_name
- * of the given platform_device. This is called during driver load when
+ * Find an asd by fwnode or device name. This is called during
+ * driver load to form the async subdev list and bind them.
+ */
+static struct v4l2_async_subdev *
+find_async_subdev(struct imx_media_dev *imxmd,
+		  struct fwnode_handle *fwnode,
+		  const char *devname)
+{
+	struct imx_media_async_subdev *imxasd;
+	struct v4l2_async_subdev *asd;
+
+	list_for_each_entry(imxasd, &imxmd->asd_list, list) {
+		asd = &imxasd->asd;
+		switch (asd->match_type) {
+		case V4L2_ASYNC_MATCH_FWNODE:
+			if (fwnode && asd->match.fwnode == fwnode)
+				return asd;
+			break;
+		case V4L2_ASYNC_MATCH_DEVNAME:
+			if (devname && !strcmp(asd->match.device_name,
+					       devname))
+				return asd;
+			break;
+		default:
+			break;
+		}
+	}
+
+	return NULL;
+}
+
+
+/*
+ * Adds a subdev to the async subdev list. If fwnode is non-NULL, adds
+ * the async as a V4L2_ASYNC_MATCH_FWNODE match type, otherwise as
+ * a V4L2_ASYNC_MATCH_DEVNAME match type using the dev_name of the
+ * given platform_device. This is called during driver load when
  * forming the async subdev list.
  */
 int imx_media_add_async_subdev(struct imx_media_dev *imxmd,
@@ -47,43 +80,47 @@ int imx_media_add_async_subdev(struct imx_media_dev *imxmd,
 	struct imx_media_async_subdev *imxasd;
 	struct v4l2_async_subdev *asd;
 	const char *devname = NULL;
-	int ret;
+	int ret = 0;
+
+	mutex_lock(&imxmd->mutex);
+
+	if (pdev)
+		devname = dev_name(&pdev->dev);
+
+	/* return -EEXIST if this asd already added */
+	if (find_async_subdev(imxmd, fwnode, devname)) {
+		dev_dbg(imxmd->md.dev, "%s: already added %s\n",
+			__func__, np ? np->name : devname);
+		ret = -EEXIST;
+		goto out;
+	}
+
+	imxasd = devm_kzalloc(imxmd->md.dev, sizeof(*imxasd), GFP_KERNEL);
+	if (!imxasd) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	asd = &imxasd->asd;
 
 	if (fwnode) {
-		asd = v4l2_async_notifier_add_fwnode_subdev(
-			&imxmd->notifier, fwnode, sizeof(*imxasd));
+		asd->match_type = V4L2_ASYNC_MATCH_FWNODE;
+		asd->match.fwnode = fwnode;
 	} else {
-		devname = dev_name(&pdev->dev);
-		asd = v4l2_async_notifier_add_devname_subdev(
-			&imxmd->notifier, devname, sizeof(*imxasd));
-	}
-
-	if (IS_ERR(asd)) {
-		ret = PTR_ERR(asd);
-		if (ret == -EEXIST) {
-			if (np)
-				dev_dbg(imxmd->md.dev, "%s: already added %pOFn\n",
-					__func__, np);
-			else
-				dev_dbg(imxmd->md.dev, "%s: already added %s\n",
-					__func__, devname);
-		}
-		return ret;
-	}
-
-	imxasd = to_imx_media_asd(asd);
-
-	if (devname)
+		asd->match_type = V4L2_ASYNC_MATCH_DEVNAME;
+		asd->match.device_name = devname;
 		imxasd->pdev = pdev;
+	}
 
-	if (np)
-		dev_dbg(imxmd->md.dev, "%s: added %pOFn, match type FWNODE\n",
-			__func__, np);
-	else
-		dev_dbg(imxmd->md.dev, "%s: added %s, match type DEVNAME\n",
-			__func__, devname);
+	list_add_tail(&imxasd->list, &imxmd->asd_list);
 
-	return 0;
+	imxmd->subdev_notifier.num_subdevs++;
+
+	dev_dbg(imxmd->md.dev, "%s: added %s, match type %s\n",
+		__func__, np ? np->name : devname, np ? "FWNODE" : "DEVNAME");
+
+out:
+	mutex_unlock(&imxmd->mutex);
+	return ret;
 }
 
 /*
@@ -138,7 +175,7 @@ out:
 }
 
 /*
- * Create the media links for all subdevs that registered.
+ * create the media links for all subdevs that registered async.
  * Called after all async subdevs have bound.
  */
 static int imx_media_create_links(struct v4l2_async_notifier *notifier)
@@ -147,7 +184,14 @@ static int imx_media_create_links(struct v4l2_async_notifier *notifier)
 	struct v4l2_subdev *sd;
 	int ret;
 
-	list_for_each_entry(sd, &imxmd->v4l2_dev.subdevs, list) {
+	/*
+	 * Only links are created between subdevices that are known
+	 * to the async notifier. If there are other non-async subdevices,
+	 * they were created internally by some subdevice (smiapp is one
+	 * example). In those cases it is expected the subdevice is
+	 * responsible for creating those internal links.
+	 */
+	list_for_each_entry(sd, &notifier->done, async_list) {
 		switch (sd->grp_id) {
 		case IMX_MEDIA_GRP_ID_VDIC:
 		case IMX_MEDIA_GRP_ID_IC_PRP:
@@ -167,10 +211,7 @@ static int imx_media_create_links(struct v4l2_async_notifier *notifier)
 				imx_media_create_csi_of_links(imxmd, sd);
 			break;
 		default:
-			/*
-			 * if this subdev has fwnode links, create media
-			 * links for them.
-			 */
+			/* this is an external fwnode subdev */
 			imx_media_create_of_links(imxmd, sd);
 			break;
 		}
@@ -262,9 +303,9 @@ static int imx_media_alloc_pad_vdev_lists(struct imx_media_dev *imxmd)
 
 	list_for_each_entry(sd, &imxmd->v4l2_dev.subdevs, list) {
 		entity = &sd->entity;
-		vdev_lists = devm_kcalloc(
+		vdev_lists = devm_kzalloc(
 			imxmd->md.dev,
-			entity->num_pads, sizeof(*vdev_lists),
+			entity->num_pads * sizeof(*vdev_lists),
 			GFP_KERNEL);
 		if (!vdev_lists)
 			return -ENOMEM;
@@ -350,7 +391,7 @@ static int imx_media_inherit_controls(struct imx_media_dev *imxmd,
 
 		ret = v4l2_ctrl_add_handler(vfd->ctrl_handler,
 					    sd->ctrl_handler,
-					    NULL, true);
+					    NULL);
 		if (ret)
 			return ret;
 	}
@@ -446,8 +487,10 @@ static int imx_media_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
+	struct imx_media_async_subdev *imxasd;
+	struct v4l2_async_subdev **subdevs;
 	struct imx_media_dev *imxmd;
-	int ret;
+	int num_subdevs, i, ret;
 
 	imxmd = devm_kzalloc(dev, sizeof(*imxmd), GFP_KERNEL);
 	if (!imxmd)
@@ -455,14 +498,14 @@ static int imx_media_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, imxmd);
 
-	strscpy(imxmd->md.model, "imx-media", sizeof(imxmd->md.model));
+	strlcpy(imxmd->md.model, "imx-media", sizeof(imxmd->md.model));
 	imxmd->md.ops = &imx_media_md_ops;
 	imxmd->md.dev = dev;
 
 	mutex_init(&imxmd->mutex);
 
 	imxmd->v4l2_dev.mdev = &imxmd->md;
-	strscpy(imxmd->v4l2_dev.name, "imx-media",
+	strlcpy(imxmd->v4l2_dev.name, "imx-media",
 		sizeof(imxmd->v4l2_dev.name));
 
 	media_device_init(&imxmd->md);
@@ -476,34 +519,47 @@ static int imx_media_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(imxmd->v4l2_dev.dev, imxmd);
 
+	INIT_LIST_HEAD(&imxmd->asd_list);
 	INIT_LIST_HEAD(&imxmd->vdev_list);
-
-	v4l2_async_notifier_init(&imxmd->notifier);
 
 	ret = imx_media_add_of_subdevs(imxmd, node);
 	if (ret) {
 		v4l2_err(&imxmd->v4l2_dev,
 			 "add_of_subdevs failed with %d\n", ret);
-		goto notifier_cleanup;
+		goto unreg_dev;
 	}
 
 	ret = imx_media_add_internal_subdevs(imxmd);
 	if (ret) {
 		v4l2_err(&imxmd->v4l2_dev,
 			 "add_internal_subdevs failed with %d\n", ret);
-		goto notifier_cleanup;
+		goto unreg_dev;
 	}
+
+	num_subdevs = imxmd->subdev_notifier.num_subdevs;
 
 	/* no subdevs? just bail */
-	if (list_empty(&imxmd->notifier.asd_list)) {
+	if (num_subdevs == 0) {
 		ret = -ENODEV;
-		goto notifier_cleanup;
+		goto unreg_dev;
 	}
 
+	subdevs = devm_kzalloc(imxmd->md.dev, sizeof(*subdevs) * num_subdevs,
+			       GFP_KERNEL);
+	if (!subdevs) {
+		ret = -ENOMEM;
+		goto unreg_dev;
+	}
+
+	i = 0;
+	list_for_each_entry(imxasd, &imxmd->asd_list, list)
+		subdevs[i++] = &imxasd->asd;
+
 	/* prepare the async subdev notifier and register it */
-	imxmd->notifier.ops = &imx_media_subdev_ops;
+	imxmd->subdev_notifier.subdevs = subdevs;
+	imxmd->subdev_notifier.ops = &imx_media_subdev_ops;
 	ret = v4l2_async_notifier_register(&imxmd->v4l2_dev,
-					   &imxmd->notifier);
+					   &imxmd->subdev_notifier);
 	if (ret) {
 		v4l2_err(&imxmd->v4l2_dev,
 			 "v4l2_async_notifier_register failed with %d\n", ret);
@@ -514,8 +570,7 @@ static int imx_media_probe(struct platform_device *pdev)
 
 del_int:
 	imx_media_remove_internal_subdevs(imxmd);
-notifier_cleanup:
-	v4l2_async_notifier_cleanup(&imxmd->notifier);
+unreg_dev:
 	v4l2_device_unregister(&imxmd->v4l2_dev);
 cleanup:
 	media_device_cleanup(&imxmd->md);
@@ -529,9 +584,8 @@ static int imx_media_remove(struct platform_device *pdev)
 
 	v4l2_info(&imxmd->v4l2_dev, "Removing imx-media\n");
 
-	v4l2_async_notifier_unregister(&imxmd->notifier);
+	v4l2_async_notifier_unregister(&imxmd->subdev_notifier);
 	imx_media_remove_internal_subdevs(imxmd);
-	v4l2_async_notifier_cleanup(&imxmd->notifier);
 	v4l2_device_unregister(&imxmd->v4l2_dev);
 	media_device_unregister(&imxmd->md);
 	media_device_cleanup(&imxmd->md);

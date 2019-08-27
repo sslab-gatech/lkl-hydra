@@ -202,13 +202,13 @@ static void update_sm_ah(struct mlx4_ib_dev *dev, u8 port_num, u16 lid, u8 sl)
 	rdma_ah_set_port_num(&ah_attr, port_num);
 
 	new_ah = rdma_create_ah(dev->send_agent[port_num - 1][0]->qp->pd,
-				&ah_attr, 0);
+				&ah_attr);
 	if (IS_ERR(new_ah))
 		return;
 
 	spin_lock_irqsave(&dev->sm_lock, flags);
 	if (dev->sm_ah[port_num - 1])
-		rdma_destroy_ah(dev->sm_ah[port_num - 1], 0);
+		rdma_destroy_ah(dev->sm_ah[port_num - 1]);
 	dev->sm_ah[port_num - 1] = new_ah;
 	spin_unlock_irqrestore(&dev->sm_lock, flags);
 }
@@ -506,7 +506,7 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 {
 	struct ib_sge list;
 	struct ib_ud_wr wr;
-	const struct ib_send_wr *bad_wr;
+	struct ib_send_wr *bad_wr;
 	struct mlx4_ib_demux_pv_ctx *tun_ctx;
 	struct mlx4_ib_demux_pv_qp *tun_qp;
 	struct mlx4_rcv_tunnel_mad *tun_mad;
@@ -567,7 +567,7 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 			return -EINVAL;
 		rdma_ah_set_grh(&attr, &dgid, 0, 0, 0, 0);
 	}
-	ah = rdma_create_ah(tun_ctx->pd, &attr, 0);
+	ah = rdma_create_ah(tun_ctx->pd, &attr);
 	if (IS_ERR(ah))
 		return -ENOMEM;
 
@@ -584,7 +584,7 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	tun_mad = (struct mlx4_rcv_tunnel_mad *) (tun_qp->tx_ring[tun_tx_ix].buf.addr);
 	if (tun_qp->tx_ring[tun_tx_ix].ah)
-		rdma_destroy_ah(tun_qp->tx_ring[tun_tx_ix].ah, 0);
+		rdma_destroy_ah(tun_qp->tx_ring[tun_tx_ix].ah);
 	tun_qp->tx_ring[tun_tx_ix].ah = ah;
 	ib_dma_sync_single_for_cpu(&dev->ib_dev,
 				   tun_qp->tx_ring[tun_tx_ix].buf.map,
@@ -657,7 +657,7 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 	spin_unlock(&tun_qp->tx_lock);
 	tun_qp->tx_ring[tun_tx_ix].ah = NULL;
 end:
-	rdma_destroy_ah(ah, 0);
+	rdma_destroy_ah(ah);
 	return ret;
 }
 
@@ -807,17 +807,15 @@ static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 	int err;
 	struct ib_port_attr pattr;
 
-	if (in_wc && in_wc->qp) {
-		pr_debug("received MAD: port:%d slid:%d sqpn:%d "
-			 "dlid_bits:%d dqpn:%d wc_flags:0x%x tid:%016llx cls:%x mtd:%x atr:%x\n",
-			 port_num,
-			 in_wc->slid, in_wc->src_qp,
-			 in_wc->dlid_path_bits,
-			 in_wc->qp->qp_num,
-			 in_wc->wc_flags,
-			 be64_to_cpu(in_mad->mad_hdr.tid),
-			 in_mad->mad_hdr.mgmt_class, in_mad->mad_hdr.method,
-			 be16_to_cpu(in_mad->mad_hdr.attr_id));
+	if (in_wc && in_wc->qp->qp_num) {
+		pr_debug("received MAD: slid:%d sqpn:%d "
+			"dlid_bits:%d dqpn:%d wc_flags:0x%x, cls %x, mtd %x, atr %x\n",
+			in_wc->slid, in_wc->src_qp,
+			in_wc->dlid_path_bits,
+			in_wc->qp->qp_num,
+			in_wc->wc_flags,
+			in_mad->mad_hdr.mgmt_class, in_mad->mad_hdr.method,
+			be16_to_cpu(in_mad->mad_hdr.attr_id));
 		if (in_wc->wc_flags & IB_WC_GRH) {
 			pr_debug("sgid_hi:0x%016llx sgid_lo:0x%016llx\n",
 				 be64_to_cpu(in_grh->sgid.global.subnet_prefix),
@@ -1024,7 +1022,7 @@ static void send_handler(struct ib_mad_agent *agent,
 			 struct ib_mad_send_wc *mad_send_wc)
 {
 	if (mad_send_wc->send_buf->context[0])
-		rdma_destroy_ah(mad_send_wc->send_buf->context[0], 0);
+		rdma_destroy_ah(mad_send_wc->send_buf->context[0]);
 	ib_free_send_mad(mad_send_wc->send_buf);
 }
 
@@ -1079,7 +1077,7 @@ void mlx4_ib_mad_cleanup(struct mlx4_ib_dev *dev)
 		}
 
 		if (dev->sm_ah[p])
-			rdma_destroy_ah(dev->sm_ah[p], 0);
+			rdma_destroy_ah(dev->sm_ah[p]);
 	}
 }
 
@@ -1312,8 +1310,7 @@ static int mlx4_ib_post_pv_qp_buf(struct mlx4_ib_demux_pv_ctx *ctx,
 				  int index)
 {
 	struct ib_sge sg_list;
-	struct ib_recv_wr recv_wr;
-	const struct ib_recv_wr *bad_recv_wr;
+	struct ib_recv_wr recv_wr, *bad_recv_wr;
 	int size;
 
 	size = (tun_qp->qp->qp_type == IB_QPT_UD) ?
@@ -1364,16 +1361,19 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 {
 	struct ib_sge list;
 	struct ib_ud_wr wr;
-	const struct ib_send_wr *bad_wr;
+	struct ib_send_wr *bad_wr;
 	struct mlx4_ib_demux_pv_ctx *sqp_ctx;
 	struct mlx4_ib_demux_pv_qp *sqp;
 	struct mlx4_mad_snd_buf *sqp_mad;
 	struct ib_ah *ah;
 	struct ib_qp *send_qp = NULL;
+	struct ib_global_route *grh;
 	unsigned wire_tx_ix = 0;
 	int ret = 0;
 	u16 wire_pkey_ix;
 	int src_qpnum;
+	u8 sgid_index;
+
 
 	sqp_ctx = dev->sriov.sqps[port-1];
 
@@ -1394,11 +1394,16 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 	send_qp = sqp->qp;
 
 	/* create ah */
-	ah = mlx4_ib_create_ah_slave(sqp_ctx->pd, attr,
-				     rdma_ah_retrieve_grh(attr)->sgid_index,
-				     s_mac, vlan_id);
+	grh = rdma_ah_retrieve_grh(attr);
+	sgid_index = grh->sgid_index;
+	grh->sgid_index = 0;
+	ah = rdma_create_ah(sqp_ctx->pd, attr);
 	if (IS_ERR(ah))
 		return -ENOMEM;
+	grh->sgid_index = sgid_index;
+	to_mah(ah)->av.ib.gid_index = sgid_index;
+	/* get rid of force-loopback bit */
+	to_mah(ah)->av.ib.port_pd &= cpu_to_be32(0x7FFFFFFF);
 	spin_lock(&sqp->tx_lock);
 	if (sqp->tx_ix_head - sqp->tx_ix_tail >=
 	    (MLX4_NUM_TUNNEL_BUFS - 1))
@@ -1411,7 +1416,7 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 	sqp_mad = (struct mlx4_mad_snd_buf *) (sqp->tx_ring[wire_tx_ix].buf.addr);
 	if (sqp->tx_ring[wire_tx_ix].ah)
-		mlx4_ib_destroy_ah(sqp->tx_ring[wire_tx_ix].ah, 0);
+		rdma_destroy_ah(sqp->tx_ring[wire_tx_ix].ah);
 	sqp->tx_ring[wire_tx_ix].ah = ah;
 	ib_dma_sync_single_for_cpu(&dev->ib_dev,
 				   sqp->tx_ring[wire_tx_ix].buf.map,
@@ -1440,6 +1445,12 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 	wr.wr.num_sge = 1;
 	wr.wr.opcode = IB_WR_SEND;
 	wr.wr.send_flags = IB_SEND_SIGNALED;
+	if (s_mac)
+		memcpy(to_mah(ah)->av.eth.s_mac, s_mac, 6);
+	if (vlan_id < 0x1000)
+		vlan_id |= (rdma_ah_get_sl(attr) & 7) << 13;
+	to_mah(ah)->av.eth.vlan = cpu_to_be16(vlan_id);
+
 
 	ret = ib_post_send(send_qp, &wr.wr, &bad_wr);
 	if (!ret)
@@ -1450,7 +1461,7 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 	spin_unlock(&sqp->tx_lock);
 	sqp->tx_ring[wire_tx_ix].ah = NULL;
 out:
-	mlx4_ib_destroy_ah(ah, 0);
+	rdma_destroy_ah(ah);
 	return ret;
 }
 
@@ -1602,8 +1613,7 @@ static int mlx4_ib_alloc_pv_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 
 	tun_qp = &ctx->qp[qp_type];
 
-	tun_qp->ring = kcalloc(MLX4_NUM_TUNNEL_BUFS,
-			       sizeof(struct mlx4_ib_buf),
+	tun_qp->ring = kzalloc(sizeof (struct mlx4_ib_buf) * MLX4_NUM_TUNNEL_BUFS,
 			       GFP_KERNEL);
 	if (!tun_qp->ring)
 		return -ENOMEM;
@@ -1716,7 +1726,7 @@ static void mlx4_ib_free_pv_qp_bufs(struct mlx4_ib_demux_pv_ctx *ctx,
 				    tx_buf_size, DMA_TO_DEVICE);
 		kfree(tun_qp->tx_ring[i].buf.addr);
 		if (tun_qp->tx_ring[i].ah)
-			rdma_destroy_ah(tun_qp->tx_ring[i].ah, 0);
+			rdma_destroy_ah(tun_qp->tx_ring[i].ah);
 	}
 	kfree(tun_qp->tx_ring);
 	kfree(tun_qp->ring);
@@ -1749,7 +1759,7 @@ static void mlx4_ib_tunnel_comp_worker(struct work_struct *work)
 					 "wrid=0x%llx, status=0x%x\n",
 					 wc.wr_id, wc.status);
 				rdma_destroy_ah(tun_qp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
 				tun_qp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&tun_qp->tx_lock);
@@ -1766,7 +1776,7 @@ static void mlx4_ib_tunnel_comp_worker(struct work_struct *work)
 				 ctx->slave, wc.status, wc.wr_id);
 			if (!MLX4_TUN_IS_RECV(wc.wr_id)) {
 				rdma_destroy_ah(tun_qp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
 				tun_qp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&tun_qp->tx_lock);
@@ -1902,8 +1912,8 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 		if (wc.status == IB_WC_SUCCESS) {
 			switch (wc.opcode) {
 			case IB_WC_SEND:
-				mlx4_ib_destroy_ah(sqp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
+				rdma_destroy_ah(sqp->tx_ring[wc.wr_id &
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
 				sqp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&sqp->tx_lock);
@@ -1924,6 +1934,7 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 					       "buf:%lld\n", wc.wr_id);
 				break;
 			default:
+				BUG_ON(1);
 				break;
 			}
 		} else  {
@@ -1931,8 +1942,8 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 				 " status = %d, wrid = 0x%llx\n",
 				 ctx->slave, wc.status, wc.wr_id);
 			if (!MLX4_TUN_IS_RECV(wc.wr_id)) {
-				mlx4_ib_destroy_ah(sqp->tx_ring[wc.wr_id &
-					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah, 0);
+				rdma_destroy_ah(sqp->tx_ring[wc.wr_id &
+					      (MLX4_NUM_TUNNEL_BUFS - 1)].ah);
 				sqp->tx_ring[wc.wr_id & (MLX4_NUM_TUNNEL_BUFS - 1)].ah
 					= NULL;
 				spin_lock(&sqp->tx_lock);

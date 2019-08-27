@@ -1,9 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0+
- *
+/*
  * enumerations for HopeRf rf69 radio module
  *
  * Copyright (C) 2016 Wolf-Entwicklungen
  *	Marcus Wolf <linux@wolf-entwicklungen.de>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #ifndef RF69_ENUM_H
@@ -32,7 +41,7 @@ enum mod_shaping {
 	SHAPING_2BR
 };
 
-enum pa_ramp {
+enum paRamp {
 	ramp3400,
 	ramp2000,
 	ramp1000,
@@ -51,12 +60,12 @@ enum pa_ramp {
 	ramp10
 };
 
-enum antenna_impedance {
-	fifty_ohm,
-	two_hundred_ohm
+enum antennaImpedance {
+	fiftyOhm,
+	twohundretOhm
 };
 
-enum lna_gain {
+enum lnaGain {
 	automatic,
 	max,
 	max_minus_6,
@@ -73,7 +82,7 @@ enum mantisse {
 	mantisse24
 };
 
-enum threshold_decrement {
+enum thresholdDecrement {
 	dec_every8th,
 	dec_every4th,
 	dec_every2nd,
@@ -85,50 +94,50 @@ enum threshold_decrement {
 };
 
 enum flag {
-	mode_switch_completed,
-	ready_to_receive,
-	ready_to_send,
-	pll_locked,
-	rssi_exceeded_threshold,
+	modeSwitchCompleted,
+	readyToReceive,
+	readyToSend,
+	pllLocked,
+	rssiExceededThreshold,
 	timeout,
 	automode,
-	sync_address_match,
+	syncAddressMatch,
 	fifo_full,
 //	fifo_not_empty, collision with next enum; replaced by following enum...
 	fifo_empty,
 	fifo_level_below_threshold,
 	fifo_overrun,
-	packet_sent,
+	packetSent,
 	payload_ready,
-	crc_ok,
-	battery_low
+	crcOk,
+	batteryLow
 };
 
 enum fifo_fill_condition {
-	after_sync_interrupt,
+	afterSyncInterrupt,
 	always
 };
 
-enum packet_format {
-	packet_length_fix,
-	packet_length_var
+enum packetFormat {
+	packetLengthFix,
+	packetLengthVar
 };
 
-enum tx_start_condition {
+enum txStartCondition {
 	fifo_level,
 	fifo_not_empty
 };
 
-enum address_filtering {
-	filtering_off,
-	node_address,
-	node_or_broadcast_address
+enum addressFiltering {
+	filteringOff,
+	nodeAddress,
+	nodeOrBroadcastAddress
 };
 
 enum dagc {
-	normal_mode,
+	normalMode,
 	improve,
-	improve_for_low_modulation_index
+	improve4LowModulationIndex
 };
 
 #endif

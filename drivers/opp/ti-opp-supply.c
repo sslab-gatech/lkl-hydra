@@ -122,8 +122,8 @@ static int _store_optimized_voltages(struct device *dev,
 		goto out;
 	}
 
-	table = kcalloc(data->num_vdd_table, sizeof(*data->vdd_table),
-			GFP_KERNEL);
+	table = kzalloc(sizeof(*data->vdd_table) *
+				  data->num_vdd_table, GFP_KERNEL);
 	if (!table) {
 		ret = -ENOMEM;
 		goto out;
@@ -288,10 +288,7 @@ static int ti_opp_supply_set_opp(struct dev_pm_set_opp_data *data)
 	int ret;
 
 	vdd_uv = _get_optimal_vdd_voltage(dev, &opp_data,
-					  new_supply_vdd->u_volt);
-
-	if (new_supply_vdd->u_volt_min < vdd_uv)
-		new_supply_vdd->u_volt_min = vdd_uv;
+					  new_supply_vbb->u_volt);
 
 	/* Scaling up? Scale voltage before frequency */
 	if (freq > old_freq) {
@@ -417,6 +414,7 @@ static struct platform_driver ti_opp_supply_driver = {
 	.probe = ti_opp_supply_probe,
 	.driver = {
 		   .name = "ti_opp_supply",
+		   .owner = THIS_MODULE,
 		   .of_match_table = of_match_ptr(ti_opp_supply_of_match),
 		   },
 };

@@ -1,6 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015-2018 Etnaviv Project
+ * Copyright (C) 2015 Etnaviv Project
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/devcoredump.h>
@@ -9,12 +20,8 @@
 #include "etnaviv_gem.h"
 #include "etnaviv_gpu.h"
 #include "etnaviv_mmu.h"
-#include "etnaviv_sched.h"
 #include "state.xml.h"
 #include "state_hi.xml.h"
-
-static bool etnaviv_dump_core = true;
-module_param_named(dump_core, etnaviv_dump_core, bool, 0600);
 
 struct core_dump_iterator {
 	void *start;
@@ -114,16 +121,9 @@ void etnaviv_core_dump(struct etnaviv_gpu *gpu)
 	struct etnaviv_vram_mapping *vram;
 	struct etnaviv_gem_object *obj;
 	struct etnaviv_gem_submit *submit;
-	struct drm_sched_job *s_job;
 	unsigned int n_obj, n_bomap_pages;
 	size_t file_size, mmu_size;
 	__le64 *bomap, *bomap_start;
-	unsigned long flags;
-
-	/* Only catch the first event, or when manually re-armed */
-	if (!etnaviv_dump_core)
-		return;
-	etnaviv_dump_core = false;
 
 	mmu_size = etnaviv_iommu_dump_size(gpu->mmu);
 
@@ -135,13 +135,10 @@ void etnaviv_core_dump(struct etnaviv_gpu *gpu)
 		    mmu_size + gpu->buffer.size;
 
 	/* Add in the active command buffers */
-	spin_lock_irqsave(&gpu->sched.job_list_lock, flags);
-	list_for_each_entry(s_job, &gpu->sched.ring_mirror_list, node) {
-		submit = to_etnaviv_submit(s_job);
+	list_for_each_entry(submit, &gpu->active_submit_list, node) {
 		file_size += submit->cmdbuf.size;
 		n_obj++;
 	}
-	spin_unlock_irqrestore(&gpu->sched.job_list_lock, flags);
 
 	/* Add in the active buffer objects */
 	list_for_each_entry(vram, &gpu->mmu->mappings, mmu_node) {
@@ -183,14 +180,10 @@ void etnaviv_core_dump(struct etnaviv_gpu *gpu)
 			      gpu->buffer.size,
 			      etnaviv_cmdbuf_get_va(&gpu->buffer));
 
-	spin_lock_irqsave(&gpu->sched.job_list_lock, flags);
-	list_for_each_entry(s_job, &gpu->sched.ring_mirror_list, node) {
-		submit = to_etnaviv_submit(s_job);
+	list_for_each_entry(submit, &gpu->active_submit_list, node)
 		etnaviv_core_dump_mem(&iter, ETDUMP_BUF_CMD,
 				      submit->cmdbuf.vaddr, submit->cmdbuf.size,
 				      etnaviv_cmdbuf_get_va(&submit->cmdbuf));
-	}
-	spin_unlock_irqrestore(&gpu->sched.job_list_lock, flags);
 
 	/* Reserve space for the bomap */
 	if (n_bomap_pages) {

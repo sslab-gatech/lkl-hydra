@@ -145,7 +145,7 @@ static int ds3232_read_time(struct device *dev, struct rtc_time *time)
 
 	time->tm_year = bcd2bin(year) + add_century;
 
-	return 0;
+	return rtc_valid_tm(time);
 }
 
 static int ds3232_set_time(struct device *dev, struct rtc_time *time)

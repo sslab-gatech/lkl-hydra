@@ -30,6 +30,14 @@ static int cortina_read_reg(struct phy_device *phydev, u16 regnum)
 			    MII_ADDR_C45 | regnum);
 }
 
+static int cortina_config_aneg(struct phy_device *phydev)
+{
+	phydev->supported = SUPPORTED_10000baseT_Full;
+	phydev->advertising = SUPPORTED_10000baseT_Full;
+
+	return 0;
+}
+
 static int cortina_read_status(struct phy_device *phydev)
 {
 	int gpio_int_status, ret = 0;
@@ -51,6 +59,11 @@ static int cortina_read_status(struct phy_device *phydev)
 
 err:
 	return ret;
+}
+
+static int cortina_soft_reset(struct phy_device *phydev)
+{
+	return 0;
 }
 
 static int cortina_probe(struct phy_device *phydev)
@@ -88,11 +101,9 @@ static struct phy_driver cortina_driver[] = {
 	.phy_id		= PHY_ID_CS4340,
 	.phy_id_mask	= 0xffffffff,
 	.name		= "Cortina CS4340",
-	.features       = PHY_10GBIT_FEATURES,
-	.config_init	= gen10g_config_init,
-	.config_aneg	= gen10g_config_aneg,
+	.config_aneg	= cortina_config_aneg,
 	.read_status	= cortina_read_status,
-	.soft_reset	= gen10g_no_soft_reset,
+	.soft_reset	= cortina_soft_reset,
 	.probe		= cortina_probe,
 },
 };

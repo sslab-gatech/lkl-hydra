@@ -13,7 +13,6 @@
 
 #include <linux/fs.h>		/* not really needed, later.. */
 #include <linux/list.h>
-#include <scsi/scsi_common.h>
 #include <uapi/linux/cdrom.h>
 
 struct packet_command
@@ -22,7 +21,7 @@ struct packet_command
 	unsigned char 		*buffer;
 	unsigned int 		buflen;
 	int			stat;
-	struct scsi_sense_hdr	*sshdr;
+	struct request_sense	*sense;
 	unsigned char		data_direction;
 	int			quiet;
 	int			timeout;

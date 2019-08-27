@@ -8,11 +8,9 @@
 #include <linux/mount.h>
 #include <linux/sched.h>
 #include <linux/sched/user.h>
-#include <linux/sched/signal.h>
 #include <linux/types.h>
 #include <linux/wait.h>
 #include <linux/audit.h>
-#include <linux/sched/mm.h>
 
 #include "fanotify.h"
 
@@ -25,7 +23,7 @@ static bool should_merge(struct fsnotify_event *old_fsn,
 	old = FANOTIFY_E(old_fsn);
 	new = FANOTIFY_E(new_fsn);
 
-	if (old_fsn->inode == new_fsn->inode && old->pid == new->pid &&
+	if (old_fsn->inode == new_fsn->inode && old->tgid == new->tgid &&
 	    old->path.mnt == new->path.mnt &&
 	    old->path.dentry == new->path.dentry)
 		return true;
@@ -89,95 +87,80 @@ static int fanotify_get_response(struct fsnotify_group *group,
 	return ret;
 }
 
-/*
- * This function returns a mask for an event that only contains the flags
- * that have been specifically requested by the user. Flags that may have
- * been included within the event mask, but have not been explicitly
- * requested by the user, will not be present in the returned mask.
- */
-static u32 fanotify_group_event_mask(struct fsnotify_iter_info *iter_info,
-				       u32 event_mask, const void *data,
-				       int data_type)
+static bool fanotify_should_send_event(struct fsnotify_mark *inode_mark,
+				       struct fsnotify_mark *vfsmnt_mark,
+				       u32 event_mask,
+				       const void *data, int data_type)
 {
-	__u32 marks_mask = 0, marks_ignored_mask = 0;
+	__u32 marks_mask, marks_ignored_mask;
 	const struct path *path = data;
-	struct fsnotify_mark *mark;
-	int type;
 
-	pr_debug("%s: report_mask=%x mask=%x data=%p data_type=%d\n",
-		 __func__, iter_info->report_mask, event_mask, data, data_type);
+	pr_debug("%s: inode_mark=%p vfsmnt_mark=%p mask=%x data=%p"
+		 " data_type=%d\n", __func__, inode_mark, vfsmnt_mark,
+		 event_mask, data, data_type);
 
-	/* If we don't have enough info to send an event to userspace say no */
+	/* if we don't have enough info to send an event to userspace say no */
 	if (data_type != FSNOTIFY_EVENT_PATH)
-		return 0;
+		return false;
 
-	/* Sorry, fanotify only gives a damn about files and dirs */
+	/* sorry, fanotify only gives a damn about files and dirs */
 	if (!d_is_reg(path->dentry) &&
 	    !d_can_lookup(path->dentry))
-		return 0;
+		return false;
 
-	fsnotify_foreach_obj_type(type) {
-		if (!fsnotify_iter_should_report_type(iter_info, type))
-			continue;
-		mark = iter_info->marks[type];
+	if (inode_mark && vfsmnt_mark) {
+		marks_mask = (vfsmnt_mark->mask | inode_mark->mask);
+		marks_ignored_mask = (vfsmnt_mark->ignored_mask | inode_mark->ignored_mask);
+	} else if (inode_mark) {
 		/*
-		 * If the event is for a child and this mark doesn't care about
-		 * events on a child, don't send it!
+		 * if the event is for a child and this inode doesn't care about
+		 * events on the child, don't send it!
 		 */
-		if (event_mask & FS_EVENT_ON_CHILD &&
-		    (type != FSNOTIFY_OBJ_TYPE_INODE ||
-		     !(mark->mask & FS_EVENT_ON_CHILD)))
-			continue;
-
-		marks_mask |= mark->mask;
-		marks_ignored_mask |= mark->ignored_mask;
+		if ((event_mask & FS_EVENT_ON_CHILD) &&
+		    !(inode_mark->mask & FS_EVENT_ON_CHILD))
+			return false;
+		marks_mask = inode_mark->mask;
+		marks_ignored_mask = inode_mark->ignored_mask;
+	} else if (vfsmnt_mark) {
+		marks_mask = vfsmnt_mark->mask;
+		marks_ignored_mask = vfsmnt_mark->ignored_mask;
+	} else {
+		BUG();
 	}
 
 	if (d_is_dir(path->dentry) &&
 	    !(marks_mask & FS_ISDIR & ~marks_ignored_mask))
-		return 0;
+		return false;
 
-	return event_mask & FANOTIFY_OUTGOING_EVENTS & marks_mask &
-		~marks_ignored_mask;
+	if (event_mask & FAN_ALL_OUTGOING_EVENTS & marks_mask &
+				 ~marks_ignored_mask)
+		return true;
+
+	return false;
 }
 
-struct fanotify_event_info *fanotify_alloc_event(struct fsnotify_group *group,
-						 struct inode *inode, u32 mask,
+struct fanotify_event_info *fanotify_alloc_event(struct inode *inode, u32 mask,
 						 const struct path *path)
 {
-	struct fanotify_event_info *event = NULL;
-	gfp_t gfp = GFP_KERNEL_ACCOUNT;
-
-	/*
-	 * For queues with unlimited length lost events are not expected and
-	 * can possibly have security implications. Avoid losing events when
-	 * memory is short.
-	 */
-	if (group->max_events == UINT_MAX)
-		gfp |= __GFP_NOFAIL;
-
-	/* Whoever is interested in the event, pays for the allocation. */
-	memalloc_use_memcg(group->memcg);
+	struct fanotify_event_info *event;
 
 	if (fanotify_is_perm_event(mask)) {
 		struct fanotify_perm_event_info *pevent;
 
-		pevent = kmem_cache_alloc(fanotify_perm_event_cachep, gfp);
+		pevent = kmem_cache_alloc(fanotify_perm_event_cachep,
+					  GFP_KERNEL);
 		if (!pevent)
-			goto out;
+			return NULL;
 		event = &pevent->fae;
 		pevent->response = 0;
 		goto init;
 	}
-	event = kmem_cache_alloc(fanotify_event_cachep, gfp);
+	event = kmem_cache_alloc(fanotify_event_cachep, GFP_KERNEL);
 	if (!event)
-		goto out;
+		return NULL;
 init: __maybe_unused
 	fsnotify_init_event(&event->fse, inode, mask);
-	if (FAN_GROUP_FLAG(group, FAN_REPORT_TID))
-		event->pid = get_pid(task_pid(current));
-	else
-		event->pid = get_pid(task_tgid(current));
+	event->tgid = get_pid(task_tgid(current));
 	if (path) {
 		event->path = *path;
 		path_get(&event->path);
@@ -185,13 +168,13 @@ init: __maybe_unused
 		event->path.mnt = NULL;
 		event->path.dentry = NULL;
 	}
-out:
-	memalloc_unuse_memcg();
 	return event;
 }
 
 static int fanotify_handle_event(struct fsnotify_group *group,
 				 struct inode *inode,
+				 struct fsnotify_mark *inode_mark,
+				 struct fsnotify_mark *fanotify_mark,
 				 u32 mask, const void *data, int data_type,
 				 const unsigned char *file_name, u32 cookie,
 				 struct fsnotify_iter_info *iter_info)
@@ -210,13 +193,9 @@ static int fanotify_handle_event(struct fsnotify_group *group,
 	BUILD_BUG_ON(FAN_OPEN_PERM != FS_OPEN_PERM);
 	BUILD_BUG_ON(FAN_ACCESS_PERM != FS_ACCESS_PERM);
 	BUILD_BUG_ON(FAN_ONDIR != FS_ISDIR);
-	BUILD_BUG_ON(FAN_OPEN_EXEC != FS_OPEN_EXEC);
-	BUILD_BUG_ON(FAN_OPEN_EXEC_PERM != FS_OPEN_EXEC_PERM);
 
-	BUILD_BUG_ON(HWEIGHT32(ALL_FANOTIFY_EVENT_BITS) != 12);
-
-	mask = fanotify_group_event_mask(iter_info, mask, data, data_type);
-	if (!mask)
+	if (!fanotify_should_send_event(inode_mark, fanotify_mark, mask, data,
+					data_type))
 		return 0;
 
 	pr_debug("%s: group=%p inode=%p mask=%x\n", __func__, group, inode,
@@ -231,23 +210,16 @@ static int fanotify_handle_event(struct fsnotify_group *group,
 			return 0;
 	}
 
-	event = fanotify_alloc_event(group, inode, mask, data);
+	event = fanotify_alloc_event(inode, mask, data);
 	ret = -ENOMEM;
-	if (unlikely(!event)) {
-		/*
-		 * We don't queue overflow events for permission events as
-		 * there the access is denied and so no event is in fact lost.
-		 */
-		if (!fanotify_is_perm_event(mask))
-			fsnotify_queue_overflow(group);
+	if (unlikely(!event))
 		goto finish;
-	}
 
 	fsn_event = &event->fse;
 	ret = fsnotify_add_event(group, fsn_event, fanotify_merge);
 	if (ret) {
 		/* Permission events shouldn't be merged */
-		BUG_ON(ret == 1 && mask & FANOTIFY_PERM_EVENTS);
+		BUG_ON(ret == 1 && mask & FAN_ALL_PERM_EVENTS);
 		/* Our event wasn't used in the end. Free it. */
 		fsnotify_destroy_event(group, fsn_event);
 
@@ -279,7 +251,7 @@ static void fanotify_free_event(struct fsnotify_event *fsn_event)
 
 	event = FANOTIFY_E(fsn_event);
 	path_put(&event->path);
-	put_pid(event->pid);
+	put_pid(event->tgid);
 	if (fanotify_is_perm_event(fsn_event->mask)) {
 		kmem_cache_free(fanotify_perm_event_cachep,
 				FANOTIFY_PE(fsn_event));

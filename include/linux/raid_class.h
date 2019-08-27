@@ -38,7 +38,6 @@ enum raid_level {
 	RAID_LEVEL_5,
 	RAID_LEVEL_50,
 	RAID_LEVEL_6,
-	RAID_LEVEL_JBOD,
 };
 
 struct raid_data {

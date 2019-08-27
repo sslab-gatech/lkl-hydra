@@ -1,7 +1,38 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-/* Copyright (C) 2017-2018 Netronome Systems, Inc. */
+/*
+ * Copyright (C) 2017 Netronome Systems, Inc.
+ *
+ * This software is dual licensed under the GNU General License Version 2,
+ * June 1991 as shown in the file COPYING in the top-level directory of this
+ * source tree or the BSD 2-Clause License provided below.  You have the
+ * option to license this software under the complete terms of either license.
+ *
+ * The BSD 2-Clause License:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      1. Redistributions of source code must retain the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer.
+ *
+ *      2. Redistributions in binary form must reproduce the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer in the documentation and/or other materials
+ *         provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 
-#define _GNU_SOURCE
+/* Author: Jakub Kicinski <kubakici@wp.pl> */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -10,40 +41,33 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <net/if.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#include <linux/err.h>
-
 #include <bpf.h>
-#include <btf.h>
 #include <libbpf.h>
 
-#include "cfg.h"
 #include "main.h"
-#include "xlated_dumper.h"
+#include "disasm.h"
 
-static const char * const attach_type_strings[] = {
-	[BPF_SK_SKB_STREAM_PARSER] = "stream_parser",
-	[BPF_SK_SKB_STREAM_VERDICT] = "stream_verdict",
-	[BPF_SK_MSG_VERDICT] = "msg_verdict",
-	[BPF_FLOW_DISSECTOR] = "flow_dissector",
-	[__MAX_BPF_ATTACH_TYPE] = NULL,
+static const char * const prog_type_name[] = {
+	[BPF_PROG_TYPE_UNSPEC]		= "unspec",
+	[BPF_PROG_TYPE_SOCKET_FILTER]	= "socket_filter",
+	[BPF_PROG_TYPE_KPROBE]		= "kprobe",
+	[BPF_PROG_TYPE_SCHED_CLS]	= "sched_cls",
+	[BPF_PROG_TYPE_SCHED_ACT]	= "sched_act",
+	[BPF_PROG_TYPE_TRACEPOINT]	= "tracepoint",
+	[BPF_PROG_TYPE_XDP]		= "xdp",
+	[BPF_PROG_TYPE_PERF_EVENT]	= "perf_event",
+	[BPF_PROG_TYPE_CGROUP_SKB]	= "cgroup_skb",
+	[BPF_PROG_TYPE_CGROUP_SOCK]	= "cgroup_sock",
+	[BPF_PROG_TYPE_LWT_IN]		= "lwt_in",
+	[BPF_PROG_TYPE_LWT_OUT]		= "lwt_out",
+	[BPF_PROG_TYPE_LWT_XMIT]	= "lwt_xmit",
+	[BPF_PROG_TYPE_SOCK_OPS]	= "sock_ops",
+	[BPF_PROG_TYPE_SK_SKB]		= "sk_skb",
+	[BPF_PROG_TYPE_CGROUP_DEVICE]	= "cgroup_device",
 };
-
-static enum bpf_attach_type parse_attach_type(const char *str)
-{
-	enum bpf_attach_type type;
-
-	for (type = 0; type < __MAX_BPF_ATTACH_TYPE; type++) {
-		if (attach_type_strings[type] &&
-		    is_prefix(str, attach_type_strings[type]))
-			return type;
-	}
-
-	return __MAX_BPF_ATTACH_TYPE;
-}
 
 static void print_boot_time(__u64 nsecs, char *buf, unsigned int size)
 {
@@ -61,31 +85,25 @@ static void print_boot_time(__u64 nsecs, char *buf, unsigned int size)
 	}
 
 	wallclock_secs = (real_time_ts.tv_sec - boot_time_ts.tv_sec) +
-		(real_time_ts.tv_nsec - boot_time_ts.tv_nsec + nsecs) /
-		1000000000;
-
+		nsecs / 1000000000;
 
 	if (!localtime_r(&wallclock_secs, &load_tm)) {
 		snprintf(buf, size, "%llu", nsecs / 1000000000);
 		return;
 	}
 
-	if (json_output)
-		strftime(buf, size, "%s", &load_tm);
-	else
-		strftime(buf, size, "%FT%T%z", &load_tm);
+	strftime(buf, size, "%b %d/%H:%M", &load_tm);
 }
 
 static int prog_fd_by_tag(unsigned char *tag)
 {
+	struct bpf_prog_info info = {};
+	__u32 len = sizeof(info);
 	unsigned int id = 0;
 	int err;
 	int fd;
 
 	while (true) {
-		struct bpf_prog_info info = {};
-		__u32 len = sizeof(info);
-
 		err = bpf_prog_get_next_id(id, &id);
 		if (err) {
 			p_err("%s", strerror(errno));
@@ -213,8 +231,6 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 		     info->tag[0], info->tag[1], info->tag[2], info->tag[3],
 		     info->tag[4], info->tag[5], info->tag[6], info->tag[7]);
 
-	jsonw_bool_field(json_wtr, "gpl_compatible", info->gpl_compatible);
-
 	print_dev_json(info->ifindex, info->netns_dev, info->netns_ino);
 
 	if (info->load_time) {
@@ -223,8 +239,7 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 		print_boot_time(info->load_time, buf, sizeof(buf));
 
 		/* Piggy back on load_time, since 0 uid is a valid one */
-		jsonw_name(json_wtr, "loaded_at");
-		jsonw_printf(json_wtr, "%s", buf);
+		jsonw_string_field(json_wtr, "loaded_at", buf);
 		jsonw_uint_field(json_wtr, "uid", info->created_by_uid);
 	}
 
@@ -276,7 +291,6 @@ static void print_prog_plain(struct bpf_prog_info *info, int fd)
 	printf("tag ");
 	fprint_hex(stdout, info->tag, BPF_TAG_SIZE, "");
 	print_dev_plain(info->ifindex, info->netns_dev, info->netns_ino);
-	printf("%s", info->gpl_compatible ? "  gpl" : "");
 	printf("\n");
 
 	if (info->load_time) {
@@ -306,9 +320,10 @@ static void print_prog_plain(struct bpf_prog_info *info, int fd)
 	if (!hash_empty(prog_table.table)) {
 		struct pinned_obj *obj;
 
+		printf("\n");
 		hash_for_each_possible(prog_table.table, obj, hash, info->id) {
 			if (obj->id == info->id)
-				printf("\n\tpinned %s", obj->path);
+				printf("\tpinned %s\n", obj->path);
 		}
 	}
 
@@ -392,28 +407,268 @@ static int do_show(int argc, char **argv)
 	return err;
 }
 
+#define SYM_MAX_NAME	256
+
+struct kernel_sym {
+	unsigned long address;
+	char name[SYM_MAX_NAME];
+};
+
+struct dump_data {
+	unsigned long address_call_base;
+	struct kernel_sym *sym_mapping;
+	__u32 sym_count;
+	char scratch_buff[SYM_MAX_NAME];
+};
+
+static int kernel_syms_cmp(const void *sym_a, const void *sym_b)
+{
+	return ((struct kernel_sym *)sym_a)->address -
+	       ((struct kernel_sym *)sym_b)->address;
+}
+
+static void kernel_syms_load(struct dump_data *dd)
+{
+	struct kernel_sym *sym;
+	char buff[256];
+	void *tmp, *address;
+	FILE *fp;
+
+	fp = fopen("/proc/kallsyms", "r");
+	if (!fp)
+		return;
+
+	while (!feof(fp)) {
+		if (!fgets(buff, sizeof(buff), fp))
+			break;
+		tmp = realloc(dd->sym_mapping,
+			      (dd->sym_count + 1) *
+			      sizeof(*dd->sym_mapping));
+		if (!tmp) {
+out:
+			free(dd->sym_mapping);
+			dd->sym_mapping = NULL;
+			fclose(fp);
+			return;
+		}
+		dd->sym_mapping = tmp;
+		sym = &dd->sym_mapping[dd->sym_count];
+		if (sscanf(buff, "%p %*c %s", &address, sym->name) != 2)
+			continue;
+		sym->address = (unsigned long)address;
+		if (!strcmp(sym->name, "__bpf_call_base")) {
+			dd->address_call_base = sym->address;
+			/* sysctl kernel.kptr_restrict was set */
+			if (!sym->address)
+				goto out;
+		}
+		if (sym->address)
+			dd->sym_count++;
+	}
+
+	fclose(fp);
+
+	qsort(dd->sym_mapping, dd->sym_count,
+	      sizeof(*dd->sym_mapping), kernel_syms_cmp);
+}
+
+static void kernel_syms_destroy(struct dump_data *dd)
+{
+	free(dd->sym_mapping);
+}
+
+static struct kernel_sym *kernel_syms_search(struct dump_data *dd,
+					     unsigned long key)
+{
+	struct kernel_sym sym = {
+		.address = key,
+	};
+
+	return dd->sym_mapping ?
+	       bsearch(&sym, dd->sym_mapping, dd->sym_count,
+		       sizeof(*dd->sym_mapping), kernel_syms_cmp) : NULL;
+}
+
+static void print_insn(struct bpf_verifier_env *env, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vprintf(fmt, args);
+	va_end(args);
+}
+
+static const char *print_call_pcrel(struct dump_data *dd,
+				    struct kernel_sym *sym,
+				    unsigned long address,
+				    const struct bpf_insn *insn)
+{
+	if (sym)
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "%+d#%s", insn->off, sym->name);
+	else
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "%+d#0x%lx", insn->off, address);
+	return dd->scratch_buff;
+}
+
+static const char *print_call_helper(struct dump_data *dd,
+				     struct kernel_sym *sym,
+				     unsigned long address)
+{
+	if (sym)
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "%s", sym->name);
+	else
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "0x%lx", address);
+	return dd->scratch_buff;
+}
+
+static const char *print_call(void *private_data,
+			      const struct bpf_insn *insn)
+{
+	struct dump_data *dd = private_data;
+	unsigned long address = dd->address_call_base + insn->imm;
+	struct kernel_sym *sym;
+
+	sym = kernel_syms_search(dd, address);
+	if (insn->src_reg == BPF_PSEUDO_CALL)
+		return print_call_pcrel(dd, sym, address, insn);
+	else
+		return print_call_helper(dd, sym, address);
+}
+
+static const char *print_imm(void *private_data,
+			     const struct bpf_insn *insn,
+			     __u64 full_imm)
+{
+	struct dump_data *dd = private_data;
+
+	if (insn->src_reg == BPF_PSEUDO_MAP_FD)
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "map[id:%u]", insn->imm);
+	else
+		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
+			 "0x%llx", (unsigned long long)full_imm);
+	return dd->scratch_buff;
+}
+
+static void dump_xlated_plain(struct dump_data *dd, void *buf,
+			      unsigned int len, bool opcodes)
+{
+	const struct bpf_insn_cbs cbs = {
+		.cb_print	= print_insn,
+		.cb_call	= print_call,
+		.cb_imm		= print_imm,
+		.private_data	= dd,
+	};
+	struct bpf_insn *insn = buf;
+	bool double_insn = false;
+	unsigned int i;
+
+	for (i = 0; i < len / sizeof(*insn); i++) {
+		if (double_insn) {
+			double_insn = false;
+			continue;
+		}
+
+		double_insn = insn[i].code == (BPF_LD | BPF_IMM | BPF_DW);
+
+		printf("% 4d: ", i);
+		print_bpf_insn(&cbs, NULL, insn + i, true);
+
+		if (opcodes) {
+			printf("       ");
+			fprint_hex(stdout, insn + i, 8, " ");
+			if (double_insn && i < len - 1) {
+				printf(" ");
+				fprint_hex(stdout, insn + i + 1, 8, " ");
+			}
+			printf("\n");
+		}
+	}
+}
+
+static void print_insn_json(struct bpf_verifier_env *env, const char *fmt, ...)
+{
+	unsigned int l = strlen(fmt);
+	char chomped_fmt[l];
+	va_list args;
+
+	va_start(args, fmt);
+	if (l > 0) {
+		strncpy(chomped_fmt, fmt, l - 1);
+		chomped_fmt[l - 1] = '\0';
+	}
+	jsonw_vprintf_enquote(json_wtr, chomped_fmt, args);
+	va_end(args);
+}
+
+static void dump_xlated_json(struct dump_data *dd, void *buf,
+			     unsigned int len, bool opcodes)
+{
+	const struct bpf_insn_cbs cbs = {
+		.cb_print	= print_insn_json,
+		.cb_call	= print_call,
+		.cb_imm		= print_imm,
+		.private_data	= dd,
+	};
+	struct bpf_insn *insn = buf;
+	bool double_insn = false;
+	unsigned int i;
+
+	jsonw_start_array(json_wtr);
+	for (i = 0; i < len / sizeof(*insn); i++) {
+		if (double_insn) {
+			double_insn = false;
+			continue;
+		}
+		double_insn = insn[i].code == (BPF_LD | BPF_IMM | BPF_DW);
+
+		jsonw_start_object(json_wtr);
+		jsonw_name(json_wtr, "disasm");
+		print_bpf_insn(&cbs, NULL, insn + i, true);
+
+		if (opcodes) {
+			jsonw_name(json_wtr, "opcodes");
+			jsonw_start_object(json_wtr);
+
+			jsonw_name(json_wtr, "code");
+			jsonw_printf(json_wtr, "\"0x%02hhx\"", insn[i].code);
+
+			jsonw_name(json_wtr, "src_reg");
+			jsonw_printf(json_wtr, "\"0x%hhx\"", insn[i].src_reg);
+
+			jsonw_name(json_wtr, "dst_reg");
+			jsonw_printf(json_wtr, "\"0x%hhx\"", insn[i].dst_reg);
+
+			jsonw_name(json_wtr, "off");
+			print_hex_data_json((uint8_t *)(&insn[i].off), 2);
+
+			jsonw_name(json_wtr, "imm");
+			if (double_insn && i < len - 1)
+				print_hex_data_json((uint8_t *)(&insn[i].imm),
+						    12);
+			else
+				print_hex_data_json((uint8_t *)(&insn[i].imm),
+						    4);
+			jsonw_end_object(json_wtr);
+		}
+		jsonw_end_object(json_wtr);
+	}
+	jsonw_end_array(json_wtr);
+}
+
 static int do_dump(int argc, char **argv)
 {
-	unsigned int finfo_rec_size, linfo_rec_size, jited_linfo_rec_size;
-	void *func_info = NULL, *linfo = NULL, *jited_linfo = NULL;
-	unsigned int nr_finfo, nr_linfo = 0, nr_jited_linfo = 0;
-	struct bpf_prog_linfo *prog_linfo = NULL;
-	unsigned long *func_ksyms = NULL;
 	struct bpf_prog_info info = {};
-	unsigned int *func_lens = NULL;
-	const char *disasm_opt = NULL;
-	unsigned int nr_func_ksyms;
-	unsigned int nr_func_lens;
 	struct dump_data dd = {};
 	__u32 len = sizeof(info);
-	struct btf *btf = NULL;
 	unsigned int buf_size;
 	char *filepath = NULL;
 	bool opcodes = false;
-	bool visual = false;
-	char func_sig[1024];
 	unsigned char *buf;
-	bool linum = false;
 	__u32 *member_len;
 	__u64 *member_ptr;
 	ssize_t n;
@@ -421,9 +676,6 @@ static int do_dump(int argc, char **argv)
 	int fd;
 
 	if (is_prefix(*argv, "jited")) {
-		if (disasm_init())
-			return -1;
-
 		member_len = &info.jited_prog_len;
 		member_ptr = &info.jited_prog_insns;
 	} else if (is_prefix(*argv, "xlated")) {
@@ -454,12 +706,6 @@ static int do_dump(int argc, char **argv)
 	} else if (is_prefix(*argv, "opcodes")) {
 		opcodes = true;
 		NEXT_ARG();
-	} else if (is_prefix(*argv, "visual")) {
-		visual = true;
-		NEXT_ARG();
-	} else if (is_prefix(*argv, "linum")) {
-		linum = true;
-		NEXT_ARG();
 	}
 
 	if (argc) {
@@ -488,80 +734,10 @@ static int do_dump(int argc, char **argv)
 		return -1;
 	}
 
-	nr_func_ksyms = info.nr_jited_ksyms;
-	if (nr_func_ksyms) {
-		func_ksyms = malloc(nr_func_ksyms * sizeof(__u64));
-		if (!func_ksyms) {
-			p_err("mem alloc failed");
-			close(fd);
-			goto err_free;
-		}
-	}
-
-	nr_func_lens = info.nr_jited_func_lens;
-	if (nr_func_lens) {
-		func_lens = malloc(nr_func_lens * sizeof(__u32));
-		if (!func_lens) {
-			p_err("mem alloc failed");
-			close(fd);
-			goto err_free;
-		}
-	}
-
-	nr_finfo = info.nr_func_info;
-	finfo_rec_size = info.func_info_rec_size;
-	if (nr_finfo && finfo_rec_size) {
-		func_info = malloc(nr_finfo * finfo_rec_size);
-		if (!func_info) {
-			p_err("mem alloc failed");
-			close(fd);
-			goto err_free;
-		}
-	}
-
-	linfo_rec_size = info.line_info_rec_size;
-	if (info.nr_line_info && linfo_rec_size && info.btf_id) {
-		nr_linfo = info.nr_line_info;
-		linfo = malloc(nr_linfo * linfo_rec_size);
-		if (!linfo) {
-			p_err("mem alloc failed");
-			close(fd);
-			goto err_free;
-		}
-	}
-
-	jited_linfo_rec_size = info.jited_line_info_rec_size;
-	if (info.nr_jited_line_info &&
-	    jited_linfo_rec_size &&
-	    info.nr_jited_ksyms &&
-	    info.nr_jited_func_lens &&
-	    info.btf_id) {
-		nr_jited_linfo = info.nr_jited_line_info;
-		jited_linfo = malloc(nr_jited_linfo * jited_linfo_rec_size);
-		if (!jited_linfo) {
-			p_err("mem alloc failed");
-			close(fd);
-			goto err_free;
-		}
-	}
-
 	memset(&info, 0, sizeof(info));
 
 	*member_ptr = ptr_to_u64(buf);
 	*member_len = buf_size;
-	info.jited_ksyms = ptr_to_u64(func_ksyms);
-	info.nr_jited_ksyms = nr_func_ksyms;
-	info.jited_func_lens = ptr_to_u64(func_lens);
-	info.nr_jited_func_lens = nr_func_lens;
-	info.nr_func_info = nr_finfo;
-	info.func_info_rec_size = finfo_rec_size;
-	info.func_info = ptr_to_u64(func_info);
-	info.nr_line_info = nr_linfo;
-	info.line_info_rec_size = linfo_rec_size;
-	info.line_info = ptr_to_u64(linfo);
-	info.nr_jited_line_info = nr_jited_linfo;
-	info.jited_line_info_rec_size = jited_linfo_rec_size;
-	info.jited_line_info = ptr_to_u64(jited_linfo);
 
 	err = bpf_obj_get_info_by_fd(fd, &info, &len);
 	close(fd);
@@ -575,69 +751,12 @@ static int do_dump(int argc, char **argv)
 		goto err_free;
 	}
 
-	if (info.nr_jited_ksyms > nr_func_ksyms) {
-		p_err("too many addresses returned");
-		goto err_free;
-	}
-
-	if (info.nr_jited_func_lens > nr_func_lens) {
-		p_err("too many values returned");
-		goto err_free;
-	}
-
-	if (info.nr_func_info != nr_finfo) {
-		p_err("incorrect nr_func_info %d vs. expected %d",
-		      info.nr_func_info, nr_finfo);
-		goto err_free;
-	}
-
-	if (info.func_info_rec_size != finfo_rec_size) {
-		p_err("incorrect func_info_rec_size %d vs. expected %d",
-		      info.func_info_rec_size, finfo_rec_size);
-		goto err_free;
-	}
-
-	if (linfo && info.nr_line_info != nr_linfo) {
-		p_err("incorrect nr_line_info %u vs. expected %u",
-		      info.nr_line_info, nr_linfo);
-		goto err_free;
-	}
-
-	if (info.line_info_rec_size != linfo_rec_size) {
-		p_err("incorrect line_info_rec_size %u vs. expected %u",
-		      info.line_info_rec_size, linfo_rec_size);
-		goto err_free;
-	}
-
-	if (jited_linfo && info.nr_jited_line_info != nr_jited_linfo) {
-		p_err("incorrect nr_jited_line_info %u vs. expected %u",
-		      info.nr_jited_line_info, nr_jited_linfo);
-		goto err_free;
-	}
-
-	if (info.jited_line_info_rec_size != jited_linfo_rec_size) {
-		p_err("incorrect jited_line_info_rec_size %u vs. expected %u",
-		      info.jited_line_info_rec_size, jited_linfo_rec_size);
-		goto err_free;
-	}
-
 	if ((member_len == &info.jited_prog_len &&
 	     info.jited_prog_insns == 0) ||
 	    (member_len == &info.xlated_prog_len &&
 	     info.xlated_prog_insns == 0)) {
 		p_err("error retrieving insn dump: kernel.kptr_restrict set?");
 		goto err_free;
-	}
-
-	if (info.btf_id && btf__get_from_id(info.btf_id, &btf)) {
-		p_err("failed to get btf");
-		goto err_free;
-	}
-
-	if (nr_linfo) {
-		prog_linfo = bpf_prog_linfo__new(&info);
-		if (!prog_linfo)
-			p_info("error in processing bpf_line_info.  continue without it.");
 	}
 
 	if (filepath) {
@@ -658,128 +777,34 @@ static int do_dump(int argc, char **argv)
 
 		if (json_output)
 			jsonw_null(json_wtr);
-	} else if (member_len == &info.jited_prog_len) {
-		const char *name = NULL;
-
-		if (info.ifindex) {
-			name = ifindex_to_bfd_params(info.ifindex,
-						     info.netns_dev,
-						     info.netns_ino,
-						     &disasm_opt);
-			if (!name)
-				goto err_free;
-		}
-
-		if (info.nr_jited_func_lens && info.jited_func_lens) {
-			struct kernel_sym *sym = NULL;
-			struct bpf_func_info *record;
-			char sym_name[SYM_MAX_NAME];
-			unsigned char *img = buf;
-			__u64 *ksyms = NULL;
-			__u32 *lens;
-			__u32 i;
-
-			if (info.nr_jited_ksyms) {
-				kernel_syms_load(&dd);
-				ksyms = (__u64 *) info.jited_ksyms;
-			}
-
-			if (json_output)
-				jsonw_start_array(json_wtr);
-
-			lens = (__u32 *) info.jited_func_lens;
-			for (i = 0; i < info.nr_jited_func_lens; i++) {
-				if (ksyms) {
-					sym = kernel_syms_search(&dd, ksyms[i]);
-					if (sym)
-						sprintf(sym_name, "%s", sym->name);
-					else
-						sprintf(sym_name, "0x%016llx", ksyms[i]);
-				} else {
-					strcpy(sym_name, "unknown");
-				}
-
-				if (func_info) {
-					record = func_info + i * finfo_rec_size;
-					btf_dumper_type_only(btf, record->type_id,
-							     func_sig,
-							     sizeof(func_sig));
-				}
-
-				if (json_output) {
-					jsonw_start_object(json_wtr);
-					if (func_info && func_sig[0] != '\0') {
-						jsonw_name(json_wtr, "proto");
-						jsonw_string(json_wtr, func_sig);
-					}
-					jsonw_name(json_wtr, "name");
-					jsonw_string(json_wtr, sym_name);
-					jsonw_name(json_wtr, "insns");
-				} else {
-					if (func_info && func_sig[0] != '\0')
-						printf("%s:\n", func_sig);
-					printf("%s:\n", sym_name);
-				}
-
-				disasm_print_insn(img, lens[i], opcodes,
-						  name, disasm_opt, btf,
-						  prog_linfo, ksyms[i], i,
-						  linum);
-
-				img += lens[i];
-
-				if (json_output)
-					jsonw_end_object(json_wtr);
-				else
-					printf("\n");
-			}
-
-			if (json_output)
-				jsonw_end_array(json_wtr);
-		} else {
-			disasm_print_insn(buf, *member_len, opcodes, name,
-					  disasm_opt, btf, NULL, 0, 0, false);
-		}
-	} else if (visual) {
-		if (json_output)
-			jsonw_null(json_wtr);
-		else
-			dump_xlated_cfg(buf, *member_len);
 	} else {
-		kernel_syms_load(&dd);
-		dd.nr_jited_ksyms = info.nr_jited_ksyms;
-		dd.jited_ksyms = (__u64 *) info.jited_ksyms;
-		dd.btf = btf;
-		dd.func_info = func_info;
-		dd.finfo_rec_size = finfo_rec_size;
-		dd.prog_linfo = prog_linfo;
+		if (member_len == &info.jited_prog_len) {
+			const char *name = NULL;
 
-		if (json_output)
-			dump_xlated_json(&dd, buf, *member_len, opcodes,
-					 linum);
-		else
-			dump_xlated_plain(&dd, buf, *member_len, opcodes,
-					  linum);
-		kernel_syms_destroy(&dd);
+			if (info.ifindex) {
+				name = ifindex_to_bfd_name_ns(info.ifindex,
+							      info.netns_dev,
+							      info.netns_ino);
+				if (!name)
+					goto err_free;
+			}
+
+			disasm_print_insn(buf, *member_len, opcodes, name);
+		} else {
+			kernel_syms_load(&dd);
+			if (json_output)
+				dump_xlated_json(&dd, buf, *member_len, opcodes);
+			else
+				dump_xlated_plain(&dd, buf, *member_len, opcodes);
+			kernel_syms_destroy(&dd);
+		}
 	}
 
 	free(buf);
-	free(func_ksyms);
-	free(func_lens);
-	free(func_info);
-	free(linfo);
-	free(jited_linfo);
-	bpf_prog_linfo__free(prog_linfo);
 	return 0;
 
 err_free:
 	free(buf);
-	free(func_ksyms);
-	free(func_lens);
-	free(func_info);
-	free(linfo);
-	free(jited_linfo);
-	bpf_prog_linfo__free(prog_linfo);
 	return -1;
 }
 
@@ -793,383 +818,28 @@ static int do_pin(int argc, char **argv)
 	return err;
 }
 
-struct map_replace {
-	int idx;
-	int fd;
-	char *name;
-};
-
-static int map_replace_compar(const void *p1, const void *p2)
-{
-	const struct map_replace *a = p1, *b = p2;
-
-	return a->idx - b->idx;
-}
-
-static int parse_attach_detach_args(int argc, char **argv, int *progfd,
-				    enum bpf_attach_type *attach_type,
-				    int *mapfd)
-{
-	if (!REQ_ARGS(3))
-		return -EINVAL;
-
-	*progfd = prog_parse_fd(&argc, &argv);
-	if (*progfd < 0)
-		return *progfd;
-
-	*attach_type = parse_attach_type(*argv);
-	if (*attach_type == __MAX_BPF_ATTACH_TYPE) {
-		p_err("invalid attach/detach type");
-		return -EINVAL;
-	}
-
-	if (*attach_type == BPF_FLOW_DISSECTOR) {
-		*mapfd = -1;
-		return 0;
-	}
-
-	NEXT_ARG();
-	if (!REQ_ARGS(2))
-		return -EINVAL;
-
-	*mapfd = map_parse_fd(&argc, &argv);
-	if (*mapfd < 0)
-		return *mapfd;
-
-	return 0;
-}
-
-static int do_attach(int argc, char **argv)
-{
-	enum bpf_attach_type attach_type;
-	int err, progfd;
-	int mapfd;
-
-	err = parse_attach_detach_args(argc, argv,
-				       &progfd, &attach_type, &mapfd);
-	if (err)
-		return err;
-
-	err = bpf_prog_attach(progfd, mapfd, attach_type, 0);
-	if (err) {
-		p_err("failed prog attach to map");
-		return -EINVAL;
-	}
-
-	if (json_output)
-		jsonw_null(json_wtr);
-	return 0;
-}
-
-static int do_detach(int argc, char **argv)
-{
-	enum bpf_attach_type attach_type;
-	int err, progfd;
-	int mapfd;
-
-	err = parse_attach_detach_args(argc, argv,
-				       &progfd, &attach_type, &mapfd);
-	if (err)
-		return err;
-
-	err = bpf_prog_detach2(progfd, mapfd, attach_type);
-	if (err) {
-		p_err("failed prog detach from map");
-		return -EINVAL;
-	}
-
-	if (json_output)
-		jsonw_null(json_wtr);
-	return 0;
-}
-
-static int load_with_options(int argc, char **argv, bool first_prog_only)
-{
-	enum bpf_attach_type expected_attach_type;
-	struct bpf_object_open_attr attr = {
-		.prog_type	= BPF_PROG_TYPE_UNSPEC,
-	};
-	struct map_replace *map_replace = NULL;
-	struct bpf_program *prog = NULL, *pos;
-	unsigned int old_map_fds = 0;
-	const char *pinmaps = NULL;
-	struct bpf_object *obj;
-	struct bpf_map *map;
-	const char *pinfile;
-	unsigned int i, j;
-	__u32 ifindex = 0;
-	int idx, err;
-
-	if (!REQ_ARGS(2))
-		return -1;
-	attr.file = GET_ARG();
-	pinfile = GET_ARG();
-
-	while (argc) {
-		if (is_prefix(*argv, "type")) {
-			char *type;
-
-			NEXT_ARG();
-
-			if (attr.prog_type != BPF_PROG_TYPE_UNSPEC) {
-				p_err("program type already specified");
-				goto err_free_reuse_maps;
-			}
-			if (!REQ_ARGS(1))
-				goto err_free_reuse_maps;
-
-			/* Put a '/' at the end of type to appease libbpf */
-			type = malloc(strlen(*argv) + 2);
-			if (!type) {
-				p_err("mem alloc failed");
-				goto err_free_reuse_maps;
-			}
-			*type = 0;
-			strcat(type, *argv);
-			strcat(type, "/");
-
-			err = libbpf_prog_type_by_name(type, &attr.prog_type,
-						       &expected_attach_type);
-			free(type);
-			if (err < 0) {
-				p_err("unknown program type '%s'", *argv);
-				goto err_free_reuse_maps;
-			}
-			NEXT_ARG();
-		} else if (is_prefix(*argv, "map")) {
-			void *new_map_replace;
-			char *endptr, *name;
-			int fd;
-
-			NEXT_ARG();
-
-			if (!REQ_ARGS(4))
-				goto err_free_reuse_maps;
-
-			if (is_prefix(*argv, "idx")) {
-				NEXT_ARG();
-
-				idx = strtoul(*argv, &endptr, 0);
-				if (*endptr) {
-					p_err("can't parse %s as IDX", *argv);
-					goto err_free_reuse_maps;
-				}
-				name = NULL;
-			} else if (is_prefix(*argv, "name")) {
-				NEXT_ARG();
-
-				name = *argv;
-				idx = -1;
-			} else {
-				p_err("expected 'idx' or 'name', got: '%s'?",
-				      *argv);
-				goto err_free_reuse_maps;
-			}
-			NEXT_ARG();
-
-			fd = map_parse_fd(&argc, &argv);
-			if (fd < 0)
-				goto err_free_reuse_maps;
-
-			new_map_replace = reallocarray(map_replace,
-						       old_map_fds + 1,
-						       sizeof(*map_replace));
-			if (!new_map_replace) {
-				p_err("mem alloc failed");
-				goto err_free_reuse_maps;
-			}
-			map_replace = new_map_replace;
-
-			map_replace[old_map_fds].idx = idx;
-			map_replace[old_map_fds].name = name;
-			map_replace[old_map_fds].fd = fd;
-			old_map_fds++;
-		} else if (is_prefix(*argv, "dev")) {
-			NEXT_ARG();
-
-			if (ifindex) {
-				p_err("offload device already specified");
-				goto err_free_reuse_maps;
-			}
-			if (!REQ_ARGS(1))
-				goto err_free_reuse_maps;
-
-			ifindex = if_nametoindex(*argv);
-			if (!ifindex) {
-				p_err("unrecognized netdevice '%s': %s",
-				      *argv, strerror(errno));
-				goto err_free_reuse_maps;
-			}
-			NEXT_ARG();
-		} else if (is_prefix(*argv, "pinmaps")) {
-			NEXT_ARG();
-
-			if (!REQ_ARGS(1))
-				goto err_free_reuse_maps;
-
-			pinmaps = GET_ARG();
-		} else {
-			p_err("expected no more arguments, 'type', 'map' or 'dev', got: '%s'?",
-			      *argv);
-			goto err_free_reuse_maps;
-		}
-	}
-
-	obj = __bpf_object__open_xattr(&attr, bpf_flags);
-	if (IS_ERR_OR_NULL(obj)) {
-		p_err("failed to open object file");
-		goto err_free_reuse_maps;
-	}
-
-	bpf_object__for_each_program(pos, obj) {
-		enum bpf_prog_type prog_type = attr.prog_type;
-
-		if (attr.prog_type == BPF_PROG_TYPE_UNSPEC) {
-			const char *sec_name = bpf_program__title(pos, false);
-
-			err = libbpf_prog_type_by_name(sec_name, &prog_type,
-						       &expected_attach_type);
-			if (err < 0) {
-				p_err("failed to guess program type based on section name %s\n",
-				      sec_name);
-				goto err_close_obj;
-			}
-		}
-
-		bpf_program__set_ifindex(pos, ifindex);
-		bpf_program__set_type(pos, prog_type);
-		bpf_program__set_expected_attach_type(pos, expected_attach_type);
-	}
-
-	qsort(map_replace, old_map_fds, sizeof(*map_replace),
-	      map_replace_compar);
-
-	/* After the sort maps by name will be first on the list, because they
-	 * have idx == -1.  Resolve them.
-	 */
-	j = 0;
-	while (j < old_map_fds && map_replace[j].name) {
-		i = 0;
-		bpf_map__for_each(map, obj) {
-			if (!strcmp(bpf_map__name(map), map_replace[j].name)) {
-				map_replace[j].idx = i;
-				break;
-			}
-			i++;
-		}
-		if (map_replace[j].idx == -1) {
-			p_err("unable to find map '%s'", map_replace[j].name);
-			goto err_close_obj;
-		}
-		j++;
-	}
-	/* Resort if any names were resolved */
-	if (j)
-		qsort(map_replace, old_map_fds, sizeof(*map_replace),
-		      map_replace_compar);
-
-	/* Set ifindex and name reuse */
-	j = 0;
-	idx = 0;
-	bpf_map__for_each(map, obj) {
-		if (!bpf_map__is_offload_neutral(map))
-			bpf_map__set_ifindex(map, ifindex);
-
-		if (j < old_map_fds && idx == map_replace[j].idx) {
-			err = bpf_map__reuse_fd(map, map_replace[j++].fd);
-			if (err) {
-				p_err("unable to set up map reuse: %d", err);
-				goto err_close_obj;
-			}
-
-			/* Next reuse wants to apply to the same map */
-			if (j < old_map_fds && map_replace[j].idx == idx) {
-				p_err("replacement for map idx %d specified more than once",
-				      idx);
-				goto err_close_obj;
-			}
-		}
-
-		idx++;
-	}
-	if (j < old_map_fds) {
-		p_err("map idx '%d' not used", map_replace[j].idx);
-		goto err_close_obj;
-	}
-
-	set_max_rlimit();
-
-	err = bpf_object__load(obj);
-	if (err) {
-		p_err("failed to load object file");
-		goto err_close_obj;
-	}
-
-	err = mount_bpffs_for_pin(pinfile);
-	if (err)
-		goto err_close_obj;
-
-	if (first_prog_only) {
-		prog = bpf_program__next(NULL, obj);
-		if (!prog) {
-			p_err("object file doesn't contain any bpf program");
-			goto err_close_obj;
-		}
-
-		err = bpf_obj_pin(bpf_program__fd(prog), pinfile);
-		if (err) {
-			p_err("failed to pin program %s",
-			      bpf_program__title(prog, false));
-			goto err_close_obj;
-		}
-	} else {
-		err = bpf_object__pin_programs(obj, pinfile);
-		if (err) {
-			p_err("failed to pin all programs");
-			goto err_close_obj;
-		}
-	}
-
-	if (pinmaps) {
-		err = bpf_object__pin_maps(obj, pinmaps);
-		if (err) {
-			p_err("failed to pin all maps");
-			goto err_unpin;
-		}
-	}
-
-	if (json_output)
-		jsonw_null(json_wtr);
-
-	bpf_object__close(obj);
-	for (i = 0; i < old_map_fds; i++)
-		close(map_replace[i].fd);
-	free(map_replace);
-
-	return 0;
-
-err_unpin:
-	if (first_prog_only)
-		unlink(pinfile);
-	else
-		bpf_object__unpin_programs(obj, pinfile);
-err_close_obj:
-	bpf_object__close(obj);
-err_free_reuse_maps:
-	for (i = 0; i < old_map_fds; i++)
-		close(map_replace[i].fd);
-	free(map_replace);
-	return -1;
-}
-
 static int do_load(int argc, char **argv)
 {
-	return load_with_options(argc, argv, true);
-}
+	struct bpf_object *obj;
+	int prog_fd;
 
-static int do_loadall(int argc, char **argv)
-{
-	return load_with_options(argc, argv, false);
+	if (argc != 2)
+		usage();
+
+	if (bpf_prog_load(argv[0], BPF_PROG_TYPE_UNSPEC, &obj, &prog_fd)) {
+		p_err("failed to load program");
+		return -1;
+	}
+
+	if (do_pin_fd(prog_fd, argv[1])) {
+		p_err("failed to pin program");
+		return -1;
+	}
+
+	if (json_output)
+		jsonw_null(json_wtr);
+
+	return 0;
 }
 
 static int do_help(int argc, char **argv)
@@ -1181,33 +851,15 @@ static int do_help(int argc, char **argv)
 
 	fprintf(stderr,
 		"Usage: %s %s { show | list } [PROG]\n"
-		"       %s %s dump xlated PROG [{ file FILE | opcodes | visual | linum }]\n"
-		"       %s %s dump jited  PROG [{ file FILE | opcodes | linum }]\n"
+		"       %s %s dump xlated PROG [{ file FILE | opcodes }]\n"
+		"       %s %s dump jited  PROG [{ file FILE | opcodes }]\n"
 		"       %s %s pin   PROG FILE\n"
-		"       %s %s { load | loadall } OBJ  PATH \\\n"
-		"                         [type TYPE] [dev NAME] \\\n"
-		"                         [map { idx IDX | name NAME } MAP]\\\n"
-		"                         [pinmaps MAP_DIR]\n"
-		"       %s %s attach PROG ATTACH_TYPE [MAP]\n"
-		"       %s %s detach PROG ATTACH_TYPE [MAP]\n"
-		"       %s %s tracelog\n"
+		"       %s %s load  OBJ  FILE\n"
 		"       %s %s help\n"
 		"\n"
-		"       " HELP_SPEC_MAP "\n"
 		"       " HELP_SPEC_PROGRAM "\n"
-		"       TYPE := { socket | kprobe | kretprobe | classifier | action |\n"
-		"                 tracepoint | raw_tracepoint | xdp | perf_event | cgroup/skb |\n"
-		"                 cgroup/sock | cgroup/dev | lwt_in | lwt_out | lwt_xmit |\n"
-		"                 lwt_seg6local | sockops | sk_skb | sk_msg | lirc_mode2 |\n"
-		"                 sk_reuseport | flow_dissector |\n"
-		"                 cgroup/bind4 | cgroup/bind6 | cgroup/post_bind4 |\n"
-		"                 cgroup/post_bind6 | cgroup/connect4 | cgroup/connect6 |\n"
-		"                 cgroup/sendmsg4 | cgroup/sendmsg6 }\n"
-		"       ATTACH_TYPE := { msg_verdict | skb_verdict | skb_parse |\n"
-		"                        flow_dissector }\n"
 		"       " HELP_SPEC_OPTIONS "\n"
 		"",
-		bin_name, argv[-2], bin_name, argv[-2], bin_name, argv[-2],
 		bin_name, argv[-2], bin_name, argv[-2], bin_name, argv[-2],
 		bin_name, argv[-2], bin_name, argv[-2], bin_name, argv[-2]);
 
@@ -1221,10 +873,6 @@ static const struct cmd cmds[] = {
 	{ "dump",	do_dump },
 	{ "pin",	do_pin },
 	{ "load",	do_load },
-	{ "loadall",	do_loadall },
-	{ "attach",	do_attach },
-	{ "detach",	do_detach },
-	{ "tracelog",	do_tracelog },
 	{ 0 }
 };
 

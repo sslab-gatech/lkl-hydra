@@ -51,14 +51,6 @@ struct link_mst_stream_allocation_table {
 	struct link_mst_stream_allocation stream_allocations[MAX_CONTROLLER_NUM];
 };
 
-struct time_stamp {
-	uint64_t edp_poweroff;
-	uint64_t edp_poweron;
-};
-
-struct link_trace {
-	struct time_stamp time_stamp;
-};
 /*
  * A link contains one or more sinks and their connected status.
  * The currently active signal type (HDMI, DP-SST, DP-MST) is also reported.
@@ -72,9 +64,6 @@ struct dc_link {
 	enum signal_type connector_signal;
 	enum dc_irq_source irq_source_hpd;
 	enum dc_irq_source irq_source_hpd_rx;/* aka DP Short Pulse  */
-	bool is_hpd_filter_disabled;
-	bool dp_ss_off;
-
 	/* caps is the same as reported_link_cap. link_traing use
 	 * reported_link_cap. Will clean up.  TODO
 	 */
@@ -123,15 +112,12 @@ struct dc_link {
 
 	struct dc_link_status link_status;
 
-	struct link_trace link_trace;
 };
 
 const struct dc_link_status *dc_link_get_status(const struct dc_link *dc_link);
 
-/**
- * dc_get_link_at_index() - Return an enumerated dc_link.
- *
- * dc_link order is constant and determined at
+/*
+ * Return an enumerated dc_link.  dc_link order is constant and determined at
  * boot time.  They cannot be created or destroyed.
  * Use dc_get_caps() to get number of links.
  */
@@ -140,17 +126,9 @@ static inline struct dc_link *dc_get_link_at_index(struct dc *dc, uint32_t link_
 	return dc->links[link_index];
 }
 
-/* Set backlight level of an embedded panel (eDP, LVDS).
- * backlight_pwm_u16_16 is unsigned 32 bit with 16 bit integer
- * and 16 bit fractional, where 1.0 is max backlight value.
- */
-bool dc_link_set_backlight_level(const struct dc_link *dc_link,
-		uint32_t backlight_pwm_u16_16,
-		uint32_t frame_ramp);
-
-int dc_link_get_backlight_level(const struct dc_link *dc_link);
-
-bool dc_link_set_abm_disable(const struct dc_link *dc_link);
+/* Set backlight level of an embedded panel (eDP, LVDS). */
+bool dc_link_set_backlight_level(const struct dc_link *dc_link, uint32_t level,
+		uint32_t frame_ramp, const struct dc_stream_state *stream);
 
 bool dc_link_set_psr_enable(const struct dc_link *dc_link, bool enable, bool wait);
 
@@ -173,7 +151,6 @@ enum dc_detect_reason {
 };
 
 bool dc_link_detect(struct dc_link *dc_link, enum dc_detect_reason reason);
-bool dc_link_get_hpd_state(struct dc_link *dc_link);
 
 /* Notify DC about DP RX Interrupt (aka Short Pulse Interrupt).
  * Return:
@@ -182,7 +159,7 @@ bool dc_link_get_hpd_state(struct dc_link *dc_link);
  * false - no change in Downstream port status. No further action required
  * from DM. */
 bool dc_link_handle_hpd_rx_irq(struct dc_link *dc_link,
-		union hpd_irq_data *hpd_irq_dpcd_data, bool *out_link_loss);
+		union hpd_irq_data *hpd_irq_dpcd_data);
 
 struct dc_sink_init_data;
 
@@ -218,31 +195,9 @@ bool dc_link_dp_set_test_pattern(
 	const unsigned char *p_custom_pattern,
 	unsigned int cust_pattern_size);
 
-void dc_link_enable_hpd_filter(struct dc_link *link, bool enable);
-
-bool dc_link_is_dp_sink_present(struct dc_link *link);
-
-bool dc_link_detect_sink(struct dc_link *link, enum dc_connection_type *type);
 /*
  * DPCD access interfaces
  */
-
-void dc_link_set_drive_settings(struct dc *dc,
-				struct link_training_settings *lt_settings,
-				const struct dc_link *link);
-void dc_link_perform_link_training(struct dc *dc,
-				   struct dc_link_settings *link_setting,
-				   bool skip_video_pattern);
-void dc_link_set_preferred_link_settings(struct dc *dc,
-					 struct dc_link_settings *link_setting,
-					 struct dc_link *link);
-void dc_link_enable_hpd(const struct dc_link *link);
-void dc_link_disable_hpd(const struct dc_link *link);
-void dc_link_set_test_pattern(struct dc_link *link,
-			enum dp_test_pattern test_pattern,
-			const struct link_training_settings *p_link_settings,
-			const unsigned char *p_custom_pattern,
-			unsigned int cust_pattern_size);
 
 bool dc_submit_i2c(
 		struct dc *dc,

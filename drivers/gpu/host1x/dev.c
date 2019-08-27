@@ -29,10 +29,6 @@
 #include <trace/events/host1x.h>
 #undef CREATE_TRACE_POINTS
 
-#if IS_ENABLED(CONFIG_ARM_DMA_USE_IOMMU)
-#include <asm/dma-iommu.h>
-#endif
-
 #include "bus.h"
 #include "channel.h"
 #include "debug.h"
@@ -44,7 +40,6 @@
 #include "hw/host1x04.h"
 #include "hw/host1x05.h"
 #include "hw/host1x06.h"
-#include "hw/host1x07.h"
 
 void host1x_hypervisor_writel(struct host1x *host1x, u32 v, u32 r)
 {
@@ -131,19 +126,7 @@ static const struct host1x_info host1x06_info = {
 	.has_hypervisor = true,
 };
 
-static const struct host1x_info host1x07_info = {
-	.nb_channels = 63,
-	.nb_pts = 704,
-	.nb_mlocks = 32,
-	.nb_bases = 0,
-	.init = host1x07_init,
-	.sync_offset = 0x0,
-	.dma_mask = DMA_BIT_MASK(40),
-	.has_hypervisor = true,
-};
-
 static const struct of_device_id host1x_of_match[] = {
-	{ .compatible = "nvidia,tegra194-host1x", .data = &host1x07_info, },
 	{ .compatible = "nvidia,tegra186-host1x", .data = &host1x06_info, },
 	{ .compatible = "nvidia,tegra210-host1x", .data = &host1x05_info, },
 	{ .compatible = "nvidia,tegra124-host1x", .data = &host1x04_info, },
@@ -234,30 +217,16 @@ static int host1x_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to get reset: %d\n", err);
 		return err;
 	}
-#if IS_ENABLED(CONFIG_ARM_DMA_USE_IOMMU)
-	if (host->dev->archdata.mapping) {
-		struct dma_iommu_mapping *mapping =
-				to_dma_iommu_mapping(host->dev);
-		arm_iommu_detach_device(host->dev);
-		arm_iommu_release_mapping(mapping);
-	}
-#endif
-	if (IS_ENABLED(CONFIG_TEGRA_HOST1X_FIREWALL))
-		goto skip_iommu;
 
 	host->group = iommu_group_get(&pdev->dev);
 	if (host->group) {
 		struct iommu_domain_geometry *geometry;
 		unsigned long order;
 
-		err = iova_cache_get();
-		if (err < 0)
-			goto put_group;
-
 		host->domain = iommu_domain_alloc(&platform_bus_type);
 		if (!host->domain) {
 			err = -ENOMEM;
-			goto put_cache;
+			goto put_group;
 		}
 
 		err = iommu_attach_group(host->domain, host->group);
@@ -265,7 +234,6 @@ static int host1x_probe(struct platform_device *pdev)
 			if (err == -ENODEV) {
 				iommu_domain_free(host->domain);
 				host->domain = NULL;
-				iova_cache_put();
 				iommu_group_put(host->group);
 				host->group = NULL;
 				goto skip_iommu;
@@ -340,9 +308,6 @@ fail_detach_device:
 fail_free_domain:
 	if (host->domain)
 		iommu_domain_free(host->domain);
-put_cache:
-	if (host->group)
-		iova_cache_put();
 put_group:
 	iommu_group_put(host->group);
 
@@ -363,7 +328,6 @@ static int host1x_remove(struct platform_device *pdev)
 		put_iova_domain(&host->iova);
 		iommu_detach_group(host->domain, host->group);
 		iommu_domain_free(host->domain);
-		iova_cache_put();
 		iommu_group_put(host->group);
 	}
 

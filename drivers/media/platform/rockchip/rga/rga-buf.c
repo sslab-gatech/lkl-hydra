@@ -64,10 +64,31 @@ static void rga_buf_queue(struct vb2_buffer *vb)
 	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
 }
 
-static void rga_buf_return_buffers(struct vb2_queue *q,
-				   enum vb2_buffer_state state)
+static int rga_buf_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct rga_ctx *ctx = vb2_get_drv_priv(q);
+	struct rockchip_rga *rga = ctx->rga;
+	int ret, i;
+
+	ret = pm_runtime_get_sync(rga->dev);
+
+	if (!ret)
+		return 0;
+
+	for (i = 0; i < q->num_buffers; ++i) {
+		if (q->bufs[i]->state == VB2_BUF_STATE_ACTIVE) {
+			v4l2_m2m_buf_done(to_vb2_v4l2_buffer(q->bufs[i]),
+					  VB2_BUF_STATE_QUEUED);
+		}
+	}
+
+	return ret;
+}
+
+static void rga_buf_stop_streaming(struct vb2_queue *q)
+{
+	struct rga_ctx *ctx = vb2_get_drv_priv(q);
+	struct rockchip_rga *rga = ctx->rga;
 	struct vb2_v4l2_buffer *vbuf;
 
 	for (;;) {
@@ -77,31 +98,9 @@ static void rga_buf_return_buffers(struct vb2_queue *q,
 			vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
 		if (!vbuf)
 			break;
-		v4l2_m2m_buf_done(vbuf, state);
-	}
-}
-
-static int rga_buf_start_streaming(struct vb2_queue *q, unsigned int count)
-{
-	struct rga_ctx *ctx = vb2_get_drv_priv(q);
-	struct rockchip_rga *rga = ctx->rga;
-	int ret;
-
-	ret = pm_runtime_get_sync(rga->dev);
-	if (ret < 0) {
-		rga_buf_return_buffers(q, VB2_BUF_STATE_QUEUED);
-		return ret;
+		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 	}
 
-	return 0;
-}
-
-static void rga_buf_stop_streaming(struct vb2_queue *q)
-{
-	struct rga_ctx *ctx = vb2_get_drv_priv(q);
-	struct rockchip_rga *rga = ctx->rga;
-
-	rga_buf_return_buffers(q, VB2_BUF_STATE_ERROR);
 	pm_runtime_put(rga->dev);
 }
 
@@ -141,8 +140,7 @@ void rga_buf_map(struct vb2_buffer *vb)
 		address = sg_phys(sgl);
 
 		for (p = 0; p < len; p++) {
-			dma_addr_t phys = address +
-					  ((dma_addr_t)p << PAGE_SHIFT);
+			dma_addr_t phys = address + (p << PAGE_SHIFT);
 
 			pages[mapped_size + p] = phys;
 		}

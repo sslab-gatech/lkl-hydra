@@ -85,18 +85,6 @@ static int pcf8523_write(struct i2c_client *client, u8 reg, u8 value)
 	return 0;
 }
 
-static int pcf8523_voltage_low(struct i2c_client *client)
-{
-	u8 value;
-	int err;
-
-	err = pcf8523_read(client, REG_CONTROL3, &value);
-	if (err < 0)
-		return err;
-
-	return !!(value & REG_CONTROL3_BLF);
-}
-
 static int pcf8523_select_capacitance(struct i2c_client *client, bool high)
 {
 	u8 value;
@@ -179,14 +167,6 @@ static int pcf8523_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	struct i2c_msg msgs[2];
 	int err;
 
-	err = pcf8523_voltage_low(client);
-	if (err < 0) {
-		return err;
-	} else if (err > 0) {
-		dev_err(dev, "low voltage detected, time is unreliable\n");
-		return -EINVAL;
-	}
-
 	msgs[0].addr = client->addr;
 	msgs[0].flags = 0;
 	msgs[0].len = 1;
@@ -212,7 +192,7 @@ static int pcf8523_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	tm->tm_mon = bcd2bin(regs[5] & 0x1f) - 1;
 	tm->tm_year = bcd2bin(regs[6]) + 100;
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int pcf8523_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -271,13 +251,17 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-	int ret;
+	u8 value;
+	int ret = 0, err;
 
 	switch (cmd) {
 	case RTC_VL_READ:
-		ret = pcf8523_voltage_low(client);
-		if (ret < 0)
-			return ret;
+		err = pcf8523_read(client, REG_CONTROL3, &value);
+		if (err < 0)
+			return err;
+
+		if (value & REG_CONTROL3_BLF)
+			ret = 1;
 
 		if (copy_to_user((void __user *)arg, &ret, sizeof(int)))
 			return -EFAULT;

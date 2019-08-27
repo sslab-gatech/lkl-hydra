@@ -8,7 +8,6 @@
 
 #include <linux/types.h>
 #include <linux/bvec.h>
-#include <linux/ktime.h>
 
 struct bio_set;
 struct bio;
@@ -21,13 +20,8 @@ typedef void (bio_end_io_t) (struct bio *);
 
 /*
  * Block error status values.  See block/blk-core:blk_errors for the details.
- * Alpha cannot write a byte atomically, so we need to use 32-bit value.
  */
-#if defined(CONFIG_ALPHA) && !defined(__alpha_bwx__)
-typedef u32 __bitwise blk_status_t;
-#else
 typedef u8 __bitwise blk_status_t;
-#endif
 #define	BLK_STS_OK 0
 #define BLK_STS_NOTSUPP		((__force blk_status_t)1)
 #define BLK_STS_TIMEOUT		((__force blk_status_t)2)
@@ -91,51 +85,9 @@ static inline bool blk_path_error(blk_status_t error)
 	return true;
 }
 
-/*
- * From most significant bit:
- * 1 bit: reserved for other usage, see below
- * 12 bits: original size of bio
- * 51 bits: issue time of bio
- */
-#define BIO_ISSUE_RES_BITS      1
-#define BIO_ISSUE_SIZE_BITS     12
-#define BIO_ISSUE_RES_SHIFT     (64 - BIO_ISSUE_RES_BITS)
-#define BIO_ISSUE_SIZE_SHIFT    (BIO_ISSUE_RES_SHIFT - BIO_ISSUE_SIZE_BITS)
-#define BIO_ISSUE_TIME_MASK     ((1ULL << BIO_ISSUE_SIZE_SHIFT) - 1)
-#define BIO_ISSUE_SIZE_MASK     \
-	(((1ULL << BIO_ISSUE_SIZE_BITS) - 1) << BIO_ISSUE_SIZE_SHIFT)
-#define BIO_ISSUE_RES_MASK      (~((1ULL << BIO_ISSUE_RES_SHIFT) - 1))
-
-/* Reserved bit for blk-throtl */
-#define BIO_ISSUE_THROTL_SKIP_LATENCY (1ULL << 63)
-
-struct bio_issue {
-	u64 value;
+struct blk_issue_stat {
+	u64 stat;
 };
-
-static inline u64 __bio_issue_time(u64 time)
-{
-	return time & BIO_ISSUE_TIME_MASK;
-}
-
-static inline u64 bio_issue_time(struct bio_issue *issue)
-{
-	return __bio_issue_time(issue->value);
-}
-
-static inline sector_t bio_issue_size(struct bio_issue *issue)
-{
-	return ((issue->value & BIO_ISSUE_SIZE_MASK) >> BIO_ISSUE_SIZE_SHIFT);
-}
-
-static inline void bio_issue_init(struct bio_issue *issue,
-				       sector_t size)
-{
-	size &= (1ULL << BIO_ISSUE_SIZE_BITS) - 1;
-	issue->value = ((issue->value & BIO_ISSUE_RES_MASK) |
-			(ktime_get_ns() & BIO_ISSUE_TIME_MASK) |
-			((u64)size << BIO_ISSUE_SIZE_SHIFT));
-}
 
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
@@ -174,13 +126,15 @@ struct bio {
 	void			*bi_private;
 #ifdef CONFIG_BLK_CGROUP
 	/*
-	 * Represents the association of the css and request_queue for the bio.
-	 * If a bio goes direct to device, it will not have a blkg as it will
-	 * not have a request_queue associated with it.  The reference is put
-	 * on release of the bio.
+	 * Optional ioc and css associated with this bio.  Put on bio
+	 * release.  Read comment on top of bio_associate_current().
 	 */
-	struct blkcg_gq		*bi_blkg;
-	struct bio_issue	bi_issue;
+	struct io_context	*bi_ioc;
+	struct cgroup_subsys_state *bi_css;
+#ifdef CONFIG_BLK_DEV_THROTTLING_LOW
+	void			*bi_cg_private;
+	struct blk_issue_stat	bi_issue_stat;
+#endif
 #endif
 	union {
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
@@ -227,9 +181,6 @@ struct bio {
 				 * throttling rules. Don't do it again. */
 #define BIO_TRACE_COMPLETION 10	/* bio_endio() should trace the final completion
 				 * of this bio. */
-#define BIO_QUEUE_ENTERED 11	/* can use blk_queue_enter_live() */
-#define BIO_TRACKED 12		/* set if bio goes through the rq_qos path */
-
 /* See BVEC_POOL_OFFSET below before adding new flags */
 
 /*
@@ -285,9 +236,11 @@ enum req_opf {
 	REQ_OP_FLUSH		= 2,
 	/* discard sectors */
 	REQ_OP_DISCARD		= 3,
+	/* get zone information */
+	REQ_OP_ZONE_REPORT	= 4,
 	/* securely erase sectors */
 	REQ_OP_SECURE_ERASE	= 5,
-	/* reset a zone write pointer */
+	/* seset a zone write pointer */
 	REQ_OP_ZONE_RESET	= 6,
 	/* write the same sector many times */
 	REQ_OP_WRITE_SAME	= 7,
@@ -324,11 +277,9 @@ enum req_flag_bits {
 	/* command specific flags for REQ_OP_WRITE_ZEROES: */
 	__REQ_NOUNMAP,		/* do not free blocks when zeroing */
 
-	__REQ_HIPRI,
-
 	/* for driver use */
 	__REQ_DRV,
-	__REQ_SWAP,		/* swapping request. */
+
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -346,25 +297,16 @@ enum req_flag_bits {
 #define REQ_RAHEAD		(1ULL << __REQ_RAHEAD)
 #define REQ_BACKGROUND		(1ULL << __REQ_BACKGROUND)
 #define REQ_NOWAIT		(1ULL << __REQ_NOWAIT)
+
 #define REQ_NOUNMAP		(1ULL << __REQ_NOUNMAP)
-#define REQ_HIPRI		(1ULL << __REQ_HIPRI)
 
 #define REQ_DRV			(1ULL << __REQ_DRV)
-#define REQ_SWAP		(1ULL << __REQ_SWAP)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
 
 #define REQ_NOMERGE_FLAGS \
 	(REQ_NOMERGE | REQ_PREFLUSH | REQ_FUA)
-
-enum stat_group {
-	STAT_READ,
-	STAT_WRITE,
-	STAT_DISCARD,
-
-	NR_STAT_GROUPS
-};
 
 #define bio_op(bio) \
 	((bio)->bi_opf & REQ_OP_MASK)
@@ -403,18 +345,6 @@ static inline bool op_is_sync(unsigned int op)
 		(op & (REQ_SYNC | REQ_FUA | REQ_PREFLUSH));
 }
 
-static inline bool op_is_discard(unsigned int op)
-{
-	return (op & REQ_OP_MASK) == REQ_OP_DISCARD;
-}
-
-static inline int op_stat_group(unsigned int op)
-{
-	if (op_is_discard(op))
-		return STAT_DISCARD;
-	return op_is_write(op);
-}
-
 typedef unsigned int blk_qc_t;
 #define BLK_QC_T_NONE		-1U
 #define BLK_QC_T_SHIFT		16
@@ -423,6 +353,17 @@ typedef unsigned int blk_qc_t;
 static inline bool blk_qc_t_valid(blk_qc_t cookie)
 {
 	return cookie != BLK_QC_T_NONE;
+}
+
+static inline blk_qc_t blk_tag_to_qc_t(unsigned int tag, unsigned int queue_num,
+				       bool internal)
+{
+	blk_qc_t ret = tag | (queue_num << BLK_QC_T_SHIFT);
+
+	if (internal)
+		ret |= BLK_QC_T_INTERNAL;
+
+	return ret;
 }
 
 static inline unsigned int blk_qc_t_to_queue_num(blk_qc_t cookie)

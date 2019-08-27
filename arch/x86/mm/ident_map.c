@@ -98,9 +98,6 @@ int kernel_ident_mapping_init(struct x86_mapping_info *info, pgd_t *pgd_page,
 	if (!info->kernpg_flag)
 		info->kernpg_flag = _KERNPG_TABLE;
 
-	/* Filter out unsupported __PAGE_KERNEL_* bits: */
-	info->kernpg_flag &= __default_kernel_pte_mask;
-
 	for (; addr < end; addr = next) {
 		pgd_t *pgd = pgd_page + pgd_index(addr);
 		p4d_t *p4d;
@@ -123,7 +120,7 @@ int kernel_ident_mapping_init(struct x86_mapping_info *info, pgd_t *pgd_page,
 		result = ident_p4d_init(info, p4d, addr, next);
 		if (result)
 			return result;
-		if (pgtable_l5_enabled()) {
+		if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
 			set_pgd(pgd, __pgd(__pa(p4d) | info->kernpg_flag));
 		} else {
 			/*

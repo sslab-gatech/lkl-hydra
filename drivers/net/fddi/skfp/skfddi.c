@@ -297,11 +297,11 @@ static int skfp_init_one(struct pci_dev *pdev,
 	return 0;
 err_out5:
 	if (smc->os.SharedMemAddr) 
-		dma_free_coherent(&pdev->dev, smc->os.SharedMemSize,
-				  smc->os.SharedMemAddr,
-				  smc->os.SharedMemDMA);
-	dma_free_coherent(&pdev->dev, MAX_FRAME_SIZE,
-			  smc->os.LocalRxBuffer, smc->os.LocalRxBufferDMA);
+		pci_free_consistent(pdev, smc->os.SharedMemSize,
+				    smc->os.SharedMemAddr, 
+				    smc->os.SharedMemDMA);
+	pci_free_consistent(pdev, MAX_FRAME_SIZE,
+			    smc->os.LocalRxBuffer, smc->os.LocalRxBufferDMA);
 err_out4:
 	free_netdev(dev);
 err_out3:
@@ -328,17 +328,17 @@ static void skfp_remove_one(struct pci_dev *pdev)
 	unregister_netdev(p);
 
 	if (lp->os.SharedMemAddr) {
-		dma_free_coherent(&pdev->dev,
-				  lp->os.SharedMemSize,
-				  lp->os.SharedMemAddr,
-				  lp->os.SharedMemDMA);
+		pci_free_consistent(&lp->os.pdev,
+				    lp->os.SharedMemSize,
+				    lp->os.SharedMemAddr,
+				    lp->os.SharedMemDMA);
 		lp->os.SharedMemAddr = NULL;
 	}
 	if (lp->os.LocalRxBuffer) {
-		dma_free_coherent(&pdev->dev,
-				  MAX_FRAME_SIZE,
-				  lp->os.LocalRxBuffer,
-				  lp->os.LocalRxBufferDMA);
+		pci_free_consistent(&lp->os.pdev,
+				    MAX_FRAME_SIZE,
+				    lp->os.LocalRxBuffer,
+				    lp->os.LocalRxBufferDMA);
 		lp->os.LocalRxBuffer = NULL;
 	}
 #ifdef MEM_MAPPED_IO
@@ -394,9 +394,7 @@ static  int skfp_driver_init(struct net_device *dev)
 	spin_lock_init(&bp->DriverLock);
 	
 	// Allocate invalid frame
-	bp->LocalRxBuffer = dma_alloc_coherent(&bp->pdev.dev, MAX_FRAME_SIZE,
-					       &bp->LocalRxBufferDMA,
-					       GFP_ATOMIC);
+	bp->LocalRxBuffer = pci_alloc_consistent(&bp->pdev, MAX_FRAME_SIZE, &bp->LocalRxBufferDMA);
 	if (!bp->LocalRxBuffer) {
 		printk("could not allocate mem for ");
 		printk("LocalRxBuffer: %d byte\n", MAX_FRAME_SIZE);
@@ -409,22 +407,23 @@ static  int skfp_driver_init(struct net_device *dev)
 	if (bp->SharedMemSize > 0) {
 		bp->SharedMemSize += 16;	// for descriptor alignment
 
-		bp->SharedMemAddr = dma_alloc_coherent(&bp->pdev.dev,
-						       bp->SharedMemSize,
-						       &bp->SharedMemDMA,
-						       GFP_ATOMIC);
+		bp->SharedMemAddr = pci_alloc_consistent(&bp->pdev,
+							 bp->SharedMemSize,
+							 &bp->SharedMemDMA);
 		if (!bp->SharedMemAddr) {
 			printk("could not allocate mem for ");
 			printk("hardware module: %ld byte\n",
 			       bp->SharedMemSize);
 			goto fail;
 		}
+		bp->SharedMemHeap = 0;	// Nothing used yet.
 
 	} else {
 		bp->SharedMemAddr = NULL;
-	}
+		bp->SharedMemHeap = 0;
+	}			// SharedMemSize > 0
 
-	bp->SharedMemHeap = 0;
+	memset(bp->SharedMemAddr, 0, bp->SharedMemSize);
 
 	card_stop(smc);		// Reset adapter.
 
@@ -443,15 +442,15 @@ static  int skfp_driver_init(struct net_device *dev)
 
 fail:
 	if (bp->SharedMemAddr) {
-		dma_free_coherent(&bp->pdev.dev,
-				  bp->SharedMemSize,
-				  bp->SharedMemAddr,
-				  bp->SharedMemDMA);
+		pci_free_consistent(&bp->pdev,
+				    bp->SharedMemSize,
+				    bp->SharedMemAddr,
+				    bp->SharedMemDMA);
 		bp->SharedMemAddr = NULL;
 	}
 	if (bp->LocalRxBuffer) {
-		dma_free_coherent(&bp->pdev.dev, MAX_FRAME_SIZE,
-				  bp->LocalRxBuffer, bp->LocalRxBufferDMA);
+		pci_free_consistent(&bp->pdev, MAX_FRAME_SIZE,
+				    bp->LocalRxBuffer, bp->LocalRxBufferDMA);
 		bp->LocalRxBuffer = NULL;
 	}
 	return err;

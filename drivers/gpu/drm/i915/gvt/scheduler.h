@@ -80,10 +80,10 @@ struct intel_shadow_wa_ctx {
 struct intel_vgpu_workload {
 	struct intel_vgpu *vgpu;
 	int ring_id;
-	struct i915_request *req;
+	struct drm_i915_gem_request *req;
 	/* if this workload has been dispatched to i915? */
 	bool dispatched;
-	bool shadow;      /* if workload has done shadow of guest request */
+	bool shadowed;
 	int status;
 
 	struct intel_vgpu_mm *shadow_mm;
@@ -125,7 +125,6 @@ struct intel_vgpu_shadow_bb {
 	unsigned int clflush;
 	bool accessing;
 	unsigned long bb_offset;
-	bool ppgtt;
 };
 
 #define workload_q_head(vgpu, ring_id) \
@@ -158,8 +157,5 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
 			   struct execlist_ctx_descriptor_format *desc);
 
 void intel_vgpu_destroy_workload(struct intel_vgpu_workload *workload);
-
-void intel_vgpu_clean_workloads(struct intel_vgpu *vgpu,
-				unsigned long engine_mask);
 
 #endif

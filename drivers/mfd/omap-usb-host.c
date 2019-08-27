@@ -153,6 +153,27 @@ static const char * const port_modes[] = {
 	[OMAP_OHCI_PORT_MODE_TLL_2PIN_DPDM]	= "ohci-tll-2pin-dpdm",
 };
 
+/**
+ * omap_usbhs_get_dt_port_mode - Get the 'enum usbhs_omap_port_mode'
+ * from the port mode string.
+ * @mode: The port mode string, usually obtained from device tree.
+ *
+ * The function returns the 'enum usbhs_omap_port_mode' that matches the
+ * provided port mode string as per the port_modes table.
+ * If no match is found it returns -ENODEV
+ */
+static int omap_usbhs_get_dt_port_mode(const char *mode)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(port_modes); i++) {
+		if (!strcmp(mode, port_modes[i]))
+			return i;
+	}
+
+	return -ENODEV;
+}
+
 static struct platform_device *omap_usbhs_alloc_child(const char *name,
 			struct resource	*res, int num_resources, void *pdata,
 			size_t pdata_size, struct device *dev)
@@ -508,8 +529,7 @@ static int usbhs_omap_get_dt_pdata(struct device *dev,
 		if (ret < 0)
 			continue;
 
-		/* get 'enum usbhs_omap_port_mode' from port mode string */
-		ret = match_string(port_modes, ARRAY_SIZE(port_modes), mode);
+		ret = omap_usbhs_get_dt_port_mode(mode);
 		if (ret < 0) {
 			dev_warn(dev, "Invalid port%d-mode \"%s\" in device tree\n",
 					i, mode);
@@ -528,8 +548,8 @@ static int usbhs_omap_get_dt_pdata(struct device *dev,
 }
 
 static const struct of_device_id usbhs_child_match_table[] = {
-	{ .compatible = "ti,ehci-omap", },
-	{ .compatible = "ti,ohci-omap3", },
+	{ .compatible = "ti,omap-ehci", },
+	{ .compatible = "ti,omap-ohci", },
 	{ }
 };
 
@@ -855,7 +875,6 @@ static struct platform_driver usbhs_omap_driver = {
 		.pm		= &usbhsomap_dev_pm_ops,
 		.of_match_table = usbhs_omap_dt_ids,
 	},
-	.probe		= usbhs_omap_probe,
 	.remove		= usbhs_omap_remove,
 };
 
@@ -865,9 +884,9 @@ MODULE_ALIAS("platform:" USBHS_DRIVER_NAME);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("usb host common core driver for omap EHCI and OHCI");
 
-static int omap_usbhs_drvinit(void)
+static int __init omap_usbhs_drvinit(void)
 {
-	return platform_driver_register(&usbhs_omap_driver);
+	return platform_driver_probe(&usbhs_omap_driver, usbhs_omap_probe);
 }
 
 /*
@@ -879,7 +898,7 @@ static int omap_usbhs_drvinit(void)
  */
 fs_initcall_sync(omap_usbhs_drvinit);
 
-static void omap_usbhs_drvexit(void)
+static void __exit omap_usbhs_drvexit(void)
 {
 	platform_driver_unregister(&usbhs_omap_driver);
 }

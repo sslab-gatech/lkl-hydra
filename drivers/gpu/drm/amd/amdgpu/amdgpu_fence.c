@@ -131,8 +131,7 @@ static u32 amdgpu_fence_read(struct amdgpu_ring *ring)
  * Emits a fence command on the requested ring (all asics).
  * Returns 0 on success, -ENOMEM on failure.
  */
-int amdgpu_fence_emit(struct amdgpu_ring *ring, struct dma_fence **f,
-		      unsigned flags)
+int amdgpu_fence_emit(struct amdgpu_ring *ring, struct dma_fence **f)
 {
 	struct amdgpu_device *adev = ring->adev;
 	struct amdgpu_fence *fence;
@@ -150,7 +149,7 @@ int amdgpu_fence_emit(struct amdgpu_ring *ring, struct dma_fence **f,
 		       adev->fence_context + ring->idx,
 		       seq);
 	amdgpu_ring_emit_fence(ring, ring->fence_drv.gpu_addr,
-			       seq, flags | AMDGPU_FENCE_FLAG_INT);
+			       seq, AMDGPU_FENCE_FLAG_INT);
 
 	ptr = &ring->fence_drv.fences[seq & ring->fence_drv.num_fences_mask];
 	/* This function can't be called concurrently anyway, otherwise
@@ -216,10 +215,8 @@ static void amdgpu_fence_schedule_fallback(struct amdgpu_ring *ring)
  * Checks the current fence value and calculates the last
  * signalled fence value. Wakes the fence queue if the
  * sequence number has increased.
- *
- * Returns true if fence was processed
  */
-bool amdgpu_fence_process(struct amdgpu_ring *ring)
+void amdgpu_fence_process(struct amdgpu_ring *ring)
 {
 	struct amdgpu_fence_driver *drv = &ring->fence_drv;
 	uint32_t seq, last_seq;
@@ -231,12 +228,11 @@ bool amdgpu_fence_process(struct amdgpu_ring *ring)
 
 	} while (atomic_cmpxchg(&drv->last_seq, last_seq, seq) != last_seq);
 
-	if (del_timer(&ring->fence_drv.fallback_timer) &&
-	    seq != ring->fence_drv.sync_seq)
+	if (seq != ring->fence_drv.sync_seq)
 		amdgpu_fence_schedule_fallback(ring);
 
 	if (unlikely(seq == last_seq))
-		return false;
+		return;
 
 	last_seq &= drv->num_fences_mask;
 	seq &= drv->num_fences_mask;
@@ -263,8 +259,6 @@ bool amdgpu_fence_process(struct amdgpu_ring *ring)
 
 		dma_fence_put(fence);
 	} while (last_seq != seq);
-
-	return true;
 }
 
 /**
@@ -279,8 +273,7 @@ static void amdgpu_fence_fallback(struct timer_list *t)
 	struct amdgpu_ring *ring = from_timer(ring, t,
 					      fence_drv.fallback_timer);
 
-	if (amdgpu_fence_process(ring))
-		DRM_WARN("Fence fallback timer expired on ring %s\n", ring->name);
+	amdgpu_fence_process(ring);
 }
 
 /**
@@ -382,14 +375,14 @@ int amdgpu_fence_driver_start_ring(struct amdgpu_ring *ring,
 	struct amdgpu_device *adev = ring->adev;
 	uint64_t index;
 
-	if (ring->funcs->type != AMDGPU_RING_TYPE_UVD) {
+	if (ring != &adev->uvd.ring) {
 		ring->fence_drv.cpu_addr = &adev->wb.wb[ring->fence_offs];
 		ring->fence_drv.gpu_addr = adev->wb.gpu_addr + (ring->fence_offs * 4);
 	} else {
 		/* put fence directly behind firmware */
 		index = ALIGN(adev->uvd.fw->size, 8);
-		ring->fence_drv.cpu_addr = adev->uvd.inst[ring->me].cpu_addr + index;
-		ring->fence_drv.gpu_addr = adev->uvd.inst[ring->me].gpu_addr + index;
+		ring->fence_drv.cpu_addr = adev->uvd.cpu_addr + index;
+		ring->fence_drv.gpu_addr = adev->uvd.gpu_addr + index;
 	}
 	amdgpu_fence_write(ring, atomic_read(&ring->fence_drv.last_seq));
 	amdgpu_irq_get(adev, irq_src, irq_type);
@@ -398,9 +391,9 @@ int amdgpu_fence_driver_start_ring(struct amdgpu_ring *ring,
 	ring->fence_drv.irq_type = irq_type;
 	ring->fence_drv.initialized = true;
 
-	DRM_DEV_DEBUG(adev->dev, "fence driver on ring %s use gpu addr "
-		      "0x%016llx, cpu addr 0x%p\n", ring->name,
-		      ring->fence_drv.gpu_addr, ring->fence_drv.cpu_addr);
+	dev_dbg(adev->dev, "fence driver on ring %d use gpu addr 0x%016llx, "
+		"cpu addr 0x%p\n", ring->idx,
+		ring->fence_drv.gpu_addr, ring->fence_drv.cpu_addr);
 	return 0;
 }
 
@@ -417,7 +410,6 @@ int amdgpu_fence_driver_start_ring(struct amdgpu_ring *ring,
 int amdgpu_fence_driver_init_ring(struct amdgpu_ring *ring,
 				  unsigned num_hw_submission)
 {
-	long timeout;
 	int r;
 
 	/* Check that num_hw_submission is a power of two */
@@ -441,16 +433,9 @@ int amdgpu_fence_driver_init_ring(struct amdgpu_ring *ring,
 
 	/* No need to setup the GPU scheduler for KIQ ring */
 	if (ring->funcs->type != AMDGPU_RING_TYPE_KIQ) {
-		/* for non-sriov case, no timeout enforce on compute ring */
-		if ((ring->funcs->type == AMDGPU_RING_TYPE_COMPUTE)
-				&& !amdgpu_sriov_vf(ring->adev))
-			timeout = MAX_SCHEDULE_TIMEOUT;
-		else
-			timeout = msecs_to_jiffies(amdgpu_lockup_timeout);
-
 		r = drm_sched_init(&ring->sched, &amdgpu_sched_ops,
 				   num_hw_submission, amdgpu_job_hang_limit,
-				   timeout, ring->name);
+				   msecs_to_jiffies(amdgpu_lockup_timeout), ring->name);
 		if (r) {
 			DRM_ERROR("Failed to create scheduler on ring %s.\n",
 				  ring->name);
@@ -652,6 +637,7 @@ static const struct dma_fence_ops amdgpu_fence_ops = {
 	.get_driver_name = amdgpu_fence_get_driver_name,
 	.get_timeline_name = amdgpu_fence_get_timeline_name,
 	.enable_signaling = amdgpu_fence_enable_signaling,
+	.wait = dma_fence_default_wait,
 	.release = amdgpu_fence_release,
 };
 
@@ -707,7 +693,7 @@ static int amdgpu_debugfs_gpu_recover(struct seq_file *m, void *data)
 	struct amdgpu_device *adev = dev->dev_private;
 
 	seq_printf(m, "gpu recover\n");
-	amdgpu_device_gpu_recover(adev, NULL);
+	amdgpu_device_gpu_recover(adev, NULL, true);
 
 	return 0;
 }

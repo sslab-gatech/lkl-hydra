@@ -27,7 +27,7 @@ config NVME_TARGET_LOOP
 
 config NVME_TARGET_RDMA
 	tristate "NVMe over Fabrics RDMA target support"
-	depends on INFINIBAND && INFINIBAND_ADDR_TRANS
+	depends on INFINIBAND
 	depends on NVME_TARGET
 	select SGL_ALLOC
 	help
@@ -58,15 +58,5 @@ config NVME_TARGET_FCLOOP
 	help
 	  This enables the NVMe FC loopback test support, which can be useful
 	  to test NVMe-FC transport interfaces.
-
-	  If unsure, say N.
-
-config NVME_TARGET_TCP
-	tristate "NVMe over Fabrics TCP target support"
-	depends on INET
-	depends on NVME_TARGET
-	help
-	  This enables the NVMe TCP target support, which allows exporting NVMe
-	  devices over TCP.
 
 	  If unsure, say N.

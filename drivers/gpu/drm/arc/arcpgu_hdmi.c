@@ -15,8 +15,7 @@
  */
 
 #include <drm/drm_crtc.h>
-#include <drm/drm_encoder.h>
-#include <drm/drm_device.h>
+#include <drm/drm_encoder_slave.h>
 
 #include "arcpgu.h"
 

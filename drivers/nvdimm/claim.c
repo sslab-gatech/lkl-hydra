@@ -148,7 +148,7 @@ ssize_t nd_namespace_store(struct device *dev,
 	char *name;
 
 	if (dev->driver) {
-		dev_dbg(dev, "namespace already active\n");
+		dev_dbg(dev, "%s: -EBUSY\n", __func__);
 		return -EBUSY;
 	}
 
@@ -276,9 +276,7 @@ static int nsio_rw_bytes(struct nd_namespace_common *ndns,
 	if (rw == READ) {
 		if (unlikely(is_bad_pmem(&nsio->bb, sector, sz_align)))
 			return -EIO;
-		if (memcpy_mcsafe(buf, nsio->addr + offset, size) != 0)
-			return -EIO;
-		return 0;
+		return memcpy_mcsafe(buf, nsio->addr + offset, size);
 	}
 
 	if (unlikely(is_bad_pmem(&nsio->bb, sector, sz_align))) {

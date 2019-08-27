@@ -745,8 +745,8 @@ enum i40iw_status_code i40iw_allocate_dma_mem(struct i40iw_hw *hw,
 	if (!mem)
 		return I40IW_ERR_PARAM;
 	mem->size = ALIGN(size, alignment);
-	mem->va = dma_alloc_coherent(&pcidev->dev, mem->size,
-				     (dma_addr_t *)&mem->pa, GFP_KERNEL);
+	mem->va = dma_zalloc_coherent(&pcidev->dev, mem->size,
+				      (dma_addr_t *)&mem->pa, GFP_KERNEL);
 	if (!mem->va)
 		return I40IW_ERR_NO_MEMORY;
 	return 0;
@@ -1284,13 +1284,15 @@ void i40iw_cqp_qp_destroy_cmd(struct i40iw_sc_dev *dev, struct i40iw_sc_qp *qp)
  */
 void i40iw_ieq_mpa_crc_ae(struct i40iw_sc_dev *dev, struct i40iw_sc_qp *qp)
 {
-	struct i40iw_gen_ae_info info;
+	struct i40iw_qp_flush_info info;
 	struct i40iw_device *iwdev = (struct i40iw_device *)dev->back_dev;
 
 	i40iw_debug(dev, I40IW_DEBUG_AEQ, "%s entered\n", __func__);
+	memset(&info, 0, sizeof(info));
 	info.ae_code = I40IW_AE_LLP_RECEIVED_MPA_CRC_ERROR;
-	info.ae_source = I40IW_AE_SOURCE_RQ;
-	i40iw_gen_ae(iwdev, qp, &info, false);
+	info.generate_ae = true;
+	info.ae_source = 0x3;
+	(void)i40iw_hw_flush_wqes(iwdev, qp, &info, false);
 }
 
 /**
@@ -1405,7 +1407,7 @@ struct i40iw_sc_qp *i40iw_ieq_get_qp(struct i40iw_sc_dev *dev,
 	rem_port = ntohs(tcph->source);
 
 	cm_node = i40iw_find_node(&iwdev->cm_core, rem_port, rem_addr, loc_port,
-				  loc_addr, false, true);
+				  loc_addr, false);
 	if (!cm_node)
 		return NULL;
 	iwqp = cm_node->iwqp;

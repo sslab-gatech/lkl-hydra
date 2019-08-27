@@ -5,5 +5,7 @@ tfuzz-y += tfuzz.o
 executor-y += executor.o
 combined-y += combined.o
 combined-consistency-y += combined-consistency.o
+cptofs-$(LKL_HOST_CONFIG_ARCHIVE) += cptofs.o
+fs2tar-$(LKL_HOST_CONFIG_ARCHIVE) += fs2tar.o
 lklfuse-$(LKL_HOST_CONFIG_FUSE) += lklfuse.o
 

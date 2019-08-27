@@ -50,10 +50,6 @@
 	status = "okay";
 };
 
-&watchdog {
-	status = "okay";
-};
-
 /* FIXME: USB is wonky; disable it for now */
 &ehci0 {
 	status = "disabled";

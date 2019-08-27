@@ -103,38 +103,8 @@ enum intel_dpll_id {
 	 * @DPLL_ID_SKL_DPLL3: SKL and later DPLL3
 	 */
 	DPLL_ID_SKL_DPLL3 = 3,
-
-
-	/**
-	 * @DPLL_ID_ICL_DPLL0: ICL combo PHY DPLL0
-	 */
-	DPLL_ID_ICL_DPLL0 = 0,
-	/**
-	 * @DPLL_ID_ICL_DPLL1: ICL combo PHY DPLL1
-	 */
-	DPLL_ID_ICL_DPLL1 = 1,
-	/**
-	 * @DPLL_ID_ICL_TBTPLL: ICL TBT PLL
-	 */
-	DPLL_ID_ICL_TBTPLL = 2,
-	/**
-	 * @DPLL_ID_ICL_MGPLL1: ICL MG PLL 1 port 1 (C)
-	 */
-	DPLL_ID_ICL_MGPLL1 = 3,
-	/**
-	 * @DPLL_ID_ICL_MGPLL2: ICL MG PLL 1 port 2 (D)
-	 */
-	DPLL_ID_ICL_MGPLL2 = 4,
-	/**
-	 * @DPLL_ID_ICL_MGPLL3: ICL MG PLL 1 port 3 (E)
-	 */
-	DPLL_ID_ICL_MGPLL3 = 5,
-	/**
-	 * @DPLL_ID_ICL_MGPLL4: ICL MG PLL 1 port 4 (F)
-	 */
-	DPLL_ID_ICL_MGPLL4 = 6,
 };
-#define I915_NUM_PLLS 7
+#define I915_NUM_PLLS 6
 
 struct intel_dpll_hw_state {
 	/* i9xx, pch plls */
@@ -165,23 +135,6 @@ struct intel_dpll_hw_state {
 	/* bxt */
 	uint32_t ebb0, ebb4, pll0, pll1, pll2, pll3, pll6, pll8, pll9, pll10,
 		 pcsdw12;
-
-	/*
-	 * ICL uses the following, already defined:
-	 * uint32_t cfgcr0, cfgcr1;
-	 */
-	uint32_t mg_refclkin_ctl;
-	uint32_t mg_clktop2_coreclkctl1;
-	uint32_t mg_clktop2_hsclkctl;
-	uint32_t mg_pll_div0;
-	uint32_t mg_pll_div1;
-	uint32_t mg_pll_lf;
-	uint32_t mg_pll_frac_lock;
-	uint32_t mg_pll_ssc;
-	uint32_t mg_pll_bias;
-	uint32_t mg_pll_tdc_coldst_bias;
-	uint32_t mg_pll_bias_mask;
-	uint32_t mg_pll_tdc_coldst_bias_mask;
 };
 
 /**
@@ -253,37 +206,6 @@ struct intel_shared_dpll_funcs {
 };
 
 /**
- * struct dpll_info - display PLL platform specific info
- */
-struct dpll_info {
-	/**
-	 * @name: DPLL name; used for logging
-	 */
-	const char *name;
-
-	/**
-	 * @funcs: platform specific hooks
-	 */
-	const struct intel_shared_dpll_funcs *funcs;
-
-	/**
-	 * @id: unique indentifier for this DPLL; should match the index in the
-	 * dev_priv->shared_dplls array
-	 */
-	enum intel_dpll_id id;
-
-#define INTEL_DPLL_ALWAYS_ON	(1 << 0)
-	/**
-	 * @flags:
-	 *
-	 * INTEL_DPLL_ALWAYS_ON
-	 *     Inform the state checker that the DPLL is kept enabled even if
-	 *     not in use by any CRTC.
-	 */
-	uint32_t flags;
-};
-
-/**
  * struct intel_shared_dpll - display PLL with tracked state and users
  */
 struct intel_shared_dpll {
@@ -306,9 +228,30 @@ struct intel_shared_dpll {
 	bool on;
 
 	/**
-	 * @info: platform specific info
+	 * @name: DPLL name; used for logging
 	 */
-	const struct dpll_info *info;
+	const char *name;
+
+	/**
+	 * @id: unique indentifier for this DPLL; should match the index in the
+	 * dev_priv->shared_dplls array
+	 */
+	enum intel_dpll_id id;
+
+	/**
+	 * @funcs: platform specific hooks
+	 */
+	struct intel_shared_dpll_funcs funcs;
+
+#define INTEL_DPLL_ALWAYS_ON	(1 << 0)
+	/**
+	 * @flags:
+	 *
+	 * INTEL_DPLL_ALWAYS_ON
+	 *     Inform the state checker that the DPLL is kept enabled even if
+	 *     not in use by any CRTC.
+	 */
+	uint32_t flags;
 };
 
 #define SKL_DPLL0 0
@@ -334,18 +277,13 @@ struct intel_shared_dpll *intel_get_shared_dpll(struct intel_crtc *crtc,
 void intel_release_shared_dpll(struct intel_shared_dpll *dpll,
 			       struct intel_crtc *crtc,
 			       struct drm_atomic_state *state);
-void intel_prepare_shared_dpll(const struct intel_crtc_state *crtc_state);
-void intel_enable_shared_dpll(const struct intel_crtc_state *crtc_state);
-void intel_disable_shared_dpll(const struct intel_crtc_state *crtc_state);
+void intel_prepare_shared_dpll(struct intel_crtc *crtc);
+void intel_enable_shared_dpll(struct intel_crtc *crtc);
+void intel_disable_shared_dpll(struct intel_crtc *crtc);
 void intel_shared_dpll_swap_state(struct drm_atomic_state *state);
 void intel_shared_dpll_init(struct drm_device *dev);
 
 void intel_dpll_dump_hw_state(struct drm_i915_private *dev_priv,
 			      struct intel_dpll_hw_state *hw_state);
-int icl_calc_dp_combo_pll_link(struct drm_i915_private *dev_priv,
-			       uint32_t pll_id);
-int cnl_hdmi_pll_ref_clock(struct drm_i915_private *dev_priv);
-enum intel_dpll_id icl_port_to_mg_pll_id(enum port port);
-bool intel_dpll_is_combophy(enum intel_dpll_id id);
 
 #endif /* _INTEL_DPLL_MGR_H_ */

@@ -483,13 +483,10 @@ MODULE_DEVICE_TABLE(vmbus, id_table);
 
 /* The one and only one */
 static  struct hv_driver util_drv = {
-	.name = "hv_utils",
+	.name = "hv_util",
 	.id_table = id_table,
 	.probe =  util_probe,
 	.remove =  util_remove,
-	.driver = {
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-	},
 };
 
 static int hv_ptp_enable(struct ptp_clock_info *info,

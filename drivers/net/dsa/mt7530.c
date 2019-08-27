@@ -18,6 +18,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
+#include <linux/of_gpio.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/of_platform.h>
@@ -572,13 +573,9 @@ static int mt7530_phy_write(struct dsa_switch *ds, int port, int regnum,
 }
 
 static void
-mt7530_get_strings(struct dsa_switch *ds, int port, u32 stringset,
-		   uint8_t *data)
+mt7530_get_strings(struct dsa_switch *ds, int port, uint8_t *data)
 {
 	int i;
-
-	if (stringset != ETH_SS_STATS)
-		return;
 
 	for (i = 0; i < ARRAY_SIZE(mt7530_mib); i++)
 		strncpy(data + i * ETH_GSTRING_LEN, mt7530_mib[i].name,
@@ -607,11 +604,8 @@ mt7530_get_ethtool_stats(struct dsa_switch *ds, int port,
 }
 
 static int
-mt7530_get_sset_count(struct dsa_switch *ds, int port, int sset)
+mt7530_get_sset_count(struct dsa_switch *ds)
 {
-	if (sset != ETH_SS_STATS)
-		return 0;
-
 	return ARRAY_SIZE(mt7530_mib);
 }
 
@@ -657,8 +651,11 @@ static void mt7530_adjust_link(struct dsa_switch *ds, int port,
 			if (phydev->asym_pause)
 				rmt_adv |= LPA_PAUSE_ASYM;
 
-			lcl_adv = linkmode_adv_to_lcl_adv_t(
-				phydev->advertising);
+			if (phydev->advertising & ADVERTISED_Pause)
+				lcl_adv |= ADVERTISE_PAUSE_CAP;
+			if (phydev->advertising & ADVERTISED_Asym_Pause)
+				lcl_adv |= ADVERTISE_PAUSE_ASYM;
+
 			flowctrl = mii_resolve_flowctrl_fdx(lcl_adv, rmt_adv);
 
 			if (flowctrl & FLOW_CTRL_TX)
@@ -920,7 +917,7 @@ mt7530_port_fdb_add(struct dsa_switch *ds, int port,
 
 	mutex_lock(&priv->reg_mutex);
 	mt7530_fdb_write(priv, vid, port_mask, addr, -1, STATIC_ENT);
-	ret = mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, NULL);
+	ret = mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, 0);
 	mutex_unlock(&priv->reg_mutex);
 
 	return ret;
@@ -936,7 +933,7 @@ mt7530_port_fdb_del(struct dsa_switch *ds, int port,
 
 	mutex_lock(&priv->reg_mutex);
 	mt7530_fdb_write(priv, vid, port_mask, addr, -1, STATIC_EMP);
-	ret = mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, NULL);
+	ret = mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, 0);
 	mutex_unlock(&priv->reg_mutex);
 
 	return ret;
@@ -1296,7 +1293,7 @@ mt7530_setup(struct dsa_switch *ds)
 	}
 
 	/* Flush the FDB table */
-	ret = mt7530_fdb_cmd(priv, MT7530_FDB_FLUSH, NULL);
+	ret = mt7530_fdb_cmd(priv, MT7530_FDB_FLUSH, 0);
 	if (ret < 0)
 		return ret;
 

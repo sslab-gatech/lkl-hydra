@@ -16,20 +16,6 @@
 #include <linux/ceph/mdsmap.h>
 #include <linux/ceph/auth.h>
 
-/* The first 8 bits are reserved for old ceph releases */
-#define CEPHFS_FEATURE_MIMIC		8
-#define CEPHFS_FEATURE_REPLY_ENCODING	9
-#define CEPHFS_FEATURE_RECLAIM_CLIENT	10
-#define CEPHFS_FEATURE_LAZY_CAP_WANTED	11
-
-#define CEPHFS_FEATURES_CLIENT_SUPPORTED { 	\
-	0, 1, 2, 3, 4, 5, 6, 7,			\
-	CEPHFS_FEATURE_MIMIC,			\
-	CEPHFS_FEATURE_LAZY_CAP_WANTED,		\
-}
-#define CEPHFS_FEATURES_CLIENT_REQUIRED {}
-
-
 /*
  * Some lock dependencies:
  *
@@ -63,8 +49,6 @@ struct ceph_mds_reply_info_in {
 	char *inline_data;
 	u32 pool_ns_len;
 	char *pool_ns_data;
-	u64 max_bytes;
-	u64 max_files;
 };
 
 struct ceph_mds_reply_dir_entry {
@@ -243,7 +227,7 @@ struct ceph_mds_request {
 	int r_fmode;        /* file mode, if expecting cap */
 	kuid_t r_uid;
 	kgid_t r_gid;
-	struct timespec64 r_stamp;
+	struct timespec r_stamp;
 
 	/* for choosing which mds to send this request to */
 	int r_direct_mode;
@@ -327,8 +311,6 @@ struct ceph_mds_client {
 	atomic_t		num_sessions;
 	int                     max_sessions;  /* len of s_mds_sessions */
 	int                     stopping;      /* true if shutting down */
-
-	atomic64_t		quotarealms_count; /* # realms with quota */
 
 	/*
 	 * snap_rwsem will cover cap linkage into snaprealms, and

@@ -31,7 +31,6 @@
 
 #include "mei-trace.h"
 
-#define TXE_HBUF_DEPTH (PAYLOAD_SIZE / MEI_SLOT_SIZE)
 
 /**
  * mei_txe_reg_read - Reads 32bit data from the txe device
@@ -682,6 +681,9 @@ static void mei_txe_hw_config(struct mei_device *dev)
 
 	struct mei_txe_hw *hw = to_txe_hw(dev);
 
+	/* Doesn't change in runtime */
+	dev->hbuf_depth = PAYLOAD_SIZE / 4;
+
 	hw->aliveness = mei_txe_aliveness_get(dev);
 	hw->readiness = mei_txe_readiness_get(dev);
 
@@ -689,34 +691,37 @@ static void mei_txe_hw_config(struct mei_device *dev)
 		hw->aliveness, hw->readiness);
 }
 
+
 /**
  * mei_txe_write - writes a message to device.
  *
  * @dev: the device structure
- * @hdr: header of message
- * @hdr_len: header length in bytes - must multiplication of a slot (4bytes)
- * @data: payload
- * @data_len: paylead length in bytes
+ * @header: header of message
+ * @buf: message buffer will be written
  *
- * Return: 0 if success, < 0 - otherwise.
+ * Return: 0 if success, <0 - otherwise.
  */
+
 static int mei_txe_write(struct mei_device *dev,
-			 const void *hdr, size_t hdr_len,
-			 const void *data, size_t data_len)
+			 struct mei_msg_hdr *header,
+			 const unsigned char *buf)
 {
 	struct mei_txe_hw *hw = to_txe_hw(dev);
 	unsigned long rem;
-	const u32 *reg_buf;
-	u32 slots = TXE_HBUF_DEPTH;
+	unsigned long length;
+	int slots = dev->hbuf_depth;
+	u32 *reg_buf = (u32 *)buf;
 	u32 dw_cnt;
-	unsigned long i, j;
+	int i;
 
-	if (WARN_ON(!hdr || !data || hdr_len & 0x3))
+	if (WARN_ON(!header || !buf))
 		return -EINVAL;
 
-	dev_dbg(dev->dev, MEI_HDR_FMT, MEI_HDR_PRM((struct mei_msg_hdr *)hdr));
+	length = header->length;
 
-	dw_cnt = mei_data2slots(hdr_len + data_len);
+	dev_dbg(dev->dev, MEI_HDR_FMT, MEI_HDR_PRM(header));
+
+	dw_cnt = mei_data2slots(length);
 	if (dw_cnt > slots)
 		return -EMSGSIZE;
 
@@ -734,20 +739,17 @@ static int mei_txe_write(struct mei_device *dev,
 		return -EAGAIN;
 	}
 
-	reg_buf = hdr;
-	for (i = 0; i < hdr_len / MEI_SLOT_SIZE; i++)
-		mei_txe_input_payload_write(dev, i, reg_buf[i]);
+	mei_txe_input_payload_write(dev, 0, *((u32 *)header));
 
-	reg_buf = data;
-	for (j = 0; j < data_len / MEI_SLOT_SIZE; j++)
-		mei_txe_input_payload_write(dev, i + j, reg_buf[j]);
+	for (i = 0; i < length / 4; i++)
+		mei_txe_input_payload_write(dev, i + 1, reg_buf[i]);
 
-	rem = data_len & 0x3;
+	rem = length & 0x3;
 	if (rem > 0) {
 		u32 reg = 0;
 
-		memcpy(&reg, (const u8 *)data + data_len - rem, rem);
-		mei_txe_input_payload_write(dev, i + j, reg);
+		memcpy(&reg, &buf[length - rem], rem);
+		mei_txe_input_payload_write(dev, i + 1, reg);
 	}
 
 	/* after each write the whole buffer is consumed */
@@ -760,15 +762,15 @@ static int mei_txe_write(struct mei_device *dev,
 }
 
 /**
- * mei_txe_hbuf_depth - mimics the me hbuf circular buffer
+ * mei_txe_hbuf_max_len - mimics the me hbuf circular buffer
  *
  * @dev: the device structure
  *
- * Return: the TXE_HBUF_DEPTH
+ * Return: the PAYLOAD_SIZE - 4
  */
-static u32 mei_txe_hbuf_depth(const struct mei_device *dev)
+static size_t mei_txe_hbuf_max_len(const struct mei_device *dev)
 {
-	return TXE_HBUF_DEPTH;
+	return PAYLOAD_SIZE - sizeof(struct mei_msg_hdr);
 }
 
 /**
@@ -776,7 +778,7 @@ static u32 mei_txe_hbuf_depth(const struct mei_device *dev)
  *
  * @dev: the device structure
  *
- * Return: always TXE_HBUF_DEPTH
+ * Return: always hbuf_depth
  */
 static int mei_txe_hbuf_empty_slots(struct mei_device *dev)
 {
@@ -795,7 +797,7 @@ static int mei_txe_hbuf_empty_slots(struct mei_device *dev)
 static int mei_txe_count_full_read_slots(struct mei_device *dev)
 {
 	/* read buffers has static size */
-	return TXE_HBUF_DEPTH;
+	return  PAYLOAD_SIZE / 4;
 }
 
 /**
@@ -837,7 +839,7 @@ static int mei_txe_read(struct mei_device *dev,
 	dev_dbg(dev->dev, "buffer-length = %lu buf[0]0x%08X\n",
 		len, mei_txe_out_data_read(dev, 0));
 
-	for (i = 0; i < len / MEI_SLOT_SIZE; i++) {
+	for (i = 0; i < len / 4; i++) {
 		/* skip header: index starts from 1 */
 		reg = mei_txe_out_data_read(dev, i + 1);
 		dev_dbg(dev->dev, "buf[%d] = 0x%08X\n", i, reg);
@@ -1138,7 +1140,7 @@ irqreturn_t mei_txe_irq_thread_handler(int irq, void *dev_id)
 	/* Input Ready: Detection if host can write to SeC */
 	if (test_and_clear_bit(TXE_INTR_IN_READY_BIT, &hw->intr_cause)) {
 		dev->hbuf_is_ready = true;
-		hw->slots = TXE_HBUF_DEPTH;
+		hw->slots = dev->hbuf_depth;
 	}
 
 	if (hw->aliveness && dev->hbuf_is_ready) {
@@ -1184,7 +1186,7 @@ static const struct mei_hw_ops mei_txe_hw_ops = {
 
 	.hbuf_free_slots = mei_txe_hbuf_empty_slots,
 	.hbuf_is_ready = mei_txe_is_input_ready,
-	.hbuf_depth = mei_txe_hbuf_depth,
+	.hbuf_max_len = mei_txe_hbuf_max_len,
 
 	.write = mei_txe_write,
 

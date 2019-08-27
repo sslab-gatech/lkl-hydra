@@ -26,7 +26,7 @@ static const char *__doc_err_only__=
 #include <net/if.h>
 #include <time.h>
 
-#include <bpf/bpf.h>
+#include "libbpf.h"
 #include "bpf_load.h"
 #include "bpf_util.h"
 
@@ -58,7 +58,7 @@ static void usage(char *argv[])
 			printf(" flag (internal value:%d)",
 			       *long_options[i].flag);
 		else
-			printf("short-option: -%c",
+			printf("(internal short-option: -%c)",
 			       long_options[i].val);
 		printf("\n");
 	}
@@ -117,7 +117,6 @@ struct datarec {
 	__u64 processed;
 	__u64 dropped;
 	__u64 info;
-	__u64 err;
 };
 #define MAX_CPUS 64
 
@@ -142,7 +141,6 @@ struct stats_record {
 	struct record_u64 xdp_exception[XDP_ACTION_MAX];
 	struct record xdp_cpumap_kthread;
 	struct record xdp_cpumap_enqueue[MAX_CPUS];
-	struct record xdp_devmap_xmit;
 };
 
 static bool map_collect_record(int fd, __u32 key, struct record *rec)
@@ -153,7 +151,6 @@ static bool map_collect_record(int fd, __u32 key, struct record *rec)
 	__u64 sum_processed = 0;
 	__u64 sum_dropped = 0;
 	__u64 sum_info = 0;
-	__u64 sum_err = 0;
 	int i;
 
 	if ((bpf_map_lookup_elem(fd, &key, values)) != 0) {
@@ -172,13 +169,10 @@ static bool map_collect_record(int fd, __u32 key, struct record *rec)
 		sum_dropped        += values[i].dropped;
 		rec->cpu[i].info = values[i].info;
 		sum_info        += values[i].info;
-		rec->cpu[i].err = values[i].err;
-		sum_err        += values[i].err;
 	}
 	rec->total.processed = sum_processed;
 	rec->total.dropped   = sum_dropped;
 	rec->total.info      = sum_info;
-	rec->total.err       = sum_err;
 	return true;
 }
 
@@ -279,18 +273,6 @@ static double calc_info(struct datarec *r, struct datarec *p, double period)
 	return pps;
 }
 
-static double calc_err(struct datarec *r, struct datarec *p, double period)
-{
-	__u64 packets = 0;
-	double pps = 0;
-
-	if (period > 0) {
-		packets = r->err - p->err;
-		pps = packets / period;
-	}
-	return pps;
-}
-
 static void stats_print(struct stats_record *stats_rec,
 			struct stats_record *stats_prev,
 			bool err_only)
@@ -348,7 +330,7 @@ static void stats_print(struct stats_record *stats_rec,
 			pps = calc_pps_u64(r, p, t);
 			if (pps > 0)
 				printf(fmt1, "Exception", i,
-				       0.0, pps, action2str(rec_i));
+				       0.0, pps, err2str(rec_i));
 		}
 		pps = calc_pps_u64(&rec->total, &prev->total, t);
 		if (pps > 0)
@@ -415,7 +397,7 @@ static void stats_print(struct stats_record *stats_rec,
 			info = calc_info(r, p, t);
 			if (info > 0)
 				i_str = "sched";
-			if (pps > 0 || drop > 0)
+			if (pps > 0)
 				printf(fmt1, "cpumap-kthread",
 				       i, pps, drop, info, i_str);
 		}
@@ -425,50 +407,6 @@ static void stats_print(struct stats_record *stats_rec,
 		if (info > 0)
 			i_str = "sched-sum";
 		printf(fmt2, "cpumap-kthread", "total", pps, drop, info, i_str);
-	}
-
-	/* devmap ndo_xdp_xmit stats */
-	{
-		char *fmt1 = "%-15s %-7d %'-12.0f %'-12.0f %'-10.2f %s %s\n";
-		char *fmt2 = "%-15s %-7s %'-12.0f %'-12.0f %'-10.2f %s %s\n";
-		struct record *rec, *prev;
-		double drop, info, err;
-		char *i_str = "";
-		char *err_str = "";
-
-		rec  =  &stats_rec->xdp_devmap_xmit;
-		prev = &stats_prev->xdp_devmap_xmit;
-		t = calc_period(rec, prev);
-		for (i = 0; i < nr_cpus; i++) {
-			struct datarec *r = &rec->cpu[i];
-			struct datarec *p = &prev->cpu[i];
-
-			pps  = calc_pps(r, p, t);
-			drop = calc_drop(r, p, t);
-			info = calc_info(r, p, t);
-			err  = calc_err(r, p, t);
-			if (info > 0) {
-				i_str = "bulk-average";
-				info = (pps+drop) / info; /* calc avg bulk */
-			}
-			if (err > 0)
-				err_str = "drv-err";
-			if (pps > 0 || drop > 0)
-				printf(fmt1, "devmap-xmit",
-				       i, pps, drop, info, i_str, err_str);
-		}
-		pps = calc_pps(&rec->total, &prev->total, t);
-		drop = calc_drop(&rec->total, &prev->total, t);
-		info = calc_info(&rec->total, &prev->total, t);
-		err  = calc_err(&rec->total, &prev->total, t);
-		if (info > 0) {
-			i_str = "bulk-average";
-			info = (pps+drop) / info; /* calc avg bulk */
-		}
-		if (err > 0)
-			err_str = "drv-err";
-		printf(fmt2, "devmap-xmit", "total", pps, drop,
-		       info, i_str, err_str);
 	}
 
 	printf("\n");
@@ -498,9 +436,6 @@ static bool stats_collect(struct stats_record *rec)
 
 	fd = map_data[3].fd; /* map3: cpumap_kthread_cnt */
 	map_collect_record(fd, 0, &rec->xdp_cpumap_kthread);
-
-	fd = map_data[4].fd; /* map4: devmap_xmit_cnt */
-	map_collect_record(fd, 0, &rec->xdp_devmap_xmit);
 
 	return true;
 }
@@ -545,7 +480,6 @@ static struct stats_record *alloc_stats_record(void)
 
 	rec_sz = sizeof(struct datarec);
 	rec->xdp_cpumap_kthread.cpu = alloc_rec_per_cpu(rec_sz);
-	rec->xdp_devmap_xmit.cpu    = alloc_rec_per_cpu(rec_sz);
 
 	for (i = 0; i < MAX_CPUS; i++)
 		rec->xdp_cpumap_enqueue[i].cpu = alloc_rec_per_cpu(rec_sz);
@@ -564,7 +498,6 @@ static void free_stats_record(struct stats_record *r)
 		free(r->xdp_exception[i].cpu);
 
 	free(r->xdp_cpumap_kthread.cpu);
-	free(r->xdp_devmap_xmit.cpu);
 
 	for (i = 0; i < MAX_CPUS; i++)
 		free(r->xdp_cpumap_enqueue[i].cpu);
@@ -661,7 +594,7 @@ int main(int argc, char **argv)
 	snprintf(bpf_obj_file, sizeof(bpf_obj_file), "%s_kern.o", argv[0]);
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "hDSs:",
+	while ((opt = getopt_long(argc, argv, "h",
 				  long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'D':

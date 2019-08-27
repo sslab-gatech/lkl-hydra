@@ -337,7 +337,7 @@ static int vprbrd_i2c_xfer(struct i2c_adapter *i2c, struct i2c_msg *msgs,
 		}
 		mutex_unlock(&vb->lock);
 	}
-	return num;
+	return 0;
 error:
 	mutex_unlock(&vb->lock);
 	return error;

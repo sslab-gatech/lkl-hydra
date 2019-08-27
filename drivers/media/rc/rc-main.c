@@ -26,50 +26,48 @@ static const struct {
 	unsigned int repeat_period;
 	unsigned int scancode_bits;
 } protocols[] = {
-	[RC_PROTO_UNKNOWN] = { .name = "unknown", .repeat_period = 125 },
-	[RC_PROTO_OTHER] = { .name = "other", .repeat_period = 125 },
+	[RC_PROTO_UNKNOWN] = { .name = "unknown", .repeat_period = 250 },
+	[RC_PROTO_OTHER] = { .name = "other", .repeat_period = 250 },
 	[RC_PROTO_RC5] = { .name = "rc-5",
-		.scancode_bits = 0x1f7f, .repeat_period = 114 },
+		.scancode_bits = 0x1f7f, .repeat_period = 250 },
 	[RC_PROTO_RC5X_20] = { .name = "rc-5x-20",
-		.scancode_bits = 0x1f7f3f, .repeat_period = 114 },
+		.scancode_bits = 0x1f7f3f, .repeat_period = 250 },
 	[RC_PROTO_RC5_SZ] = { .name = "rc-5-sz",
-		.scancode_bits = 0x2fff, .repeat_period = 114 },
+		.scancode_bits = 0x2fff, .repeat_period = 250 },
 	[RC_PROTO_JVC] = { .name = "jvc",
-		.scancode_bits = 0xffff, .repeat_period = 125 },
+		.scancode_bits = 0xffff, .repeat_period = 250 },
 	[RC_PROTO_SONY12] = { .name = "sony-12",
-		.scancode_bits = 0x1f007f, .repeat_period = 100 },
+		.scancode_bits = 0x1f007f, .repeat_period = 250 },
 	[RC_PROTO_SONY15] = { .name = "sony-15",
-		.scancode_bits = 0xff007f, .repeat_period = 100 },
+		.scancode_bits = 0xff007f, .repeat_period = 250 },
 	[RC_PROTO_SONY20] = { .name = "sony-20",
-		.scancode_bits = 0x1fff7f, .repeat_period = 100 },
+		.scancode_bits = 0x1fff7f, .repeat_period = 250 },
 	[RC_PROTO_NEC] = { .name = "nec",
-		.scancode_bits = 0xffff, .repeat_period = 110 },
+		.scancode_bits = 0xffff, .repeat_period = 250 },
 	[RC_PROTO_NECX] = { .name = "nec-x",
-		.scancode_bits = 0xffffff, .repeat_period = 110 },
+		.scancode_bits = 0xffffff, .repeat_period = 250 },
 	[RC_PROTO_NEC32] = { .name = "nec-32",
-		.scancode_bits = 0xffffffff, .repeat_period = 110 },
+		.scancode_bits = 0xffffffff, .repeat_period = 250 },
 	[RC_PROTO_SANYO] = { .name = "sanyo",
-		.scancode_bits = 0x1fffff, .repeat_period = 125 },
+		.scancode_bits = 0x1fffff, .repeat_period = 250 },
 	[RC_PROTO_MCIR2_KBD] = { .name = "mcir2-kbd",
-		.scancode_bits = 0xffffff, .repeat_period = 100 },
+		.scancode_bits = 0xffff, .repeat_period = 250 },
 	[RC_PROTO_MCIR2_MSE] = { .name = "mcir2-mse",
-		.scancode_bits = 0x1fffff, .repeat_period = 100 },
+		.scancode_bits = 0x1fffff, .repeat_period = 250 },
 	[RC_PROTO_RC6_0] = { .name = "rc-6-0",
-		.scancode_bits = 0xffff, .repeat_period = 114 },
+		.scancode_bits = 0xffff, .repeat_period = 250 },
 	[RC_PROTO_RC6_6A_20] = { .name = "rc-6-6a-20",
-		.scancode_bits = 0xfffff, .repeat_period = 114 },
+		.scancode_bits = 0xfffff, .repeat_period = 250 },
 	[RC_PROTO_RC6_6A_24] = { .name = "rc-6-6a-24",
-		.scancode_bits = 0xffffff, .repeat_period = 114 },
+		.scancode_bits = 0xffffff, .repeat_period = 250 },
 	[RC_PROTO_RC6_6A_32] = { .name = "rc-6-6a-32",
-		.scancode_bits = 0xffffffff, .repeat_period = 114 },
+		.scancode_bits = 0xffffffff, .repeat_period = 250 },
 	[RC_PROTO_RC6_MCE] = { .name = "rc-6-mce",
-		.scancode_bits = 0xffff7fff, .repeat_period = 114 },
+		.scancode_bits = 0xffff7fff, .repeat_period = 250 },
 	[RC_PROTO_SHARP] = { .name = "sharp",
-		.scancode_bits = 0x1fff, .repeat_period = 125 },
-	[RC_PROTO_XMP] = { .name = "xmp", .repeat_period = 125 },
-	[RC_PROTO_CEC] = { .name = "cec", .repeat_period = 0 },
-	[RC_PROTO_IMON] = { .name = "imon",
-		.scancode_bits = 0x7fffffff, .repeat_period = 114 },
+		.scancode_bits = 0x1fff, .repeat_period = 250 },
+	[RC_PROTO_XMP] = { .name = "xmp", .repeat_period = 250 },
+	[RC_PROTO_CEC] = { .name = "cec", .repeat_period = 550 },
 };
 
 /* Used to keep track of known keymaps */
@@ -158,7 +156,6 @@ static struct rc_map_list empty_map = {
 
 /**
  * ir_create_table() - initializes a scancode table
- * @dev:	the rc_dev device
  * @rc_map:	the rc_map to initialize
  * @name:	name to assign to the table
  * @rc_proto:	ir type to assign to the new table
@@ -169,7 +166,7 @@ static struct rc_map_list empty_map = {
  *
  * return:	zero on success or a negative error code
  */
-static int ir_create_table(struct rc_dev *dev, struct rc_map *rc_map,
+static int ir_create_table(struct rc_map *rc_map,
 			   const char *name, u64 rc_proto, size_t size)
 {
 	rc_map->name = kstrdup(name, GFP_KERNEL);
@@ -185,8 +182,8 @@ static int ir_create_table(struct rc_dev *dev, struct rc_map *rc_map,
 		return -ENOMEM;
 	}
 
-	dev_dbg(&dev->dev, "Allocated space for %u keycode entries (%u bytes)\n",
-		rc_map->size, rc_map->alloc);
+	IR_dprintk(1, "Allocated space for %u keycode entries (%u bytes)\n",
+		   rc_map->size, rc_map->alloc);
 	return 0;
 }
 
@@ -208,7 +205,6 @@ static void ir_free_table(struct rc_map *rc_map)
 
 /**
  * ir_resize_table() - resizes a scancode table if necessary
- * @dev:	the rc_dev device
  * @rc_map:	the rc_map to resize
  * @gfp_flags:	gfp flags to use when allocating memory
  *
@@ -217,8 +213,7 @@ static void ir_free_table(struct rc_map *rc_map)
  *
  * return:	zero on success or a negative error code
  */
-static int ir_resize_table(struct rc_dev *dev, struct rc_map *rc_map,
-			   gfp_t gfp_flags)
+static int ir_resize_table(struct rc_map *rc_map, gfp_t gfp_flags)
 {
 	unsigned int oldalloc = rc_map->alloc;
 	unsigned int newalloc = oldalloc;
@@ -231,21 +226,23 @@ static int ir_resize_table(struct rc_dev *dev, struct rc_map *rc_map,
 			return -ENOMEM;
 
 		newalloc *= 2;
-		dev_dbg(&dev->dev, "Growing table to %u bytes\n", newalloc);
+		IR_dprintk(1, "Growing table to %u bytes\n", newalloc);
 	}
 
 	if ((rc_map->len * 3 < rc_map->size) && (oldalloc > IR_TAB_MIN_SIZE)) {
 		/* Less than 1/3 of entries in use -> shrink keytable */
 		newalloc /= 2;
-		dev_dbg(&dev->dev, "Shrinking table to %u bytes\n", newalloc);
+		IR_dprintk(1, "Shrinking table to %u bytes\n", newalloc);
 	}
 
 	if (newalloc == oldalloc)
 		return 0;
 
 	newscan = kmalloc(newalloc, gfp_flags);
-	if (!newscan)
+	if (!newscan) {
+		IR_dprintk(1, "Failed to kmalloc %u bytes\n", newalloc);
 		return -ENOMEM;
+	}
 
 	memcpy(newscan, rc_map->scan, rc_map->len * sizeof(struct rc_map_table));
 	rc_map->scan = newscan;
@@ -274,25 +271,37 @@ static unsigned int ir_update_mapping(struct rc_dev *dev,
 				      unsigned int new_keycode)
 {
 	int old_keycode = rc_map->scan[index].keycode;
+	int i;
 
 	/* Did the user wish to remove the mapping? */
 	if (new_keycode == KEY_RESERVED || new_keycode == KEY_UNKNOWN) {
-		dev_dbg(&dev->dev, "#%d: Deleting scan 0x%04x\n",
-			index, rc_map->scan[index].scancode);
+		IR_dprintk(1, "#%d: Deleting scan 0x%04x\n",
+			   index, rc_map->scan[index].scancode);
 		rc_map->len--;
 		memmove(&rc_map->scan[index], &rc_map->scan[index+ 1],
 			(rc_map->len - index) * sizeof(struct rc_map_table));
 	} else {
-		dev_dbg(&dev->dev, "#%d: %s scan 0x%04x with key 0x%04x\n",
-			index,
-			old_keycode == KEY_RESERVED ? "New" : "Replacing",
-			rc_map->scan[index].scancode, new_keycode);
+		IR_dprintk(1, "#%d: %s scan 0x%04x with key 0x%04x\n",
+			   index,
+			   old_keycode == KEY_RESERVED ? "New" : "Replacing",
+			   rc_map->scan[index].scancode, new_keycode);
 		rc_map->scan[index].keycode = new_keycode;
+		__set_bit(new_keycode, dev->input_dev->keybit);
 	}
 
 	if (old_keycode != KEY_RESERVED) {
+		/* A previous mapping was updated... */
+		__clear_bit(old_keycode, dev->input_dev->keybit);
+		/* ... but another scancode might use the same keycode */
+		for (i = 0; i < rc_map->len; i++) {
+			if (rc_map->scan[i].keycode == old_keycode) {
+				__set_bit(old_keycode, dev->input_dev->keybit);
+				break;
+			}
+		}
+
 		/* Possibly shrink the keytable, failure is not a problem */
-		ir_resize_table(dev, rc_map, GFP_ATOMIC);
+		ir_resize_table(rc_map, GFP_ATOMIC);
 	}
 
 	return old_keycode;
@@ -343,7 +352,7 @@ static unsigned int ir_establish_scancode(struct rc_dev *dev,
 
 	/* No previous mapping found, we might need to grow the table */
 	if (rc_map->size == rc_map->len) {
-		if (!resize || ir_resize_table(dev, rc_map, GFP_ATOMIC))
+		if (!resize || ir_resize_table(rc_map, GFP_ATOMIC))
 			return -1U;
 	}
 
@@ -422,8 +431,8 @@ static int ir_setkeytable(struct rc_dev *dev,
 	unsigned int i, index;
 	int rc;
 
-	rc = ir_create_table(dev, rc_map, from->name, from->rc_proto,
-			     from->size);
+	rc = ir_create_table(rc_map, from->name,
+			     from->rc_proto, from->size);
 	if (rc)
 		return rc;
 
@@ -567,8 +576,8 @@ u32 rc_g_keycode_from_table(struct rc_dev *dev, u32 scancode)
 	spin_unlock_irqrestore(&rc_map->lock, flags);
 
 	if (keycode != KEY_RESERVED)
-		dev_dbg(&dev->dev, "%s: scancode 0x%04x keycode 0x%02x\n",
-			dev->device_name, scancode, keycode);
+		IR_dprintk(1, "%s: scancode 0x%04x keycode 0x%02x\n",
+			   dev->device_name, scancode, keycode);
 
 	return keycode;
 }
@@ -587,7 +596,7 @@ static void ir_do_keyup(struct rc_dev *dev, bool sync)
 	if (!dev->keypressed)
 		return;
 
-	dev_dbg(&dev->dev, "keyup key 0x%04x\n", dev->last_keycode);
+	IR_dprintk(1, "keyup key 0x%04x\n", dev->last_keycode);
 	del_timer(&dev->timer_repeat);
 	input_report_key(dev->input_dev, dev->last_keycode, 0);
 	led_trigger_event(led_feedback, LED_OFF);
@@ -667,14 +676,6 @@ static void ir_timer_repeat(struct timer_list *t)
 	spin_unlock_irqrestore(&dev->keylock, flags);
 }
 
-static unsigned int repeat_period(int protocol)
-{
-	if (protocol >= ARRAY_SIZE(protocols))
-		return 100;
-
-	return protocols[protocol].repeat_period;
-}
-
 /**
  * rc_repeat() - signals that a key is still pressed
  * @dev:	the struct rc_dev descriptor of the device
@@ -686,8 +687,7 @@ static unsigned int repeat_period(int protocol)
 void rc_repeat(struct rc_dev *dev)
 {
 	unsigned long flags;
-	unsigned int timeout = nsecs_to_jiffies(dev->timeout) +
-		msecs_to_jiffies(repeat_period(dev->last_protocol));
+	unsigned int timeout = protocols[dev->last_protocol].repeat_period;
 	struct lirc_scancode sc = {
 		.scancode = dev->last_scancode, .rc_proto = dev->last_protocol,
 		.keycode = dev->keypressed ? dev->last_keycode : KEY_RESERVED,
@@ -695,8 +695,7 @@ void rc_repeat(struct rc_dev *dev)
 			 (dev->last_toggle ? LIRC_SCANCODE_FLAG_TOGGLE : 0)
 	};
 
-	if (dev->allowed_protocols != RC_PROTO_BIT_CEC)
-		ir_lirc_scancode_event(dev, &sc);
+	ir_lirc_scancode_event(dev, &sc);
 
 	spin_lock_irqsave(&dev->keylock, flags);
 
@@ -704,7 +703,7 @@ void rc_repeat(struct rc_dev *dev)
 	input_sync(dev->input_dev);
 
 	if (dev->keypressed) {
-		dev->keyup_jiffies = jiffies + timeout;
+		dev->keyup_jiffies = jiffies + msecs_to_jiffies(timeout);
 		mod_timer(&dev->timer_keyup, dev->keyup_jiffies);
 	}
 
@@ -736,8 +735,7 @@ static void ir_do_keydown(struct rc_dev *dev, enum rc_proto protocol,
 		.keycode = keycode
 	};
 
-	if (dev->allowed_protocols != RC_PROTO_BIT_CEC)
-		ir_lirc_scancode_event(dev, &sc);
+	ir_lirc_scancode_event(dev, &sc);
 
 	if (new_event && dev->keypressed)
 		ir_do_keyup(dev, false);
@@ -753,8 +751,8 @@ static void ir_do_keydown(struct rc_dev *dev, enum rc_proto protocol,
 		/* Register a keypress */
 		dev->keypressed = true;
 
-		dev_dbg(&dev->dev, "%s: key down event, key 0x%04x, protocol 0x%04x, scancode 0x%08x\n",
-			dev->device_name, keycode, protocol, scancode);
+		IR_dprintk(1, "%s: key down event, key 0x%04x, protocol 0x%04x, scancode 0x%08x\n",
+			   dev->device_name, keycode, protocol, scancode);
 		input_report_key(dev->input_dev, keycode, 1);
 
 		led_trigger_event(led_feedback, LED_FULL);
@@ -800,8 +798,8 @@ void rc_keydown(struct rc_dev *dev, enum rc_proto protocol, u32 scancode,
 	ir_do_keydown(dev, protocol, scancode, keycode, toggle);
 
 	if (dev->keypressed) {
-		dev->keyup_jiffies = jiffies + nsecs_to_jiffies(dev->timeout) +
-			msecs_to_jiffies(repeat_period(protocol));
+		dev->keyup_jiffies = jiffies +
+			msecs_to_jiffies(protocols[protocol].repeat_period);
 		mod_timer(&dev->timer_keyup, dev->keyup_jiffies);
 	}
 	spin_unlock_irqrestore(&dev->keylock, flags);
@@ -1005,7 +1003,6 @@ static const struct {
 	  RC_PROTO_BIT_MCIR2_MSE, "mce_kbd",	"ir-mce_kbd-decoder"	},
 	{ RC_PROTO_BIT_XMP,	"xmp",		"ir-xmp-decoder"	},
 	{ RC_PROTO_BIT_CEC,	"cec",		NULL			},
-	{ RC_PROTO_BIT_IMON,	"imon",		"ir-imon-decoder"	},
 };
 
 /**
@@ -1059,8 +1056,8 @@ static ssize_t show_protocols(struct device *device,
 
 	mutex_unlock(&dev->lock);
 
-	dev_dbg(&dev->dev, "%s: allowed - 0x%llx, enabled - 0x%llx\n",
-		__func__, (long long)allowed, (long long)enabled);
+	IR_dprintk(1, "%s: allowed - 0x%llx, enabled - 0x%llx\n",
+		   __func__, (long long)allowed, (long long)enabled);
 
 	for (i = 0; i < ARRAY_SIZE(proto_names); i++) {
 		if (allowed & enabled & proto_names[i].type)
@@ -1086,7 +1083,6 @@ static ssize_t show_protocols(struct device *device,
 
 /**
  * parse_protocol_change() - parses a protocol change request
- * @dev:	rc_dev device
  * @protocols:	pointer to the bitmask of current protocols
  * @buf:	pointer to the buffer with a list of changes
  *
@@ -1096,8 +1092,7 @@ static ssize_t show_protocols(struct device *device,
  * Writing "none" will disable all protocols.
  * Returns the number of changes performed or a negative error code.
  */
-static int parse_protocol_change(struct rc_dev *dev, u64 *protocols,
-				 const char *buf)
+static int parse_protocol_change(u64 *protocols, const char *buf)
 {
 	const char *tmp;
 	unsigned count = 0;
@@ -1133,8 +1128,7 @@ static int parse_protocol_change(struct rc_dev *dev, u64 *protocols,
 			if (!strcasecmp(tmp, "lirc"))
 				mask = 0;
 			else {
-				dev_dbg(&dev->dev, "Unknown protocol: '%s'\n",
-					tmp);
+				IR_dprintk(1, "Unknown protocol: '%s'\n", tmp);
 				return -EINVAL;
 			}
 		}
@@ -1150,7 +1144,7 @@ static int parse_protocol_change(struct rc_dev *dev, u64 *protocols,
 	}
 
 	if (!count) {
-		dev_dbg(&dev->dev, "Protocol not specified\n");
+		IR_dprintk(1, "Protocol not specified\n");
 		return -EINVAL;
 	}
 
@@ -1223,12 +1217,12 @@ static ssize_t store_protocols(struct device *device,
 	u64 old_protocols, new_protocols;
 	ssize_t rc;
 
-	dev_dbg(&dev->dev, "Normal protocol change requested\n");
+	IR_dprintk(1, "Normal protocol change requested\n");
 	current_protocols = &dev->enabled_protocols;
 	filter = &dev->scancode_filter;
 
 	if (!dev->change_protocol) {
-		dev_dbg(&dev->dev, "Protocol switching not supported\n");
+		IR_dprintk(1, "Protocol switching not supported\n");
 		return -EINVAL;
 	}
 
@@ -1236,24 +1230,24 @@ static ssize_t store_protocols(struct device *device,
 
 	old_protocols = *current_protocols;
 	new_protocols = old_protocols;
-	rc = parse_protocol_change(dev, &new_protocols, buf);
+	rc = parse_protocol_change(&new_protocols, buf);
 	if (rc < 0)
 		goto out;
+
+	rc = dev->change_protocol(dev, &new_protocols);
+	if (rc < 0) {
+		IR_dprintk(1, "Error setting protocols to 0x%llx\n",
+			   (long long)new_protocols);
+		goto out;
+	}
 
 	if (dev->driver_type == RC_DRIVER_IR_RAW)
 		ir_raw_load_modules(&new_protocols);
 
-	rc = dev->change_protocol(dev, &new_protocols);
-	if (rc < 0) {
-		dev_dbg(&dev->dev, "Error setting protocols to 0x%llx\n",
-			(long long)new_protocols);
-		goto out;
-	}
-
 	if (new_protocols != old_protocols) {
 		*current_protocols = new_protocols;
-		dev_dbg(&dev->dev, "Protocols changed to 0x%llx\n",
-			(long long)new_protocols);
+		IR_dprintk(1, "Protocols changed to 0x%llx\n",
+			   (long long)new_protocols);
 	}
 
 	/*
@@ -1441,8 +1435,8 @@ static ssize_t show_wakeup_protocols(struct device *device,
 
 	mutex_unlock(&dev->lock);
 
-	dev_dbg(&dev->dev, "%s: allowed - 0x%llx, enabled - %d\n",
-		__func__, (long long)allowed, enabled);
+	IR_dprintk(1, "%s: allowed - 0x%llx, enabled - %d\n",
+		   __func__, (long long)allowed, enabled);
 
 	for (i = 0; i < ARRAY_SIZE(protocols); i++) {
 		if (allowed & (1ULL << i)) {
@@ -1517,7 +1511,7 @@ static ssize_t store_wakeup_protocols(struct device *device,
 
 	if (dev->wakeup_protocol != protocol) {
 		dev->wakeup_protocol = protocol;
-		dev_dbg(&dev->dev, "Wakeup protocol changed to %d\n", protocol);
+		IR_dprintk(1, "Wakeup protocol changed to %d\n", protocol);
 
 		if (protocol == RC_PROTO_RC6_MCE)
 			dev->scancode_wakeup_filter.data = 0x800f0000;
@@ -1646,7 +1640,6 @@ struct rc_dev *rc_allocate_device(enum rc_driver_type type)
 		dev->input_dev->setkeycode = ir_setkeycode;
 		input_set_drvdata(dev->input_dev, dev);
 
-		dev->timeout = IR_DEFAULT_TIMEOUT;
 		timer_setup(&dev->timer_keyup, ir_timer_keyup, 0);
 		timer_setup(&dev->timer_repeat, ir_timer_repeat, 0);
 
@@ -1735,9 +1728,6 @@ static int rc_prepare_rx_device(struct rc_dev *dev)
 	if (dev->driver_type == RC_DRIVER_SCANCODE && !dev->change_protocol)
 		dev->enabled_protocols = dev->allowed_protocols;
 
-	if (dev->driver_type == RC_DRIVER_IR_RAW)
-		ir_raw_load_modules(&rc_proto);
-
 	if (dev->change_protocol) {
 		rc = dev->change_protocol(dev, &rc_proto);
 		if (rc < 0)
@@ -1745,18 +1735,13 @@ static int rc_prepare_rx_device(struct rc_dev *dev)
 		dev->enabled_protocols = rc_proto;
 	}
 
-	/* Keyboard events */
+	if (dev->driver_type == RC_DRIVER_IR_RAW)
+		ir_raw_load_modules(&rc_proto);
+
 	set_bit(EV_KEY, dev->input_dev->evbit);
 	set_bit(EV_REP, dev->input_dev->evbit);
 	set_bit(EV_MSC, dev->input_dev->evbit);
 	set_bit(MSC_SCAN, dev->input_dev->mscbit);
-	bitmap_fill(dev->input_dev->keybit, KEY_CNT);
-
-	/* Pointer/mouse events */
-	set_bit(EV_REL, dev->input_dev->evbit);
-	set_bit(REL_X, dev->input_dev->relbit);
-	set_bit(REL_Y, dev->input_dev->relbit);
-
 	if (dev->open)
 		dev->input_dev->open = ir_open;
 	if (dev->close)
@@ -1868,8 +1853,6 @@ int rc_register_device(struct rc_dev *dev)
 		 dev->device_name ?: "Unspecified device", path ?: "N/A");
 	kfree(path);
 
-	dev->registered = true;
-
 	if (dev->driver_type != RC_DRIVER_IR_RAW_TX) {
 		rc = rc_setup_rx_device(dev);
 		if (rc)
@@ -1889,8 +1872,11 @@ int rc_register_device(struct rc_dev *dev)
 			goto out_lirc;
 	}
 
-	dev_dbg(&dev->dev, "Registered rc%u (driver: %s)\n", dev->minor,
-		dev->driver_name ? dev->driver_name : "unknown");
+	dev->registered = true;
+
+	IR_dprintk(1, "Registered rc%u (driver: %s)\n",
+		   dev->minor,
+		   dev->driver_name ? dev->driver_name : "unknown");
 
 	return 0;
 
@@ -1943,17 +1929,15 @@ void rc_unregister_device(struct rc_dev *dev)
 	if (!dev)
 		return;
 
-	if (dev->driver_type == RC_DRIVER_IR_RAW)
-		ir_raw_event_unregister(dev);
-
 	del_timer_sync(&dev->timer_keyup);
 	del_timer_sync(&dev->timer_repeat);
+
+	if (dev->driver_type == RC_DRIVER_IR_RAW)
+		ir_raw_event_unregister(dev);
 
 	rc_free_rx_device(dev);
 
 	mutex_lock(&dev->lock);
-	if (dev->users && dev->close)
-		dev->close(dev);
 	dev->registered = false;
 	mutex_unlock(&dev->lock);
 
@@ -2009,6 +1993,10 @@ static void __exit rc_core_exit(void)
 
 subsys_initcall(rc_core_init);
 module_exit(rc_core_exit);
+
+int rc_core_debug;    /* ir_debug level (0,1,2) */
+EXPORT_SYMBOL_GPL(rc_core_debug);
+module_param_named(debug, rc_core_debug, int, 0644);
 
 MODULE_AUTHOR("Mauro Carvalho Chehab");
 MODULE_LICENSE("GPL v2");

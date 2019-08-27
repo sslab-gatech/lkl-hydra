@@ -207,7 +207,6 @@ rxrpc_alloc_client_connection(struct rxrpc_conn_parameters *cp, gfp_t gfp)
 	if (ret < 0)
 		goto error_2;
 
-	atomic_inc(&rxnet->nr_conns);
 	write_lock(&rxnet->conn_lock);
 	list_add_tail(&conn->proc_link, &rxnet->conn_proc_list);
 	write_unlock(&rxnet->conn_lock);
@@ -276,8 +275,7 @@ dont_reuse:
  * If we return with a connection, the call will be on its waiting list.  It's
  * left to the caller to assign a channel and wake up the call.
  */
-static int rxrpc_get_client_conn(struct rxrpc_sock *rx,
-				 struct rxrpc_call *call,
+static int rxrpc_get_client_conn(struct rxrpc_call *call,
 				 struct rxrpc_conn_parameters *cp,
 				 struct sockaddr_rxrpc *srx,
 				 gfp_t gfp)
@@ -290,7 +288,7 @@ static int rxrpc_get_client_conn(struct rxrpc_sock *rx,
 
 	_enter("{%d,%lx},", call->debug_id, call->user_call_ID);
 
-	cp->peer = rxrpc_lookup_peer(rx, cp->local, srx, gfp);
+	cp->peer = rxrpc_lookup_peer(cp->local, srx, gfp);
 	if (!cp->peer)
 		goto error;
 
@@ -562,7 +560,10 @@ static void rxrpc_activate_one_channel(struct rxrpc_connection *conn,
 	clear_bit(RXRPC_CONN_FINAL_ACK_0 + channel, &conn->flags);
 
 	write_lock_bh(&call->state_lock);
-	call->state = RXRPC_CALL_CLIENT_SEND_REQUEST;
+	if (!test_bit(RXRPC_CALL_TX_LASTQ, &call->flags))
+		call->state = RXRPC_CALL_CLIENT_SEND_REQUEST;
+	else
+		call->state = RXRPC_CALL_CLIENT_AWAIT_REPLY;
 	write_unlock_bh(&call->state_lock);
 
 	rxrpc_see_call(call);
@@ -588,7 +589,6 @@ static void rxrpc_activate_one_channel(struct rxrpc_connection *conn,
 	 */
 	smp_wmb();
 	chan->call_id	= call_id;
-	chan->call_debug_id = call->debug_id;
 	rcu_assign_pointer(chan->call, call);
 	wake_up(&call->waitq);
 }
@@ -681,8 +681,7 @@ out:
  * find a connection for a call
  * - called in process context with IRQs enabled
  */
-int rxrpc_connect_call(struct rxrpc_sock *rx,
-		       struct rxrpc_call *call,
+int rxrpc_connect_call(struct rxrpc_call *call,
 		       struct rxrpc_conn_parameters *cp,
 		       struct sockaddr_rxrpc *srx,
 		       gfp_t gfp)
@@ -695,7 +694,7 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 	rxrpc_discard_expired_client_conns(&rxnet->client_conn_reaper);
 	rxrpc_cull_active_client_conns(rxnet);
 
-	ret = rxrpc_get_client_conn(rx, call, cp, srx, gfp);
+	ret = rxrpc_get_client_conn(call, cp, srx, gfp);
 	if (ret < 0)
 		goto out;
 
@@ -709,8 +708,8 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 	}
 
 	spin_lock_bh(&call->conn->params.peer->lock);
-	hlist_add_head_rcu(&call->error_link,
-			   &call->conn->params.peer->error_targets);
+	hlist_add_head(&call->error_link,
+		       &call->conn->params.peer->error_targets);
 	spin_unlock_bh(&call->conn->params.peer->lock);
 
 out:
@@ -777,7 +776,7 @@ void rxrpc_disconnect_client_call(struct rxrpc_call *call)
 	unsigned int channel = call->cid & RXRPC_CHANNELMASK;
 	struct rxrpc_connection *conn = call->conn;
 	struct rxrpc_channel *chan = &conn->channels[channel];
-	struct rxrpc_net *rxnet = conn->params.local->rxnet;
+	struct rxrpc_net *rxnet = rxrpc_net(sock_net(&call->socket->sk));
 
 	trace_rxrpc_client(conn, channel, rxrpc_client_chan_disconnect);
 	call->conn = NULL;
@@ -1051,6 +1050,7 @@ void rxrpc_discard_expired_client_conns(struct work_struct *work)
 		container_of(work, struct rxrpc_net, client_conn_reaper);
 	unsigned long expiry, conn_expires_at, now;
 	unsigned int nr_conns;
+	bool did_discard = false;
 
 	_enter("");
 
@@ -1112,6 +1112,7 @@ next:
 	 * If someone re-sets the flag and re-gets the ref, that's fine.
 	 */
 	rxrpc_put_connection(conn);
+	did_discard = true;
 	nr_conns--;
 	goto next;
 

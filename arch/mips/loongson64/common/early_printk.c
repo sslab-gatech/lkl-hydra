@@ -10,7 +10,6 @@
  *  option) any later version.
  */
 #include <linux/serial_reg.h>
-#include <asm/setup.h>
 
 #include <loongson.h>
 

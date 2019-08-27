@@ -9,7 +9,7 @@
 #include <linux/module.h>
 
 /*
-   Mauro Carvalho Chehab <mchehab@kernel.org>
+   Mauro Carvalho Chehab <mchehab@infradead.org>
    present on PV MPEG 8000GT
  */
 

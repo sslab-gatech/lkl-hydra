@@ -105,7 +105,6 @@ struct tipc_skb_cb {
 	u32 bytes_read;
 	u32 orig_member;
 	struct sk_buff *tail;
-	unsigned long nxt_retr;
 	bool validated;
 	u16 chain_imp;
 	u16 ackers;
@@ -215,16 +214,6 @@ static inline int msg_non_seq(struct tipc_msg *m)
 static inline void msg_set_non_seq(struct tipc_msg *m, u32 n)
 {
 	msg_set_bits(m, 0, 20, 1, n);
-}
-
-static inline int msg_is_syn(struct tipc_msg *m)
-{
-	return msg_bits(m, 0, 17, 1);
-}
-
-static inline void msg_set_syn(struct tipc_msg *m, u32 d)
-{
-	msg_set_bits(m, 0, 17, 1, d);
 }
 
 static inline int msg_dest_droppable(struct tipc_msg *m)
@@ -360,28 +349,6 @@ static inline void msg_set_bcast_ack(struct tipc_msg *m, u16 n)
 	msg_set_bits(m, 1, 0, 0xffff, n);
 }
 
-/* Note: reusing bits in word 1 for ACTIVATE_MSG only, to re-synch
- * link peer session number
- */
-static inline bool msg_dest_session_valid(struct tipc_msg *m)
-{
-	return msg_bits(m, 1, 16, 0x1);
-}
-
-static inline void msg_set_dest_session_valid(struct tipc_msg *m, bool valid)
-{
-	msg_set_bits(m, 1, 16, 0x1, valid);
-}
-
-static inline u16 msg_dest_session(struct tipc_msg *m)
-{
-	return msg_bits(m, 1, 0, 0xffff);
-}
-
-static inline void msg_set_dest_session(struct tipc_msg *m, u16 n)
-{
-	msg_set_bits(m, 1, 0, 0xffff, n);
-}
 
 /*
  * Word 2
@@ -583,8 +550,6 @@ static inline void msg_set_nameupper(struct tipc_msg *m, u32 n)
  */
 #define DSC_REQ_MSG		0
 #define DSC_RESP_MSG		1
-#define DSC_TRIAL_MSG		2
-#define DSC_TRIAL_FAIL_MSG	3
 
 /*
  * Group protocol message types
@@ -661,6 +626,7 @@ static inline void msg_set_bcgap_to(struct tipc_msg *m, u32 n)
 {
 	msg_set_bits(m, 2, 0, 0xffff, n);
 }
+
 
 /*
  * Word 4
@@ -959,26 +925,6 @@ static inline bool msg_is_reset(struct tipc_msg *hdr)
 	return (msg_user(hdr) == LINK_PROTOCOL) && (msg_type(hdr) == RESET_MSG);
 }
 
-static inline u32 msg_sugg_node_addr(struct tipc_msg *m)
-{
-	return msg_word(m, 14);
-}
-
-static inline void msg_set_sugg_node_addr(struct tipc_msg *m, u32 n)
-{
-	msg_set_word(m, 14, n);
-}
-
-static inline void msg_set_node_id(struct tipc_msg *hdr, u8 *id)
-{
-	memcpy(msg_data(hdr), id, 16);
-}
-
-static inline u8 *msg_node_id(struct tipc_msg *hdr)
-{
-	return (u8 *)msg_data(hdr);
-}
-
 struct sk_buff *tipc_buf_acquire(u32 size, gfp_t gfp);
 bool tipc_msg_validate(struct sk_buff **_skb);
 bool tipc_msg_reverse(u32 own_addr, struct sk_buff **skb, int err);
@@ -1003,7 +949,6 @@ bool tipc_msg_pskb_copy(u32 dst, struct sk_buff_head *msg,
 			struct sk_buff_head *cpy);
 void __tipc_skb_queue_sorted(struct sk_buff_head *list, u16 seqno,
 			     struct sk_buff *skb);
-bool tipc_msg_skb_clone(struct sk_buff_head *msg, struct sk_buff_head *cpy);
 
 static inline u16 buf_seqno(struct sk_buff *skb)
 {

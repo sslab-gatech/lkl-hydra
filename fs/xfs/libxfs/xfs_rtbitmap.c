@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2005 Silicon Graphics, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -77,9 +89,6 @@ xfs_rtbuf_get(
 	error = xfs_bmapi_read(ip, block, 1, &map, &nmap, XFS_DATA_FORK);
 	if (error)
 		return error;
-
-	if (nmap == 0 || !xfs_bmap_is_real_extent(&map))
-		return -EFSCORRUPTED;
 
 	ASSERT(map.br_startblock != NULLFSBLOCK);
 	error = xfs_trans_read_buf(mp, tp, mp->m_ddev_targp,
@@ -505,12 +514,6 @@ xfs_rtmodify_summary_int(
 		uint first = (uint)((char *)sp - (char *)bp->b_addr);
 
 		*sp += delta;
-		if (mp->m_rsum_cache) {
-			if (*sp == 0 && log == mp->m_rsum_cache[bbno])
-				mp->m_rsum_cache[bbno]++;
-			if (*sp != 0 && log < mp->m_rsum_cache[bbno])
-				mp->m_rsum_cache[bbno] = log;
-		}
 		xfs_trans_log_buf(tp, bp, first, first + sizeof(*sp) - 1);
 	}
 	if (sum)
@@ -1030,17 +1033,14 @@ xfs_rtalloc_query_range(
 	int				is_free;
 	int				error = 0;
 
-	if (low_rec->ar_startext > high_rec->ar_startext)
+	if (low_rec->ar_startblock > high_rec->ar_startblock)
 		return -EINVAL;
-	if (low_rec->ar_startext >= mp->m_sb.sb_rextents ||
-	    low_rec->ar_startext == high_rec->ar_startext)
+	else if (low_rec->ar_startblock == high_rec->ar_startblock)
 		return 0;
-	if (high_rec->ar_startext > mp->m_sb.sb_rextents)
-		high_rec->ar_startext = mp->m_sb.sb_rextents;
 
 	/* Iterate the bitmap, looking for discrepancies. */
-	rtstart = low_rec->ar_startext;
-	rem = high_rec->ar_startext - rtstart;
+	rtstart = low_rec->ar_startblock;
+	rem = high_rec->ar_startblock - rtstart;
 	while (rem) {
 		/* Is the first block free? */
 		error = xfs_rtcheck_range(mp, tp, rtstart, 1, 1, &rtend,
@@ -1050,13 +1050,13 @@ xfs_rtalloc_query_range(
 
 		/* How long does the extent go for? */
 		error = xfs_rtfind_forw(mp, tp, rtstart,
-				high_rec->ar_startext - 1, &rtend);
+				high_rec->ar_startblock - 1, &rtend);
 		if (error)
 			break;
 
 		if (is_free) {
-			rec.ar_startext = rtstart;
-			rec.ar_extcount = rtend - rtstart + 1;
+			rec.ar_startblock = rtstart;
+			rec.ar_blockcount = rtend - rtstart + 1;
 
 			error = fn(tp, &rec, priv);
 			if (error)
@@ -1079,11 +1079,23 @@ xfs_rtalloc_query_all(
 {
 	struct xfs_rtalloc_rec		keys[2];
 
-	keys[0].ar_startext = 0;
-	keys[1].ar_startext = tp->t_mountp->m_sb.sb_rextents - 1;
-	keys[0].ar_extcount = keys[1].ar_extcount = 0;
+	keys[0].ar_startblock = 0;
+	keys[1].ar_startblock = tp->t_mountp->m_sb.sb_rblocks;
+	keys[0].ar_blockcount = keys[1].ar_blockcount = 0;
 
 	return xfs_rtalloc_query_range(tp, &keys[0], &keys[1], fn, priv);
+}
+
+/*
+ * Verify that an realtime block number pointer doesn't point off the
+ * end of the realtime device.
+ */
+bool
+xfs_verify_rtbno(
+	struct xfs_mount	*mp,
+	xfs_rtblock_t		rtbno)
+{
+	return rtbno < mp->m_sb.sb_rblocks;
 }
 
 /* Is the given extent all free? */

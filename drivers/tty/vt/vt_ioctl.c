@@ -32,8 +32,6 @@
 #include <asm/io.h>
 #include <linux/uaccess.h>
 
-#include <linux/nospec.h>
-
 #include <linux/kbd_kern.h>
 #include <linux/vt_kern.h>
 #include <linux/kbd_diacr.h>
@@ -59,7 +57,7 @@ extern struct tty_driver *console_driver;
  */
 
 #ifdef CONFIG_X86
-#include <asm/syscalls.h>
+#include <linux/syscalls.h>
 #endif
 
 static void complete_change_console(struct vc_data *vc);
@@ -422,12 +420,12 @@ int vt_ioctl(struct tty_struct *tty,
 			ret = -EINVAL;
 			break;
 		}
-		ret = ksys_ioperm(arg, 1, (cmd == KDADDIO)) ? -ENXIO : 0;
+		ret = sys_ioperm(arg, 1, (cmd == KDADDIO)) ? -ENXIO : 0;
 		break;
 
 	case KDENABIO:
 	case KDDISABIO:
-		ret = ksys_ioperm(GPFIRST, GPNUM,
+		ret = sys_ioperm(GPFIRST, GPNUM,
 				  (cmd == KDENABIO)) ? -ENXIO : 0;
 		break;
 #endif
@@ -702,8 +700,6 @@ int vt_ioctl(struct tty_struct *tty,
 		if (vsa.console == 0 || vsa.console > MAX_NR_CONSOLES)
 			ret = -ENXIO;
 		else {
-			vsa.console = array_index_nospec(vsa.console,
-							 MAX_NR_CONSOLES + 1);
 			vsa.console--;
 			console_lock();
 			ret = vc_allocate(vsa.console);
@@ -1175,13 +1171,17 @@ long vt_compat_ioctl(struct tty_struct *tty,
 {
 	struct vc_data *vc = tty->driver_data;
 	struct console_font_op op;	/* used in multiple places here */
-	unsigned int console = vc->vc_num;
-	void __user *up = compat_ptr(arg);
+	unsigned int console;
+	void __user *up = (void __user *)arg;
 	int perm;
+	int ret = 0;
 
+	console = vc->vc_num;
 
-	if (!vc_cons_allocated(console)) 	/* impossible? */
-		return -ENOIOCTLCMD;
+	if (!vc_cons_allocated(console)) { 	/* impossible? */
+		ret = -ENOIOCTLCMD;
+		goto out;
+	}
 
 	/*
 	 * To have permissions to do most of the vt ioctls, we either have
@@ -1197,14 +1197,17 @@ long vt_compat_ioctl(struct tty_struct *tty,
 	 */
 	case PIO_FONTX:
 	case GIO_FONTX:
-		return compat_fontx_ioctl(cmd, up, perm, &op);
+		ret = compat_fontx_ioctl(cmd, up, perm, &op);
+		break;
 
 	case KDFONTOP:
-		return compat_kdfontop_ioctl(up, perm, &op, vc);
+		ret = compat_kdfontop_ioctl(up, perm, &op, vc);
+		break;
 
 	case PIO_UNIMAP:
 	case GIO_UNIMAP:
-		return compat_unimap_ioctl(cmd, up, perm, vc);
+		ret = compat_unimap_ioctl(cmd, up, perm, vc);
+		break;
 
 	/*
 	 * all these treat 'arg' as an integer
@@ -1229,15 +1232,21 @@ long vt_compat_ioctl(struct tty_struct *tty,
 	case VT_DISALLOCATE:
 	case VT_RESIZE:
 	case VT_RESIZEX:
-		return vt_ioctl(tty, cmd, arg);
+		goto fallback;
 
 	/*
 	 * the rest has a compatible data structure behind arg,
 	 * but we have to convert it to a proper 64 bit pointer.
 	 */
 	default:
-		return vt_ioctl(tty, cmd, (unsigned long)up);
+		arg = (unsigned long)compat_ptr(arg);
+		goto fallback;
 	}
+out:
+	return ret;
+
+fallback:
+	return vt_ioctl(tty, cmd, arg);
 }
 
 

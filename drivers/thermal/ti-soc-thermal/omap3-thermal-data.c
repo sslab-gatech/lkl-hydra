@@ -48,6 +48,9 @@ omap34xx_mpu_temp_sensor_registers = {
 static struct temp_sensor_data omap34xx_mpu_temp_sensor_data = {
 	.min_freq = 32768,
 	.max_freq = 32768,
+	.max_temp = 125000,
+	.min_temp = -40000,
+	.hyst_val = 5000,
 };
 
 /*
@@ -116,6 +119,9 @@ omap36xx_mpu_temp_sensor_registers = {
 static struct temp_sensor_data omap36xx_mpu_temp_sensor_data = {
 	.min_freq = 32768,
 	.max_freq = 32768,
+	.max_temp = 125000,
+	.min_temp = -40000,
+	.hyst_val = 5000,
 };
 
 /*

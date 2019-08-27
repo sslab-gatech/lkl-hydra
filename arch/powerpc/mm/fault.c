@@ -22,7 +22,6 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/pagemap.h>
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
@@ -42,6 +41,7 @@
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
 #include <asm/mmu_context.h>
+#include <asm/tlbflush.h>
 #include <asm/siginfo.h>
 #include <asm/debug.h>
 
@@ -66,33 +66,37 @@ static inline bool notify_page_fault(struct pt_regs *regs)
 }
 
 /*
- * Check whether the instruction inst is a store using
+ * Check whether the instruction at regs->nip is a store using
  * an update addressing form which will update r1.
  */
-static bool store_updates_sp(unsigned int inst)
+static bool store_updates_sp(struct pt_regs *regs)
 {
+	unsigned int inst;
+
+	if (get_user(inst, (unsigned int __user *)regs->nip))
+		return false;
 	/* check for 1 in the rA field */
 	if (((inst >> 16) & 0x1f) != 1)
 		return false;
 	/* check major opcode */
 	switch (inst >> 26) {
-	case OP_STWU:
-	case OP_STBU:
-	case OP_STHU:
-	case OP_STFSU:
-	case OP_STFDU:
+	case 37:	/* stwu */
+	case 39:	/* stbu */
+	case 45:	/* sthu */
+	case 53:	/* stfsu */
+	case 55:	/* stfdu */
 		return true;
-	case OP_STD:	/* std or stdu */
+	case 62:	/* std or stdu */
 		return (inst & 3) == 1;
-	case OP_31:
+	case 31:
 		/* check minor opcode */
 		switch ((inst >> 1) & 0x3ff) {
-		case OP_31_XOP_STDUX:
-		case OP_31_XOP_STWUX:
-		case OP_31_XOP_STBUX:
-		case OP_31_XOP_STHUX:
-		case OP_31_XOP_STFSUX:
-		case OP_31_XOP_STFDUX:
+		case 181:	/* stdux */
+		case 183:	/* stwux */
+		case 247:	/* stbux */
+		case 439:	/* sthux */
+		case 695:	/* stfsux */
+		case 759:	/* stfdux */
 			return true;
 		}
 	}
@@ -103,7 +107,8 @@ static bool store_updates_sp(unsigned int inst)
  */
 
 static int
-__bad_area_nosemaphore(struct pt_regs *regs, unsigned long address, int si_code)
+__bad_area_nosemaphore(struct pt_regs *regs, unsigned long address, int si_code,
+		int pkey)
 {
 	/*
 	 * If we are in kernel mode, bail out with a SEGV, this will
@@ -113,17 +118,18 @@ __bad_area_nosemaphore(struct pt_regs *regs, unsigned long address, int si_code)
 	if (!user_mode(regs))
 		return SIGSEGV;
 
-	_exception(SIGSEGV, regs, si_code, address);
+	_exception_pkey(SIGSEGV, regs, si_code, address, pkey);
 
 	return 0;
 }
 
 static noinline int bad_area_nosemaphore(struct pt_regs *regs, unsigned long address)
 {
-	return __bad_area_nosemaphore(regs, address, SEGV_MAPERR);
+	return __bad_area_nosemaphore(regs, address, SEGV_MAPERR, 0);
 }
 
-static int __bad_area(struct pt_regs *regs, unsigned long address, int si_code)
+static int __bad_area(struct pt_regs *regs, unsigned long address, int si_code,
+			int pkey)
 {
 	struct mm_struct *mm = current->mm;
 
@@ -133,66 +139,57 @@ static int __bad_area(struct pt_regs *regs, unsigned long address, int si_code)
 	 */
 	up_read(&mm->mmap_sem);
 
-	return __bad_area_nosemaphore(regs, address, si_code);
+	return __bad_area_nosemaphore(regs, address, si_code, pkey);
 }
 
 static noinline int bad_area(struct pt_regs *regs, unsigned long address)
 {
-	return __bad_area(regs, address, SEGV_MAPERR);
+	return __bad_area(regs, address, SEGV_MAPERR, 0);
 }
 
 static int bad_key_fault_exception(struct pt_regs *regs, unsigned long address,
 				    int pkey)
 {
-	/*
-	 * If we are in kernel mode, bail out with a SEGV, this will
-	 * be caught by the assembly which will restore the non-volatile
-	 * registers before calling bad_page_fault()
-	 */
-	if (!user_mode(regs))
-		return SIGSEGV;
-
-	_exception_pkey(regs, address, pkey);
-
-	return 0;
+	return __bad_area_nosemaphore(regs, address, SEGV_PKUERR, pkey);
 }
 
 static noinline int bad_access(struct pt_regs *regs, unsigned long address)
 {
-	return __bad_area(regs, address, SEGV_ACCERR);
+	return __bad_area(regs, address, SEGV_ACCERR, 0);
 }
 
 static int do_sigbus(struct pt_regs *regs, unsigned long address,
-		     vm_fault_t fault)
+		     unsigned int fault)
 {
+	siginfo_t info;
+	unsigned int lsb = 0;
+
 	if (!user_mode(regs))
 		return SIGBUS;
 
 	current->thread.trap_nr = BUS_ADRERR;
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRERR;
+	info.si_addr = (void __user *)address;
 #ifdef CONFIG_MEMORY_FAILURE
 	if (fault & (VM_FAULT_HWPOISON|VM_FAULT_HWPOISON_LARGE)) {
-		unsigned int lsb = 0; /* shutup gcc */
-
 		pr_err("MCE: Killing %s:%d due to hardware memory corruption fault at %lx\n",
 			current->comm, current->pid, address);
-
-		if (fault & VM_FAULT_HWPOISON_LARGE)
-			lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
-		if (fault & VM_FAULT_HWPOISON)
-			lsb = PAGE_SHIFT;
-
-		force_sig_mceerr(BUS_MCEERR_AR, (void __user *)address, lsb,
-				 current);
-		return 0;
+		info.si_code = BUS_MCEERR_AR;
 	}
 
+	if (fault & VM_FAULT_HWPOISON_LARGE)
+		lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+	if (fault & VM_FAULT_HWPOISON)
+		lsb = PAGE_SHIFT;
 #endif
-	force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *)address, current);
+	info.si_addr_lsb = lsb;
+	force_sig_info(SIGBUS, &info, current);
 	return 0;
 }
 
-static int mm_fault_error(struct pt_regs *regs, unsigned long addr,
-				vm_fault_t fault)
+static int mm_fault_error(struct pt_regs *regs, unsigned long addr, int fault)
 {
 	/*
 	 * Kernel page fault interrupted by SIGKILL. We have no reason to
@@ -226,9 +223,7 @@ static int mm_fault_error(struct pt_regs *regs, unsigned long addr,
 static bool bad_kernel_fault(bool is_exec, unsigned long error_code,
 			     unsigned long address)
 {
-	/* NX faults set DSISR_PROTFAULT on the 8xx, DSISR_NOEXEC_OR_G on others */
-	if (is_exec && (error_code & (DSISR_NOEXEC_OR_G | DSISR_KEYFAULT |
-				      DSISR_PROTFAULT))) {
+	if (is_exec && (error_code & (DSISR_NOEXEC_OR_G | DSISR_KEYFAULT))) {
 		printk_ratelimited(KERN_CRIT "kernel tried to execute"
 				   " exec-protected page (%lx) -"
 				   "exploit attempt? (uid: %d)\n",
@@ -239,8 +234,8 @@ static bool bad_kernel_fault(bool is_exec, unsigned long error_code,
 }
 
 static bool bad_stack_expansion(struct pt_regs *regs, unsigned long address,
-				struct vm_area_struct *vma, unsigned int flags,
-				bool *must_retry)
+				struct vm_area_struct *vma,
+				bool store_update_sp)
 {
 	/*
 	 * N.B. The POWER/Open ABI allows programs to access up to
@@ -252,7 +247,6 @@ static bool bad_stack_expansion(struct pt_regs *regs, unsigned long address,
 	 * expand to 1MB without further checks.
 	 */
 	if (address + 0x100000 < vma->vm_end) {
-		unsigned int __user *nip = (unsigned int __user *)regs->nip;
 		/* get user regs even if this fault is in kernel mode */
 		struct pt_regs *uregs = current->thread.regs;
 		if (uregs == NULL)
@@ -270,22 +264,8 @@ static bool bad_stack_expansion(struct pt_regs *regs, unsigned long address,
 		 * between the last mapped region and the stack will
 		 * expand the stack rather than segfaulting.
 		 */
-		if (address + 2048 >= uregs->gpr[1])
-			return false;
-
-		if ((flags & FAULT_FLAG_WRITE) && (flags & FAULT_FLAG_USER) &&
-		    access_ok(nip, sizeof(*nip))) {
-			unsigned int inst;
-			int res;
-
-			pagefault_disable();
-			res = __get_user_inatomic(inst, nip);
-			pagefault_enable();
-			if (!res)
-				return !store_updates_sp(inst);
-			*must_retry = true;
-		}
-		return true;
+		if (address + 2048 < uregs->gpr[1] && !store_update_sp)
+			return true;
 	}
 	return false;
 }
@@ -317,12 +297,7 @@ static bool access_error(bool is_write, bool is_exec,
 
 	if (unlikely(!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE))))
 		return true;
-	/*
-	 * We should ideally do the vma pkey access check here. But in the
-	 * fault path, handle_mm_fault() also does the same check. To avoid
-	 * these multiple checks, we skip it here and handle access error due
-	 * to pkeys later.
-	 */
+
 	return false;
 }
 
@@ -343,20 +318,9 @@ static inline void cmo_account_page_fault(void)
 static inline void cmo_account_page_fault(void) { }
 #endif /* CONFIG_PPC_SMLPAR */
 
-#ifdef CONFIG_PPC_BOOK3S
-static void sanity_check_fault(bool is_write, bool is_user,
-			       unsigned long error_code, unsigned long address)
+#ifdef CONFIG_PPC_STD_MMU
+static void sanity_check_fault(bool is_write, unsigned long error_code)
 {
-	/*
-	 * Userspace trying to access kernel address, we get PROTFAULT for that.
-	 */
-	if (is_user && address >= TASK_SIZE) {
-		pr_crit_ratelimited("%s[%d]: User access of kernel address (%lx) - exploit attempt? (uid: %d)\n",
-				   current->comm, current->pid, address,
-				   from_kuid(&init_user_ns, current_uid()));
-		return;
-	}
-
 	/*
 	 * For hash translation mode, we should never get a
 	 * PROTFAULT. Any update to pte to reduce access will result in us
@@ -386,15 +350,12 @@ static void sanity_check_fault(bool is_write, bool is_user,
 	 * For radix, we can get prot fault for autonuma case, because radix
 	 * page table will have them marked noaccess for user.
 	 */
-	if (radix_enabled() || is_write)
-		return;
-
-	WARN_ON_ONCE(error_code & DSISR_PROTFAULT);
+	if (!radix_enabled() && !is_write)
+		WARN_ON_ONCE(error_code & DSISR_PROTFAULT);
 }
 #else
-static void sanity_check_fault(bool is_write, bool is_user,
-			       unsigned long error_code, unsigned long address) { }
-#endif /* CONFIG_PPC_BOOK3S */
+static void sanity_check_fault(bool is_write, unsigned long error_code) { }
+#endif /* CONFIG_PPC_STD_MMU */
 
 /*
  * Define the correct "is_write" bit in error_code based
@@ -436,8 +397,8 @@ static int __do_page_fault(struct pt_regs *regs, unsigned long address,
  	int is_exec = TRAP(regs) == 0x400;
 	int is_user = user_mode(regs);
 	int is_write = page_fault_is_write(error_code);
-	vm_fault_t fault, major = 0;
-	bool must_retry = false;
+	int fault, major = 0;
+	bool store_update_sp = false;
 
 	if (notify_page_fault(regs))
 		return 0;
@@ -451,7 +412,7 @@ static int __do_page_fault(struct pt_regs *regs, unsigned long address,
 	}
 
 	/* Additional sanity check(s) */
-	sanity_check_fault(is_write, is_user, error_code, address);
+	sanity_check_fault(is_write, error_code);
 
 	/*
 	 * The kernel should never take an execute fault nor should it
@@ -488,6 +449,9 @@ static int __do_page_fault(struct pt_regs *regs, unsigned long address,
 	 * can result in fault, which will cause a deadlock when called with
 	 * mmap_sem held
 	 */
+	if (is_write && is_user)
+		store_update_sp = store_updates_sp(regs);
+
 	if (is_user)
 		flags |= FAULT_FLAG_USER;
 	if (is_write)
@@ -534,17 +498,8 @@ retry:
 		return bad_area(regs, address);
 
 	/* The stack is being expanded, check if it's valid */
-	if (unlikely(bad_stack_expansion(regs, address, vma, flags,
-					 &must_retry))) {
-		if (!must_retry)
-			return bad_area(regs, address);
-
-		up_read(&mm->mmap_sem);
-		if (fault_in_pages_readable((const char __user *)regs->nip,
-					    sizeof(unsigned int)))
-			return bad_area_nosemaphore(regs, address);
-		goto retry;
-	}
+	if (unlikely(bad_stack_expansion(regs, address, vma, store_update_sp)))
+		return bad_area(regs, address);
 
 	/* Try to expand it */
 	if (unlikely(expand_stack(vma, address)))
@@ -563,16 +518,25 @@ good_area:
 
 #ifdef CONFIG_PPC_MEM_KEYS
 	/*
-	 * we skipped checking for access error due to key earlier.
-	 * Check that using handle_mm_fault error return.
+	 * if the HPTE is not hashed, hardware will not detect
+	 * a key fault. Lets check if we failed because of a
+	 * software detected key fault.
 	 */
 	if (unlikely(fault & VM_FAULT_SIGSEGV) &&
-		!arch_vma_access_permitted(vma, is_write, is_exec, 0)) {
-
+		!arch_vma_access_permitted(vma, flags & FAULT_FLAG_WRITE,
+			is_exec, 0)) {
+		/*
+		 * The PGD-PDT...PMD-PTE tree may not have been fully setup.
+		 * Hence we cannot walk the tree to locate the PTE, to locate
+		 * the key. Hence let's use vma_pkey() to get the key; instead
+		 * of get_mm_addr_key().
+		 */
 		int pkey = vma_pkey(vma);
 
-		up_read(&mm->mmap_sem);
-		return bad_key_fault_exception(regs, address, pkey);
+		if (likely(pkey)) {
+			up_read(&mm->mmap_sem);
+			return bad_key_fault_exception(regs, address, pkey);
+		}
 	}
 #endif /* CONFIG_PPC_MEM_KEYS */
 
@@ -652,23 +616,21 @@ void bad_page_fault(struct pt_regs *regs, unsigned long address, int sig)
 	switch (TRAP(regs)) {
 	case 0x300:
 	case 0x380:
-	case 0xe00:
-		pr_alert("BUG: %s at 0x%08lx\n",
-			 regs->dar < PAGE_SIZE ? "Kernel NULL pointer dereference" :
-			 "Unable to handle kernel data access", regs->dar);
+		printk(KERN_ALERT "Unable to handle kernel paging request for "
+			"data at address 0x%08lx\n", regs->dar);
 		break;
 	case 0x400:
 	case 0x480:
-		pr_alert("BUG: Unable to handle kernel instruction fetch%s",
-			 regs->nip < PAGE_SIZE ? " (NULL pointer?)\n" : "\n");
+		printk(KERN_ALERT "Unable to handle kernel paging request for "
+			"instruction fetch\n");
 		break;
 	case 0x600:
-		pr_alert("BUG: Unable to handle kernel unaligned access at 0x%08lx\n",
-			 regs->dar);
+		printk(KERN_ALERT "Unable to handle kernel paging request for "
+			"unaligned access at address 0x%08lx\n", regs->dar);
 		break;
 	default:
-		pr_alert("BUG: Unable to handle unknown paging fault at 0x%08lx\n",
-			 regs->dar);
+		printk(KERN_ALERT "Unable to handle kernel paging request for "
+			"unknown fault\n");
 		break;
 	}
 	printk(KERN_ALERT "Faulting instruction address: 0x%08lx\n",

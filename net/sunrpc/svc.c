@@ -1145,17 +1145,6 @@ static __printf(2,3) void svc_printk(struct svc_rqst *rqstp, const char *fmt, ..
 #endif
 
 /*
- * Setup response header for TCP, it has a 4B record length field.
- */
-static void svc_tcp_prep_reply_hdr(struct svc_rqst *rqstp)
-{
-	struct kvec *resv = &rqstp->rq_res.head[0];
-
-	/* tcp needs a space for the record length... */
-	svc_putnl(resv, 0);
-}
-
-/*
  * Common routine for processing the RPC request.
  */
 static int
@@ -1183,8 +1172,7 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	clear_bit(RQ_DROPME, &rqstp->rq_flags);
 
 	/* Setup reply header */
-	if (rqstp->rq_prot == IPPROTO_TCP)
-		svc_tcp_prep_reply_hdr(rqstp);
+	rqstp->rq_xprt->xpt_ops->xpo_prep_reply_hdr(rqstp);
 
 	svc_putu32(resv, rqstp->rq_xid);
 
@@ -1256,7 +1244,7 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	 * for lower versions. RPC_PROG_MISMATCH seems to be the closest
 	 * fit.
 	 */
-	if (versp->vs_need_cong_ctrl && rqstp->rq_xprt &&
+	if (versp->vs_need_cong_ctrl &&
 	    !test_bit(XPT_CONG_CTRL, &rqstp->rq_xprt->xpt_flags))
 		goto err_bad_vers;
 
@@ -1267,7 +1255,6 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 
 	/* Syntactic check complete */
 	serv->sv_stats->rpccnt++;
-	trace_svc_process(rqstp, progp->pg_name);
 
 	/* Build the reply header. */
 	statp = resv->iov_base +resv->iov_len;
@@ -1348,7 +1335,7 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	return 0;
 
  close:
-	if (rqstp->rq_xprt && test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
+	if (test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
 		svc_close_xprt(rqstp->rq_xprt);
 	dprintk("svc: svc_process close\n");
 	return 0;
@@ -1444,10 +1431,14 @@ svc_process(struct svc_rqst *rqstp)
 	}
 
 	/* Returns 1 for send, 0 for drop */
-	if (likely(svc_process_common(rqstp, argv, resv)))
-		return svc_send(rqstp);
+	if (likely(svc_process_common(rqstp, argv, resv))) {
+		int ret = svc_send(rqstp);
 
+		trace_svc_process(rqstp, ret);
+		return ret;
+	}
 out_drop:
+	trace_svc_process(rqstp, 0);
 	svc_drop(rqstp);
 	return 0;
 }
@@ -1471,10 +1462,10 @@ bc_svc_process(struct svc_serv *serv, struct rpc_rqst *req,
 	dprintk("svc: %s(%p)\n", __func__, req);
 
 	/* Build the svc_rqst used by the common processing routine */
+	rqstp->rq_xprt = serv->sv_bc_xprt;
 	rqstp->rq_xid = req->rq_xid;
 	rqstp->rq_prot = req->rq_xprt->prot;
 	rqstp->rq_server = serv;
-	rqstp->rq_bc_net = req->rq_xprt->xprt_net;
 
 	rqstp->rq_addrlen = sizeof(req->rq_xprt->addr);
 	memcpy(&rqstp->rq_addr, &req->rq_xprt->addr, rqstp->rq_addrlen);
@@ -1511,9 +1502,9 @@ bc_svc_process(struct svc_serv *serv, struct rpc_rqst *req,
 	if (!proc_error) {
 		/* Processing error: drop the request */
 		xprt_free_bc_request(req);
-		error = -EINVAL;
-		goto out;
+		return 0;
 	}
+
 	/* Finally, send the reply synchronously */
 	memcpy(&req->rq_snd_buf, &rqstp->rq_res, sizeof(req->rq_snd_buf));
 	task = rpc_run_bc_task(req);
@@ -1545,92 +1536,3 @@ u32 svc_max_payload(const struct svc_rqst *rqstp)
 	return max;
 }
 EXPORT_SYMBOL_GPL(svc_max_payload);
-
-/**
- * svc_fill_write_vector - Construct data argument for VFS write call
- * @rqstp: svc_rqst to operate on
- * @pages: list of pages containing data payload
- * @first: buffer containing first section of write payload
- * @total: total number of bytes of write payload
- *
- * Fills in rqstp::rq_vec, and returns the number of elements.
- */
-unsigned int svc_fill_write_vector(struct svc_rqst *rqstp, struct page **pages,
-				   struct kvec *first, size_t total)
-{
-	struct kvec *vec = rqstp->rq_vec;
-	unsigned int i;
-
-	/* Some types of transport can present the write payload
-	 * entirely in rq_arg.pages. In this case, @first is empty.
-	 */
-	i = 0;
-	if (first->iov_len) {
-		vec[i].iov_base = first->iov_base;
-		vec[i].iov_len = min_t(size_t, total, first->iov_len);
-		total -= vec[i].iov_len;
-		++i;
-	}
-
-	while (total) {
-		vec[i].iov_base = page_address(*pages);
-		vec[i].iov_len = min_t(size_t, total, PAGE_SIZE);
-		total -= vec[i].iov_len;
-		++i;
-		++pages;
-	}
-
-	WARN_ON_ONCE(i > ARRAY_SIZE(rqstp->rq_vec));
-	return i;
-}
-EXPORT_SYMBOL_GPL(svc_fill_write_vector);
-
-/**
- * svc_fill_symlink_pathname - Construct pathname argument for VFS symlink call
- * @rqstp: svc_rqst to operate on
- * @first: buffer containing first section of pathname
- * @p: buffer containing remaining section of pathname
- * @total: total length of the pathname argument
- *
- * The VFS symlink API demands a NUL-terminated pathname in mapped memory.
- * Returns pointer to a NUL-terminated string, or an ERR_PTR. Caller must free
- * the returned string.
- */
-char *svc_fill_symlink_pathname(struct svc_rqst *rqstp, struct kvec *first,
-				void *p, size_t total)
-{
-	size_t len, remaining;
-	char *result, *dst;
-
-	result = kmalloc(total + 1, GFP_KERNEL);
-	if (!result)
-		return ERR_PTR(-ESERVERFAULT);
-
-	dst = result;
-	remaining = total;
-
-	len = min_t(size_t, total, first->iov_len);
-	if (len) {
-		memcpy(dst, first->iov_base, len);
-		dst += len;
-		remaining -= len;
-	}
-
-	if (remaining) {
-		len = min_t(size_t, remaining, PAGE_SIZE);
-		memcpy(dst, p, len);
-		dst += len;
-	}
-
-	*dst = '\0';
-
-	/* Sanity check: Linux doesn't allow the pathname argument to
-	 * contain a NUL byte.
-	 */
-	if (strlen(result) != total) {
-		kfree(result);
-		return ERR_PTR(-EINVAL);
-	}
-	return result;
-}
-EXPORT_SYMBOL_GPL(svc_fill_symlink_pathname);

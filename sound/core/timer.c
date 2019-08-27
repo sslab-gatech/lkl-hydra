@@ -427,35 +427,25 @@ int snd_timer_close(struct snd_timer_instance *timeri)
 }
 EXPORT_SYMBOL(snd_timer_close);
 
-static unsigned long snd_timer_hw_resolution(struct snd_timer *timer)
-{
-	if (timer->hw.c_resolution)
-		return timer->hw.c_resolution(timer);
-	else
-		return timer->hw.resolution;
-}
-
 unsigned long snd_timer_resolution(struct snd_timer_instance *timeri)
 {
 	struct snd_timer * timer;
-	unsigned long ret = 0;
-	unsigned long flags;
 
 	if (timeri == NULL)
 		return 0;
 	timer = timeri->timer;
 	if (timer) {
-		spin_lock_irqsave(&timer->lock, flags);
-		ret = snd_timer_hw_resolution(timer);
-		spin_unlock_irqrestore(&timer->lock, flags);
+		if (timer->hw.c_resolution)
+			return timer->hw.c_resolution(timer);
+		return timer->hw.resolution;
 	}
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL(snd_timer_resolution);
 
 static void snd_timer_notify1(struct snd_timer_instance *ti, int event)
 {
-	struct snd_timer *timer = ti->timer;
+	struct snd_timer *timer;
 	unsigned long resolution = 0;
 	struct snd_timer_instance *ts;
 	struct timespec tstamp;
@@ -467,14 +457,14 @@ static void snd_timer_notify1(struct snd_timer_instance *ti, int event)
 	if (snd_BUG_ON(event < SNDRV_TIMER_EVENT_START ||
 		       event > SNDRV_TIMER_EVENT_PAUSE))
 		return;
-	if (timer &&
-	    (event == SNDRV_TIMER_EVENT_START ||
-	     event == SNDRV_TIMER_EVENT_CONTINUE))
-		resolution = snd_timer_hw_resolution(timer);
+	if (event == SNDRV_TIMER_EVENT_START ||
+	    event == SNDRV_TIMER_EVENT_CONTINUE)
+		resolution = snd_timer_resolution(ti);
 	if (ti->ccallback)
 		ti->ccallback(ti, event, &tstamp, resolution);
 	if (ti->flags & SNDRV_TIMER_IFLG_SLAVE)
 		return;
+	timer = ti->timer;
 	if (timer == NULL)
 		return;
 	if (timer->hw.flags & SNDRV_TIMER_HW_SLAVE)
@@ -602,7 +592,7 @@ static int snd_timer_stop1(struct snd_timer_instance *timeri, bool stop)
 	else
 		timeri->flags |= SNDRV_TIMER_IFLG_PAUSED;
 	snd_timer_notify1(timeri, stop ? SNDRV_TIMER_EVENT_STOP :
-			  SNDRV_TIMER_EVENT_PAUSE);
+			  SNDRV_TIMER_EVENT_CONTINUE);
  unlock:
 	spin_unlock_irqrestore(&timer->lock, flags);
 	return result;
@@ -624,7 +614,7 @@ static int snd_timer_stop_slave(struct snd_timer_instance *timeri, bool stop)
 		list_del_init(&timeri->ack_list);
 		list_del_init(&timeri->active_list);
 		snd_timer_notify1(timeri, stop ? SNDRV_TIMER_EVENT_STOP :
-				  SNDRV_TIMER_EVENT_PAUSE);
+				  SNDRV_TIMER_EVENT_CONTINUE);
 		spin_unlock(&timeri->timer->lock);
 	}
 	spin_unlock_irqrestore(&slave_active_lock, flags);
@@ -781,7 +771,10 @@ void snd_timer_interrupt(struct snd_timer * timer, unsigned long ticks_left)
 	spin_lock_irqsave(&timer->lock, flags);
 
 	/* remember the current resolution */
-	resolution = snd_timer_hw_resolution(timer);
+	if (timer->hw.c_resolution)
+		resolution = timer->hw.c_resolution(timer);
+	else
+		resolution = timer->hw.resolution;
 
 	/* loop for all active instances
 	 * Here we cannot use list_for_each_entry because the active_list of a
@@ -883,11 +876,6 @@ int snd_timer_new(struct snd_card *card, char *id, struct snd_timer_id *tid,
 
 	if (snd_BUG_ON(!tid))
 		return -EINVAL;
-	if (tid->dev_class == SNDRV_TIMER_CLASS_CARD ||
-	    tid->dev_class == SNDRV_TIMER_CLASS_PCM) {
-		if (WARN_ON(!card))
-			return -EINVAL;
-	}
 	if (rtimer)
 		*rtimer = NULL;
 	timer = kzalloc(sizeof(*timer), GFP_KERNEL);
@@ -1026,8 +1014,12 @@ void snd_timer_notify(struct snd_timer *timer, int event, struct timespec *tstam
 	spin_lock_irqsave(&timer->lock, flags);
 	if (event == SNDRV_TIMER_EVENT_MSTART ||
 	    event == SNDRV_TIMER_EVENT_MCONTINUE ||
-	    event == SNDRV_TIMER_EVENT_MRESUME)
-		resolution = snd_timer_hw_resolution(timer);
+	    event == SNDRV_TIMER_EVENT_MRESUME) {
+		if (timer->hw.c_resolution)
+			resolution = timer->hw.c_resolution(timer);
+		else
+			resolution = timer->hw.resolution;
+	}
 	list_for_each_entry(ti, &timer->active_list_head, active_list) {
 		if (ti->ccallback)
 			ti->ccallback(ti, event, tstamp, resolution);
@@ -1525,7 +1517,7 @@ static int snd_timer_user_next_device(struct snd_timer_id __user *_tid)
 				} else {
 					if (id.subdevice < 0)
 						id.subdevice = 0;
-					else if (id.subdevice < INT_MAX)
+					else
 						id.subdevice++;
 				}
 			}
@@ -1664,8 +1656,10 @@ static int snd_timer_user_gstatus(struct file *file,
 	mutex_lock(&register_mutex);
 	t = snd_timer_find(&tid);
 	if (t != NULL) {
-		spin_lock_irq(&t->lock);
-		gstatus.resolution = snd_timer_hw_resolution(t);
+		if (t->hw.c_resolution)
+			gstatus.resolution = t->hw.c_resolution(t);
+		else
+			gstatus.resolution = t->hw.resolution;
 		if (t->hw.precise_resolution) {
 			t->hw.precise_resolution(t, &gstatus.resolution_num,
 						 &gstatus.resolution_den);
@@ -1673,7 +1667,6 @@ static int snd_timer_user_gstatus(struct file *file,
 			gstatus.resolution_num = gstatus.resolution;
 			gstatus.resolution_den = 1000000000uL;
 		}
-		spin_unlock_irq(&t->lock);
 	} else {
 		err = -ENODEV;
 	}

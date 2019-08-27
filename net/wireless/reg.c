@@ -5,7 +5,6 @@
  * Copyright 2008-2011	Luis R. Rodriguez <mcgrof@qca.qualcomm.com>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright      2017  Intel Deutschland GmbH
- * Copyright (C) 2018 Intel Corporation
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -135,12 +134,12 @@ static void restore_regulatory_settings(bool reset_user);
 
 static const struct ieee80211_regdomain *get_cfg80211_regdom(void)
 {
-	return rcu_dereference_rtnl(cfg80211_regdomain);
+	return rtnl_dereference(cfg80211_regdomain);
 }
 
 const struct ieee80211_regdomain *get_wiphy_regdom(struct wiphy *wiphy)
 {
-	return rcu_dereference_rtnl(wiphy->regd);
+	return rtnl_dereference(wiphy->regd);
 }
 
 static const char *reg_dfs_region_str(enum nl80211_dfs_regions dfs_region)
@@ -596,17 +595,6 @@ enum fwdb_flags {
 	FWDB_FLAG_AUTO_BW	= BIT(4),
 };
 
-struct fwdb_wmm_ac {
-	u8 ecw;
-	u8 aifsn;
-	__be16 cot;
-} __packed;
-
-struct fwdb_wmm_rule {
-	struct fwdb_wmm_ac client[IEEE80211_NUM_ACS];
-	struct fwdb_wmm_ac ap[IEEE80211_NUM_ACS];
-} __packed;
-
 struct fwdb_rule {
 	u8 len;
 	u8 flags;
@@ -614,7 +602,6 @@ struct fwdb_rule {
 	__be32 start, end, max_bw;
 	/* start of optional data */
 	__be16 cac_timeout;
-	__be16 wmm_ptr;
 } __packed __aligned(4);
 
 #define FWDB_MAGIC 0x52474442
@@ -626,31 +613,6 @@ struct fwdb_header {
 	struct fwdb_country country[];
 } __packed __aligned(4);
 
-static int ecw2cw(int ecw)
-{
-	return (1 << ecw) - 1;
-}
-
-static bool valid_wmm(struct fwdb_wmm_rule *rule)
-{
-	struct fwdb_wmm_ac *ac = (struct fwdb_wmm_ac *)rule;
-	int i;
-
-	for (i = 0; i < IEEE80211_NUM_ACS * 2; i++) {
-		u16 cw_min = ecw2cw((ac[i].ecw & 0xf0) >> 4);
-		u16 cw_max = ecw2cw(ac[i].ecw & 0x0f);
-		u8 aifsn = ac[i].aifsn;
-
-		if (cw_min >= cw_max)
-			return false;
-
-		if (aifsn < 1)
-			return false;
-	}
-
-	return true;
-}
-
 static bool valid_rule(const u8 *data, unsigned int size, u16 rule_ptr)
 {
 	struct fwdb_rule *rule = (void *)(data + (rule_ptr << 2));
@@ -661,18 +623,7 @@ static bool valid_rule(const u8 *data, unsigned int size, u16 rule_ptr)
 	/* mandatory fields */
 	if (rule->len < offsetofend(struct fwdb_rule, max_bw))
 		return false;
-	if (rule->len >= offsetofend(struct fwdb_rule, wmm_ptr)) {
-		u32 wmm_ptr = be16_to_cpu(rule->wmm_ptr) << 2;
-		struct fwdb_wmm_rule *wmm;
 
-		if (wmm_ptr + sizeof(struct fwdb_wmm_rule) > size)
-			return false;
-
-		wmm = (void *)(data + wmm_ptr);
-
-		if (!valid_wmm(wmm))
-			return false;
-	}
 	return true;
 }
 
@@ -847,99 +798,17 @@ static bool valid_regdb(const u8 *data, unsigned int size)
 	return true;
 }
 
-static void set_wmm_rule(const struct fwdb_header *db,
-			 const struct fwdb_country *country,
-			 const struct fwdb_rule *rule,
-			 struct ieee80211_reg_rule *rrule)
-{
-	struct ieee80211_wmm_rule *wmm_rule = &rrule->wmm_rule;
-	struct fwdb_wmm_rule *wmm;
-	unsigned int i, wmm_ptr;
-
-	wmm_ptr = be16_to_cpu(rule->wmm_ptr) << 2;
-	wmm = (void *)((u8 *)db + wmm_ptr);
-
-	if (!valid_wmm(wmm)) {
-		pr_err("Invalid regulatory WMM rule %u-%u in domain %c%c\n",
-		       be32_to_cpu(rule->start), be32_to_cpu(rule->end),
-		       country->alpha2[0], country->alpha2[1]);
-		return;
-	}
-
-	for (i = 0; i < IEEE80211_NUM_ACS; i++) {
-		wmm_rule->client[i].cw_min =
-			ecw2cw((wmm->client[i].ecw & 0xf0) >> 4);
-		wmm_rule->client[i].cw_max = ecw2cw(wmm->client[i].ecw & 0x0f);
-		wmm_rule->client[i].aifsn =  wmm->client[i].aifsn;
-		wmm_rule->client[i].cot =
-			1000 * be16_to_cpu(wmm->client[i].cot);
-		wmm_rule->ap[i].cw_min = ecw2cw((wmm->ap[i].ecw & 0xf0) >> 4);
-		wmm_rule->ap[i].cw_max = ecw2cw(wmm->ap[i].ecw & 0x0f);
-		wmm_rule->ap[i].aifsn = wmm->ap[i].aifsn;
-		wmm_rule->ap[i].cot = 1000 * be16_to_cpu(wmm->ap[i].cot);
-	}
-
-	rrule->has_wmm = true;
-}
-
-static int __regdb_query_wmm(const struct fwdb_header *db,
-			     const struct fwdb_country *country, int freq,
-			     struct ieee80211_reg_rule *rrule)
-{
-	unsigned int ptr = be16_to_cpu(country->coll_ptr) << 2;
-	struct fwdb_collection *coll = (void *)((u8 *)db + ptr);
-	int i;
-
-	for (i = 0; i < coll->n_rules; i++) {
-		__be16 *rules_ptr = (void *)((u8 *)coll + ALIGN(coll->len, 2));
-		unsigned int rule_ptr = be16_to_cpu(rules_ptr[i]) << 2;
-		struct fwdb_rule *rule = (void *)((u8 *)db + rule_ptr);
-
-		if (rule->len < offsetofend(struct fwdb_rule, wmm_ptr))
-			continue;
-
-		if (freq >= KHZ_TO_MHZ(be32_to_cpu(rule->start)) &&
-		    freq <= KHZ_TO_MHZ(be32_to_cpu(rule->end))) {
-			set_wmm_rule(db, country, rule, rrule);
-			return 0;
-		}
-	}
-
-	return -ENODATA;
-}
-
-int reg_query_regdb_wmm(char *alpha2, int freq, struct ieee80211_reg_rule *rule)
-{
-	const struct fwdb_header *hdr = regdb;
-	const struct fwdb_country *country;
-
-	if (!regdb)
-		return -ENODATA;
-
-	if (IS_ERR(regdb))
-		return PTR_ERR(regdb);
-
-	country = &hdr->country[0];
-	while (country->coll_ptr) {
-		if (alpha2_equal(alpha2, country->alpha2))
-			return __regdb_query_wmm(regdb, country, freq, rule);
-
-		country++;
-	}
-
-	return -ENODATA;
-}
-EXPORT_SYMBOL(reg_query_regdb_wmm);
-
 static int regdb_query_country(const struct fwdb_header *db,
 			       const struct fwdb_country *country)
 {
 	unsigned int ptr = be16_to_cpu(country->coll_ptr) << 2;
 	struct fwdb_collection *coll = (void *)((u8 *)db + ptr);
 	struct ieee80211_regdomain *regdom;
-	unsigned int size_of_regd, i;
+	unsigned int size_of_regd;
+	unsigned int i;
 
-	size_of_regd = sizeof(struct ieee80211_regdomain) +
+	size_of_regd =
+		sizeof(struct ieee80211_regdomain) +
 		coll->n_rules * sizeof(struct ieee80211_reg_rule);
 
 	regdom = kzalloc(size_of_regd, GFP_KERNEL);
@@ -982,8 +851,6 @@ static int regdb_query_country(const struct fwdb_header *db,
 		if (rule->len >= offsetofend(struct fwdb_rule, cac_timeout))
 			rrule->dfs_cac_ms =
 				1000 * be16_to_cpu(rule->cac_timeout);
-		if (rule->len >= offsetofend(struct fwdb_rule, wmm_ptr))
-			set_wmm_rule(db, country, rule, rrule);
 	}
 
 	return reg_schedule_apply(regdom);
@@ -1024,13 +891,8 @@ static void regdb_fw_cb(const struct firmware *fw, void *context)
 	}
 
 	rtnl_lock();
-	if (regdb && !IS_ERR(regdb)) {
-		/* negative case - a bug
-		 * positive case - can happen due to race in case of multiple cb's in
-		 * queue, due to usage of asynchronous callback
-		 *
-		 * Either case, just restore and free new db.
-		 */
+	if (WARN_ON(regdb && !IS_ERR(regdb))) {
+		/* just restore and free new db */
 	} else if (set_error) {
 		regdb = ERR_PTR(set_error);
 	} else if (fw) {
@@ -1260,7 +1122,7 @@ static bool is_valid_rd(const struct ieee80211_regdomain *rd)
  * definitions (the "2.4 GHz band", the "5 GHz band" and the "60GHz band"),
  * however it is safe for now to assume that a frequency rule should not be
  * part of a frequency's band if the start freq or end freq are off by more
- * than 2 GHz for the 2.4 and 5 GHz bands, and by more than 20 GHz for the
+ * than 2 GHz for the 2.4 and 5 GHz bands, and by more than 10 GHz for the
  * 60 GHz band.
  * This resolution can be lowered and should be considered as we add
  * regulatory rule support for other "bands".
@@ -1275,7 +1137,7 @@ static bool freq_in_rule_band(const struct ieee80211_freq_range *freq_range,
 	 * with the Channel starting frequency above 45 GHz.
 	 */
 	u32 limit = freq_khz > 45 * ONE_GHZ_IN_KHZ ?
-			20 * ONE_GHZ_IN_KHZ : 2 * ONE_GHZ_IN_KHZ;
+			10 * ONE_GHZ_IN_KHZ : 2 * ONE_GHZ_IN_KHZ;
 	if (abs(freq_khz - freq_range->start_freq_khz) <= limit)
 		return true;
 	if (abs(freq_khz - freq_range->end_freq_khz) <= limit)
@@ -1602,7 +1464,7 @@ const char *reg_initiator_name(enum nl80211_reg_initiator initiator)
 	case NL80211_REGDOM_SET_BY_DRIVER:
 		return "driver";
 	case NL80211_REGDOM_SET_BY_COUNTRY_IE:
-		return "country element";
+		return "country IE";
 	default:
 		WARN_ON(1);
 		return "bug";
@@ -2186,9 +2048,7 @@ static void wiphy_update_regulatory(struct wiphy *wiphy,
 		 * as some drivers used this to restore its orig_* reg domain.
 		 */
 		if (initiator == NL80211_REGDOM_SET_BY_CORE &&
-		    wiphy->regulatory_flags & REGULATORY_CUSTOM_REG &&
-		    !(wiphy->regulatory_flags &
-		      REGULATORY_WIPHY_SELF_MANAGED))
+		    wiphy->regulatory_flags & REGULATORY_CUSTOM_REG)
 			reg_call_notifier(wiphy, lr);
 		return;
 	}
@@ -2570,7 +2430,7 @@ reg_process_hint_country_ie(struct wiphy *wiphy,
 		 * This doesn't happen yet, not sure we
 		 * ever want to support it for this case.
 		 */
-		WARN_ONCE(1, "Unexpected intersection for country elements");
+		WARN_ONCE(1, "Unexpected intersection for country IEs");
 		return REG_REQ_IGNORE;
 	}
 
@@ -2672,12 +2532,11 @@ static void reg_process_hint(struct regulatory_request *reg_request)
 {
 	struct wiphy *wiphy = NULL;
 	enum reg_request_treatment treatment;
-	enum nl80211_reg_initiator initiator = reg_request->initiator;
 
 	if (reg_request->wiphy_idx != WIPHY_IDX_INVALID)
 		wiphy = wiphy_idx_to_wiphy(reg_request->wiphy_idx);
 
-	switch (initiator) {
+	switch (reg_request->initiator) {
 	case NL80211_REGDOM_SET_BY_CORE:
 		treatment = reg_process_hint_core(reg_request);
 		break;
@@ -2695,7 +2554,7 @@ static void reg_process_hint(struct regulatory_request *reg_request)
 		treatment = reg_process_hint_country_ie(wiphy, reg_request);
 		break;
 	default:
-		WARN(1, "invalid initiator %d\n", initiator);
+		WARN(1, "invalid initiator %d\n", reg_request->initiator);
 		goto out_free;
 	}
 
@@ -2710,7 +2569,7 @@ static void reg_process_hint(struct regulatory_request *reg_request)
 	 */
 	if (treatment == REG_REQ_ALREADY_SET && wiphy &&
 	    wiphy->regulatory_flags & REGULATORY_STRICT_REG) {
-		wiphy_update_regulatory(wiphy, initiator);
+		wiphy_update_regulatory(wiphy, reg_request->initiator);
 		wiphy_all_share_dfs_chan_state(wiphy);
 		reg_check_channels();
 	}
@@ -2721,19 +2580,24 @@ out_free:
 	reg_free_request(reg_request);
 }
 
-static void notify_self_managed_wiphys(struct regulatory_request *request)
+static bool reg_only_self_managed_wiphys(void)
 {
 	struct cfg80211_registered_device *rdev;
 	struct wiphy *wiphy;
+	bool self_managed_found = false;
+
+	ASSERT_RTNL();
 
 	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
 		wiphy = &rdev->wiphy;
-		if (wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED &&
-		    request->initiator == NL80211_REGDOM_SET_BY_USER &&
-		    request->user_reg_hint_type ==
-				NL80211_USER_REG_HINT_CELL_BASE)
-			reg_call_notifier(wiphy, request);
+		if (wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED)
+			self_managed_found = true;
+		else
+			return false;
 	}
+
+	/* make sure at least one self-managed wiphy exists */
+	return self_managed_found;
 }
 
 /*
@@ -2767,7 +2631,10 @@ static void reg_process_pending_hints(void)
 
 	spin_unlock(&reg_requests_lock);
 
-	notify_self_managed_wiphys(reg_request);
+	if (reg_only_self_managed_wiphys()) {
+		reg_free_request(reg_request);
+		return;
+	}
 
 	reg_process_hint(reg_request);
 
@@ -2879,7 +2746,6 @@ static int regulatory_hint_core(const char *alpha2)
 	request->alpha2[0] = alpha2[0];
 	request->alpha2[1] = alpha2[1];
 	request->initiator = NL80211_REGDOM_SET_BY_CORE;
-	request->wiphy_idx = WIPHY_IDX_INVALID;
 
 	queue_regulatory_request(request);
 
@@ -3197,59 +3063,13 @@ static void restore_regulatory_settings(bool reset_user)
 	schedule_work(&reg_work);
 }
 
-static bool is_wiphy_all_set_reg_flag(enum ieee80211_regulatory_flags flag)
-{
-	struct cfg80211_registered_device *rdev;
-	struct wireless_dev *wdev;
-
-	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
-		list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
-			wdev_lock(wdev);
-			if (!(wdev->wiphy->regulatory_flags & flag)) {
-				wdev_unlock(wdev);
-				return false;
-			}
-			wdev_unlock(wdev);
-		}
-	}
-
-	return true;
-}
-
 void regulatory_hint_disconnect(void)
 {
-	/* Restore of regulatory settings is not required when wiphy(s)
-	 * ignore IE from connected access point but clearance of beacon hints
-	 * is required when wiphy(s) supports beacon hints.
-	 */
-	if (is_wiphy_all_set_reg_flag(REGULATORY_COUNTRY_IE_IGNORE)) {
-		struct reg_beacon *reg_beacon, *btmp;
-
-		if (is_wiphy_all_set_reg_flag(REGULATORY_DISABLE_BEACON_HINTS))
-			return;
-
-		spin_lock_bh(&reg_pending_beacons_lock);
-		list_for_each_entry_safe(reg_beacon, btmp,
-					 &reg_pending_beacons, list) {
-			list_del(&reg_beacon->list);
-			kfree(reg_beacon);
-		}
-		spin_unlock_bh(&reg_pending_beacons_lock);
-
-		list_for_each_entry_safe(reg_beacon, btmp,
-					 &reg_beacon_list, list) {
-			list_del(&reg_beacon->list);
-			kfree(reg_beacon);
-		}
-
-		return;
-	}
-
 	pr_debug("All devices are disconnected, going to restore regulatory settings\n");
 	restore_regulatory_settings(false);
 }
 
-static bool freq_is_chan_12_13_14(u32 freq)
+static bool freq_is_chan_12_13_14(u16 freq)
 {
 	if (freq == ieee80211_channel_to_frequency(12, NL80211_BAND_2GHZ) ||
 	    freq == ieee80211_channel_to_frequency(13, NL80211_BAND_2GHZ) ||
@@ -3375,7 +3195,7 @@ bool reg_supported_dfs_region(enum nl80211_dfs_regions dfs_region)
 	case NL80211_DFS_JP:
 		return true;
 	default:
-		pr_debug("Ignoring unknown DFS master region: %d\n", dfs_region);
+		pr_debug("Ignoring uknown DFS master region: %d\n", dfs_region);
 		return false;
 	}
 }
@@ -3690,26 +3510,17 @@ EXPORT_SYMBOL(regulatory_set_wiphy_regd_sync_rtnl);
 
 void wiphy_regulatory_register(struct wiphy *wiphy)
 {
-	struct regulatory_request *lr = get_last_request();
+	struct regulatory_request *lr;
 
-	/* self-managed devices ignore beacon hints and country IE */
-	if (wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED) {
+	/* self-managed devices ignore external hints */
+	if (wiphy->regulatory_flags & REGULATORY_WIPHY_SELF_MANAGED)
 		wiphy->regulatory_flags |= REGULATORY_DISABLE_BEACON_HINTS |
 					   REGULATORY_COUNTRY_IE_IGNORE;
-
-		/*
-		 * The last request may have been received before this
-		 * registration call. Call the driver notifier if
-		 * initiator is USER and user type is CELL_BASE.
-		 */
-		if (lr->initiator == NL80211_REGDOM_SET_BY_USER &&
-		    lr->user_reg_hint_type == NL80211_USER_REG_HINT_CELL_BASE)
-			reg_call_notifier(wiphy, lr);
-	}
 
 	if (!reg_dev_ignore_cell_hint(wiphy))
 		reg_num_devs_support_basehint++;
 
+	lr = get_last_request();
 	wiphy_update_regulatory(wiphy, lr->initiator);
 	wiphy_all_share_dfs_chan_state(wiphy);
 }
@@ -3835,15 +3646,6 @@ void regulatory_propagate_dfs_state(struct wiphy *wiphy,
 static int __init regulatory_init_db(void)
 {
 	int err;
-
-	/*
-	 * It's possible that - due to other bugs/issues - cfg80211
-	 * never called regulatory_init() below, or that it failed;
-	 * in that case, don't try to do any further work here as
-	 * it's doomed to lead to crashes.
-	 */
-	if (IS_ERR_OR_NULL(reg_pdev))
-		return -EINVAL;
 
 	err = load_builtin_regdb_keys();
 	if (err)

@@ -5,7 +5,6 @@
  * PaX/grsecurity.
  */
 #include <linux/refcount.h>
-#include <asm/bug.h>
 
 /*
  * This is the first portion of the refcount error handling, which lives in
@@ -17,7 +16,7 @@
  */
 #define _REFCOUNT_EXCEPTION				\
 	".pushsection .text..refcount\n"		\
-	"111:\tlea %[var], %%" _ASM_CX "\n"		\
+	"111:\tlea %[counter], %%" _ASM_CX "\n"		\
 	"112:\t" ASM_UD2 "\n"				\
 	ASM_UNREACHABLE					\
 	".popsection\n"					\
@@ -43,7 +42,7 @@ static __always_inline void refcount_add(unsigned int i, refcount_t *r)
 {
 	asm volatile(LOCK_PREFIX "addl %1,%0\n\t"
 		REFCOUNT_CHECK_LT_ZERO
-		: [var] "+m" (r->refs.counter)
+		: [counter] "+m" (r->refs.counter)
 		: "ir" (i)
 		: "cc", "cx");
 }
@@ -52,7 +51,7 @@ static __always_inline void refcount_inc(refcount_t *r)
 {
 	asm volatile(LOCK_PREFIX "incl %0\n\t"
 		REFCOUNT_CHECK_LT_ZERO
-		: [var] "+m" (r->refs.counter)
+		: [counter] "+m" (r->refs.counter)
 		: : "cc", "cx");
 }
 
@@ -60,23 +59,21 @@ static __always_inline void refcount_dec(refcount_t *r)
 {
 	asm volatile(LOCK_PREFIX "decl %0\n\t"
 		REFCOUNT_CHECK_LE_ZERO
-		: [var] "+m" (r->refs.counter)
+		: [counter] "+m" (r->refs.counter)
 		: : "cc", "cx");
 }
 
 static __always_inline __must_check
 bool refcount_sub_and_test(unsigned int i, refcount_t *r)
 {
-	return GEN_BINARY_SUFFIXED_RMWcc(LOCK_PREFIX "subl",
-					 REFCOUNT_CHECK_LT_ZERO,
-					 r->refs.counter, e, "er", i, "cx");
+	GEN_BINARY_SUFFIXED_RMWcc(LOCK_PREFIX "subl", REFCOUNT_CHECK_LT_ZERO,
+				  r->refs.counter, "er", i, "%0", e, "cx");
 }
 
 static __always_inline __must_check bool refcount_dec_and_test(refcount_t *r)
 {
-	return GEN_UNARY_SUFFIXED_RMWcc(LOCK_PREFIX "decl",
-					REFCOUNT_CHECK_LT_ZERO,
-					r->refs.counter, e, "cx");
+	GEN_UNARY_SUFFIXED_RMWcc(LOCK_PREFIX "decl", REFCOUNT_CHECK_LT_ZERO,
+				 r->refs.counter, "%0", e, "cx");
 }
 
 static __always_inline __must_check
@@ -94,7 +91,7 @@ bool refcount_add_not_zero(unsigned int i, refcount_t *r)
 		/* Did we try to increment from/to an undesirable state? */
 		if (unlikely(c < 0 || c == INT_MAX || result < c)) {
 			asm volatile(REFCOUNT_ERROR
-				     : : [var] "m" (r->refs.counter)
+				     : : [counter] "m" (r->refs.counter)
 				     : "cc", "cx");
 			break;
 		}

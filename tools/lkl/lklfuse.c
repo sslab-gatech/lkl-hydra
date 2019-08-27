@@ -65,7 +65,6 @@ static void usage(void)
 "    -o type=fstype         filesystem type\n"
 "    -o mb=memory in mb     ammount of memory to allocate\n"
 "    -o part=parition       partition to mount\n"
-"    -o ro                  open file read-only\n"
 "    -o opts=options        mount options (use \\ to escape , and =)\n"
 );
 }
@@ -211,8 +210,7 @@ static int lklfuse_chmod(const char *path, mode_t mode)
 
 static int lklfuse_chown(const char *path, uid_t uid, gid_t gid)
 {
-	return lkl_sys_fchownat(LKL_AT_FDCWD, path, uid, gid,
-				LKL_AT_SYMLINK_NOFOLLOW);
+	return lkl_sys_chown(path, uid, gid);
 }
 
 static int lklfuse_truncate(const char *path, off_t off)

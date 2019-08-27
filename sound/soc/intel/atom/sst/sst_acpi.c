@@ -143,11 +143,10 @@ static struct sst_platform_info byt_rvp_platform_data = {
 	.lib_info = &byt_lib_dnld_info,
 	.res_info = &byt_rvp_res_info,
 	.platform = "sst-mfld-platform",
-	.streams_lost_on_suspend = true,
 };
 
 /* Cherryview (Cherrytrail and Braswell) uses same mrfld dpcm fw as Baytrail,
- * so pdata is same as Baytrail, minus the streams_lost_on_suspend quirk.
+ * so pdata is same as Baytrail.
  */
 static struct sst_platform_info chv_platform_data = {
 	.probe_data = &byt_fwparse_info,
@@ -340,10 +339,6 @@ static int sst_acpi_probe(struct platform_device *pdev)
 		/* override resource info */
 		byt_rvp_platform_data.res_info = &bytcr_res_info;
 	}
-
-	/* update machine parameters */
-	mach->mach_params.acpi_ipc_irq_index =
-		pdata->res_info->acpi_ipc_irq_index;
 
 	plat_dev = platform_device_register_data(dev, pdata->platform, -1,
 						NULL, 0);

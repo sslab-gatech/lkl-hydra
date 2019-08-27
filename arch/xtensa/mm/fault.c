@@ -39,13 +39,13 @@ void do_page_fault(struct pt_regs *regs)
 	struct mm_struct *mm = current->mm;
 	unsigned int exccause = regs->exccause;
 	unsigned int address = regs->excvaddr;
-	int code;
+	siginfo_t info;
 
 	int is_write, is_exec;
-	vm_fault_t fault;
+	int fault;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
-	code = SEGV_MAPERR;
+	info.si_code = SEGV_MAPERR;
 
 	/* We fault-in kernel-space virtual memory on-demand. The
 	 * 'reference' page table is init_mm.pgd.
@@ -91,7 +91,7 @@ retry:
 	 */
 
 good_area:
-	code = SEGV_ACCERR;
+	info.si_code = SEGV_ACCERR;
 
 	if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))
@@ -157,7 +157,11 @@ bad_area:
 	if (user_mode(regs)) {
 		current->thread.bad_vaddr = address;
 		current->thread.error_code = is_write;
-		force_sig_fault(SIGSEGV, code, (void *) address, current);
+		info.si_signo = SIGSEGV;
+		info.si_errno = 0;
+		/* info.si_code has been set above */
+		info.si_addr = (void *) address;
+		force_sig_info(SIGSEGV, &info, current);
 		return;
 	}
 	bad_page_fault(regs, address, SIGSEGV);
@@ -182,7 +186,11 @@ do_sigbus:
 	 * or user mode.
 	 */
 	current->thread.bad_vaddr = address;
-	force_sig_fault(SIGBUS, BUS_ADRERR, (void *) address, current);
+	info.si_code = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRERR;
+	info.si_addr = (void *) address;
+	force_sig_info(SIGBUS, &info, current);
 
 	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs))

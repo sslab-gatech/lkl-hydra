@@ -21,7 +21,6 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
-#include <linux/highmem.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/blkdev.h>
@@ -292,11 +291,8 @@ static void mxcmci_swap_buffers(struct mmc_data *data)
 	struct scatterlist *sg;
 	int i;
 
-	for_each_sg(data->sg, sg, data->sg_len, i) {
-		void *buf = kmap_atomic(sg_page(sg) + sg->offset);
-		buffer_swap32(buf, sg->length);
-		kunmap_atomic(buf);
-	}
+	for_each_sg(data->sg, sg, data->sg_len, i)
+		buffer_swap32(sg_virt(sg), sg->length);
 }
 #else
 static inline void mxcmci_swap_buffers(struct mmc_data *data) {}
@@ -613,7 +609,6 @@ static int mxcmci_transfer_data(struct mxcmci_host *host)
 {
 	struct mmc_data *data = host->req->data;
 	struct scatterlist *sg;
-	void *buf;
 	int stat, i;
 
 	host->data = data;
@@ -621,18 +616,14 @@ static int mxcmci_transfer_data(struct mxcmci_host *host)
 
 	if (data->flags & MMC_DATA_READ) {
 		for_each_sg(data->sg, sg, data->sg_len, i) {
-			buf = kmap_atomic(sg_page(sg) + sg->offset);
-			stat = mxcmci_pull(host, buf, sg->length);
-			kunmap(buf);
+			stat = mxcmci_pull(host, sg_virt(sg), sg->length);
 			if (stat)
 				return stat;
 			host->datasize += sg->length;
 		}
 	} else {
 		for_each_sg(data->sg, sg, data->sg_len, i) {
-			buf = kmap_atomic(sg_page(sg) + sg->offset);
-			stat = mxcmci_push(host, buf, sg->length);
-			kunmap(buf);
+			stat = mxcmci_push(host, sg_virt(sg), sg->length);
 			if (stat)
 				return stat;
 			host->datasize += sg->length;
@@ -728,6 +719,7 @@ static void mxcmci_cmd_done(struct mxcmci_host *host, unsigned int stat)
 static irqreturn_t mxcmci_irq(int irq, void *devid)
 {
 	struct mxcmci_host *host = devid;
+	unsigned long flags;
 	bool sdio_irq;
 	u32 stat;
 
@@ -739,9 +731,9 @@ static irqreturn_t mxcmci_irq(int irq, void *devid)
 
 	dev_dbg(mmc_dev(host->mmc), "%s: 0x%08x\n", __func__, stat);
 
-	spin_lock(&host->lock);
+	spin_lock_irqsave(&host->lock, flags);
 	sdio_irq = (stat & STATUS_SDIO_INT_ACTIVE) && host->use_sdio;
-	spin_unlock(&host->lock);
+	spin_unlock_irqrestore(&host->lock, flags);
 
 	if (mxcmci_use_dma(host) && (stat & (STATUS_WRITE_OP_DONE)))
 		mxcmci_writel(host, STATUS_WRITE_OP_DONE, MMC_REG_STATUS);
@@ -1214,8 +1206,7 @@ static int mxcmci_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int mxcmci_suspend(struct device *dev)
+static int __maybe_unused mxcmci_suspend(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct mxcmci_host *host = mmc_priv(mmc);
@@ -1225,7 +1216,7 @@ static int mxcmci_suspend(struct device *dev)
 	return 0;
 }
 
-static int mxcmci_resume(struct device *dev)
+static int __maybe_unused mxcmci_resume(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct mxcmci_host *host = mmc_priv(mmc);
@@ -1241,7 +1232,6 @@ static int mxcmci_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(mxcmci_pm_ops, mxcmci_suspend, mxcmci_resume);
 

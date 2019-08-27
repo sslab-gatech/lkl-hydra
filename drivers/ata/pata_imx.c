@@ -17,7 +17,6 @@
 #include <linux/clk.h>
 #include <linux/libata.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
 #define DRV_NAME "pata_imx"
@@ -103,7 +102,7 @@ static struct scsi_host_template pata_imx_sht = {
 
 static struct ata_port_operations pata_imx_port_ops = {
 	.inherits		= &ata_sff_port_ops,
-	.sff_data_xfer		= ata_sff_data_xfer32,
+	.sff_data_xfer		= ata_sff_data_xfer_noirq,
 	.cable_detect		= ata_cable_unknown,
 	.set_piomode		= pata_imx_set_piomode,
 };

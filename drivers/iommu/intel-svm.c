@@ -24,15 +24,27 @@
 #include <linux/pci-ats.h>
 #include <linux/dmar.h>
 #include <linux/interrupt.h>
-#include <linux/mm_types.h>
 #include <asm/page.h>
 
-#include "intel-pasid.h"
+#define PASID_ENTRY_P		BIT_ULL(0)
+#define PASID_ENTRY_FLPM_5LP	BIT_ULL(9)
+#define PASID_ENTRY_SRE		BIT_ULL(11)
 
 static irqreturn_t prq_event_thread(int irq, void *d);
 
-int intel_svm_init(struct intel_iommu *iommu)
+struct pasid_entry {
+	u64 val;
+};
+
+struct pasid_state_entry {
+	u64 val;
+};
+
+int intel_svm_alloc_pasid_tables(struct intel_iommu *iommu)
 {
+	struct page *pages;
+	int order;
+
 	if (cpu_feature_enabled(X86_FEATURE_GBPAGES) &&
 			!cap_fl1gp_support(iommu->cap))
 		return -EINVAL;
@@ -41,6 +53,56 @@ int intel_svm_init(struct intel_iommu *iommu)
 			!cap_5lp_support(iommu->cap))
 		return -EINVAL;
 
+	/* Start at 2 because it's defined as 2^(1+PSS) */
+	iommu->pasid_max = 2 << ecap_pss(iommu->ecap);
+
+	/* Eventually I'm promised we will get a multi-level PASID table
+	 * and it won't have to be physically contiguous. Until then,
+	 * limit the size because 8MiB contiguous allocations can be hard
+	 * to come by. The limit of 0x20000, which is 1MiB for each of
+	 * the PASID and PASID-state tables, is somewhat arbitrary. */
+	if (iommu->pasid_max > 0x20000)
+		iommu->pasid_max = 0x20000;
+
+	order = get_order(sizeof(struct pasid_entry) * iommu->pasid_max);
+	pages = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+	if (!pages) {
+		pr_warn("IOMMU: %s: Failed to allocate PASID table\n",
+			iommu->name);
+		return -ENOMEM;
+	}
+	iommu->pasid_table = page_address(pages);
+	pr_info("%s: Allocated order %d PASID table.\n", iommu->name, order);
+
+	if (ecap_dis(iommu->ecap)) {
+		/* Just making it explicit... */
+		BUILD_BUG_ON(sizeof(struct pasid_entry) != sizeof(struct pasid_state_entry));
+		pages = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+		if (pages)
+			iommu->pasid_state_table = page_address(pages);
+		else
+			pr_warn("IOMMU: %s: Failed to allocate PASID state table\n",
+				iommu->name);
+	}
+
+	idr_init(&iommu->pasid_idr);
+
+	return 0;
+}
+
+int intel_svm_free_pasid_tables(struct intel_iommu *iommu)
+{
+	int order = get_order(sizeof(struct pasid_entry) * iommu->pasid_max);
+
+	if (iommu->pasid_table) {
+		free_pages((unsigned long)iommu->pasid_table, order);
+		iommu->pasid_table = NULL;
+	}
+	if (iommu->pasid_state_table) {
+		free_pages((unsigned long)iommu->pasid_state_table, order);
+		iommu->pasid_state_table = NULL;
+	}
+	idr_destroy(&iommu->pasid_idr);
 	return 0;
 }
 
@@ -117,40 +179,27 @@ static void intel_flush_svm_range_dev (struct intel_svm *svm, struct intel_svm_d
 		 * because that's the only option the hardware gives us. Despite
 		 * the fact that they are actually only accessible through one. */
 		if (gl)
-			desc.qw0 = QI_EIOTLB_PASID(svm->pasid) |
-					QI_EIOTLB_DID(sdev->did) |
-					QI_EIOTLB_GRAN(QI_GRAN_ALL_ALL) |
-					QI_EIOTLB_TYPE;
+			desc.low = QI_EIOTLB_PASID(svm->pasid) | QI_EIOTLB_DID(sdev->did) |
+				QI_EIOTLB_GRAN(QI_GRAN_ALL_ALL) | QI_EIOTLB_TYPE;
 		else
-			desc.qw0 = QI_EIOTLB_PASID(svm->pasid) |
-					QI_EIOTLB_DID(sdev->did) |
-					QI_EIOTLB_GRAN(QI_GRAN_NONG_PASID) |
-					QI_EIOTLB_TYPE;
-		desc.qw1 = 0;
+			desc.low = QI_EIOTLB_PASID(svm->pasid) | QI_EIOTLB_DID(sdev->did) |
+				QI_EIOTLB_GRAN(QI_GRAN_NONG_PASID) | QI_EIOTLB_TYPE;
+		desc.high = 0;
 	} else {
 		int mask = ilog2(__roundup_pow_of_two(pages));
 
-		desc.qw0 = QI_EIOTLB_PASID(svm->pasid) |
-				QI_EIOTLB_DID(sdev->did) |
-				QI_EIOTLB_GRAN(QI_GRAN_PSI_PASID) |
-				QI_EIOTLB_TYPE;
-		desc.qw1 = QI_EIOTLB_ADDR(address) |
-				QI_EIOTLB_GL(gl) |
-				QI_EIOTLB_IH(ih) |
-				QI_EIOTLB_AM(mask);
+		desc.low = QI_EIOTLB_PASID(svm->pasid) | QI_EIOTLB_DID(sdev->did) |
+			QI_EIOTLB_GRAN(QI_GRAN_PSI_PASID) | QI_EIOTLB_TYPE;
+		desc.high = QI_EIOTLB_ADDR(address) | QI_EIOTLB_GL(gl) |
+			QI_EIOTLB_IH(ih) | QI_EIOTLB_AM(mask);
 	}
-	desc.qw2 = 0;
-	desc.qw3 = 0;
 	qi_submit_sync(&desc, svm->iommu);
 
 	if (sdev->dev_iotlb) {
-		desc.qw0 = QI_DEV_EIOTLB_PASID(svm->pasid) |
-				QI_DEV_EIOTLB_SID(sdev->sid) |
-				QI_DEV_EIOTLB_QDEP(sdev->qdep) |
-				QI_DEIOTLB_TYPE;
+		desc.low = QI_DEV_EIOTLB_PASID(svm->pasid) | QI_DEV_EIOTLB_SID(sdev->sid) |
+			QI_DEV_EIOTLB_QDEP(sdev->qdep) | QI_DEIOTLB_TYPE;
 		if (pages == -1) {
-			desc.qw1 = QI_DEV_EIOTLB_ADDR(-1ULL >> 1) |
-					QI_DEV_EIOTLB_SIZE;
+			desc.high = QI_DEV_EIOTLB_ADDR(-1ULL >> 1) | QI_DEV_EIOTLB_SIZE;
 		} else if (pages > 1) {
 			/* The least significant zero bit indicates the size. So,
 			 * for example, an "address" value of 0x12345f000 will
@@ -158,13 +207,10 @@ static void intel_flush_svm_range_dev (struct intel_svm *svm, struct intel_svm_d
 			unsigned long last = address + ((unsigned long)(pages - 1) << VTD_PAGE_SHIFT);
 			unsigned long mask = __rounddown_pow_of_two(address ^ last);
 
-			desc.qw1 = QI_DEV_EIOTLB_ADDR((address & ~mask) |
-					(mask - 1)) | QI_DEV_EIOTLB_SIZE;
+			desc.high = QI_DEV_EIOTLB_ADDR((address & ~mask) | (mask - 1)) | QI_DEV_EIOTLB_SIZE;
 		} else {
-			desc.qw1 = QI_DEV_EIOTLB_ADDR(address);
+			desc.high = QI_DEV_EIOTLB_ADDR(address);
 		}
-		desc.qw2 = 0;
-		desc.qw3 = 0;
 		qi_submit_sync(&desc, svm->iommu);
 	}
 }
@@ -173,6 +219,11 @@ static void intel_flush_svm_range(struct intel_svm *svm, unsigned long address,
 				  unsigned long pages, int ih, int gl)
 {
 	struct intel_svm_dev *sdev;
+
+	/* Try deferred invalidate if available */
+	if (svm->iommu->pasid_state_table &&
+	    !cmpxchg64(&svm->iommu->pasid_state_table[svm->pasid].val, 0, 1ULL << 63))
+		return;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(sdev, &svm->devs, list)
@@ -199,6 +250,17 @@ static void intel_invalidate_range(struct mmu_notifier *mn,
 			      (end - start + PAGE_SIZE - 1) >> VTD_PAGE_SHIFT, 0, 0);
 }
 
+
+static void intel_flush_pasid_dev(struct intel_svm *svm, struct intel_svm_dev *sdev, int pasid)
+{
+	struct qi_desc desc;
+
+	desc.high = 0;
+	desc.low = QI_PC_TYPE | QI_PC_DID(sdev->did) | QI_PC_PASID_SEL | QI_PC_PASID(pasid);
+
+	qi_submit_sync(&desc, svm->iommu);
+}
+
 static void intel_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 {
 	struct intel_svm *svm = container_of(mn, struct intel_svm, notifier);
@@ -216,9 +278,12 @@ static void intel_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 	 * page) so that we end up taking a fault that the hardware really
 	 * *has* to handle gracefully without affecting other processes.
 	 */
+	svm->iommu->pasid_table[svm->pasid].val = 0;
+	wmb();
+
 	rcu_read_lock();
 	list_for_each_entry_rcu(sdev, &svm->devs, list) {
-		intel_pasid_tear_down_entry(svm->iommu, sdev->dev, svm->pasid);
+		intel_flush_pasid_dev(svm, sdev, svm->pasid);
 		intel_flush_svm_range_dev(svm, sdev, 0, -1, 0, !svm->mm);
 	}
 	rcu_read_unlock();
@@ -226,13 +291,13 @@ static void intel_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 }
 
 static const struct mmu_notifier_ops intel_mmuops = {
+	.flags = MMU_INVALIDATE_DOES_NOT_BLOCK,
 	.release = intel_mm_release,
 	.change_pte = intel_change_pte,
 	.invalidate_range = intel_invalidate_range,
 };
 
 static DEFINE_MUTEX(pasid_mutex);
-static LIST_HEAD(global_svm_list);
 
 int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_ops *ops)
 {
@@ -240,10 +305,11 @@ int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_
 	struct intel_svm_dev *sdev;
 	struct intel_svm *svm = NULL;
 	struct mm_struct *mm = NULL;
+	u64 pasid_entry_val;
 	int pasid_max;
 	int ret;
 
-	if (!iommu)
+	if (WARN_ON(!iommu || !iommu->pasid_table))
 		return -EINVAL;
 
 	if (dev_is_pci(dev)) {
@@ -253,7 +319,7 @@ int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_
 	} else
 		pasid_max = 1 << 20;
 
-	if (flags & SVM_FLAG_SUPERVISOR_MODE) {
+	if ((flags & SVM_FLAG_SUPERVISOR_MODE)) {
 		if (!ecap_srs(iommu->ecap))
 			return -EINVAL;
 	} else if (pasid) {
@@ -263,13 +329,13 @@ int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_
 
 	mutex_lock(&pasid_mutex);
 	if (pasid && !(flags & SVM_FLAG_PRIVATE_PASID)) {
-		struct intel_svm *t;
+		int i;
 
-		list_for_each_entry(t, &global_svm_list, list) {
-			if (t->mm != mm || (t->flags & SVM_FLAG_PRIVATE_PASID))
+		idr_for_each_entry(&iommu->pasid_idr, svm, i) {
+			if (svm->mm != mm ||
+			    (svm->flags & SVM_FLAG_PRIVATE_PASID))
 				continue;
 
-			svm = t;
 			if (svm->pasid >= pasid_max) {
 				dev_warn(dev,
 					 "Limited PASID width. Cannot use existing PASID %d\n",
@@ -321,16 +387,15 @@ int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_
 		}
 		svm->iommu = iommu;
 
-		if (pasid_max > intel_pasid_max_id)
-			pasid_max = intel_pasid_max_id;
+		if (pasid_max > iommu->pasid_max)
+			pasid_max = iommu->pasid_max;
 
 		/* Do not use PASID 0 in caching mode (virtualised IOMMU) */
-		ret = intel_pasid_alloc_id(svm,
-					   !!cap_caching_mode(iommu->cap),
-					   pasid_max - 1, GFP_KERNEL);
+		ret = idr_alloc(&iommu->pasid_idr, svm,
+				!!cap_caching_mode(iommu->cap),
+				pasid_max - 1, GFP_KERNEL);
 		if (ret < 0) {
 			kfree(svm);
-			kfree(sdev);
 			goto out;
 		}
 		svm->pasid = ret;
@@ -338,34 +403,36 @@ int intel_svm_bind_mm(struct device *dev, int *pasid, int flags, struct svm_dev_
 		svm->mm = mm;
 		svm->flags = flags;
 		INIT_LIST_HEAD_RCU(&svm->devs);
-		INIT_LIST_HEAD(&svm->list);
 		ret = -ENOMEM;
 		if (mm) {
 			ret = mmu_notifier_register(&svm->notifier, mm);
 			if (ret) {
-				intel_pasid_free_id(svm->pasid);
+				idr_remove(&svm->iommu->pasid_idr, svm->pasid);
 				kfree(svm);
 				kfree(sdev);
 				goto out;
 			}
-		}
+			pasid_entry_val = (u64)__pa(mm->pgd) | PASID_ENTRY_P;
+		} else
+			pasid_entry_val = (u64)__pa(init_mm.pgd) |
+					  PASID_ENTRY_P | PASID_ENTRY_SRE;
+		if (cpu_feature_enabled(X86_FEATURE_LA57))
+			pasid_entry_val |= PASID_ENTRY_FLPM_5LP;
 
-		spin_lock(&iommu->lock);
-		ret = intel_pasid_setup_first_level(iommu, dev,
-				mm ? mm->pgd : init_mm.pgd,
-				svm->pasid, FLPT_DEFAULT_DID,
-				mm ? 0 : PASID_FLAG_SUPERVISOR_MODE);
-		spin_unlock(&iommu->lock);
-		if (ret) {
-			if (mm)
-				mmu_notifier_unregister(&svm->notifier, mm);
-			intel_pasid_free_id(svm->pasid);
-			kfree(svm);
-			kfree(sdev);
-			goto out;
-		}
+		iommu->pasid_table[svm->pasid].val = pasid_entry_val;
 
-		list_add_tail(&svm->list, &global_svm_list);
+		wmb();
+		/* In caching mode, we still have to flush with PASID 0 when
+		 * a PASID table entry becomes present. Not entirely clear
+		 * *why* that would be the case — surely we could just issue
+		 * a flush with the PASID value that we've changed? The PASID
+		 * is the index into the table, after all. It's not like domain
+		 * IDs in the case of the equivalent context-entry change in
+		 * caching mode. And for that matter it's not entirely clear why
+		 * a VMM would be in the business of caching the PASID table
+		 * anyway. Surely that can be left entirely to the guest? */
+		if (cap_caching_mode(iommu->cap))
+			intel_flush_pasid_dev(svm, sdev, 0);
 	}
 	list_add_rcu(&sdev->list, &svm->devs);
 
@@ -389,10 +456,10 @@ int intel_svm_unbind_mm(struct device *dev, int pasid)
 
 	mutex_lock(&pasid_mutex);
 	iommu = intel_svm_device_to_iommu(dev);
-	if (!iommu)
+	if (!iommu || !iommu->pasid_table)
 		goto out;
 
-	svm = intel_pasid_lookup_id(pasid);
+	svm = idr_find(&iommu->pasid_idr, pasid);
 	if (!svm)
 		goto out;
 
@@ -409,16 +476,17 @@ int intel_svm_unbind_mm(struct device *dev, int pasid)
 				 * to use. We have a *shared* PASID table, because it's
 				 * large and has to be physically contiguous. So it's
 				 * hard to be as defensive as we might like. */
-				intel_pasid_tear_down_entry(iommu, dev, svm->pasid);
+				intel_flush_pasid_dev(svm, sdev, svm->pasid);
 				intel_flush_svm_range_dev(svm, sdev, 0, -1, 0, !svm->mm);
 				kfree_rcu(sdev, rcu);
 
 				if (list_empty(&svm->devs)) {
-					intel_pasid_free_id(svm->pasid);
+					svm->iommu->pasid_table[svm->pasid].val = 0;
+					wmb();
+
+					idr_remove(&svm->iommu->pasid_idr, svm->pasid);
 					if (svm->mm)
 						mmu_notifier_unregister(&svm->notifier, svm->mm);
-
-					list_del(&svm->list);
 
 					/* We mandate that no page faults may be outstanding
 					 * for the PASID when intel_svm_unbind_mm() is called.
@@ -446,10 +514,10 @@ int intel_svm_is_pasid_valid(struct device *dev, int pasid)
 
 	mutex_lock(&pasid_mutex);
 	iommu = intel_svm_device_to_iommu(dev);
-	if (!iommu)
+	if (!iommu || !iommu->pasid_table)
 		goto out;
 
-	svm = intel_pasid_lookup_id(pasid);
+	svm = idr_find(&iommu->pasid_idr, pasid);
 	if (!svm)
 		goto out;
 
@@ -529,8 +597,7 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 		struct vm_area_struct *vma;
 		struct page_req_dsc *req;
 		struct qi_desc resp;
-		int result;
-		vm_fault_t ret;
+		int ret, result;
 		u64 address;
 
 		handled = 1;
@@ -543,12 +610,12 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 			pr_err("%s: Page request without PASID: %08llx %08llx\n",
 			       iommu->name, ((unsigned long long *)req)[0],
 			       ((unsigned long long *)req)[1]);
-			goto no_pasid;
+			goto bad_req;
 		}
 
 		if (!svm || svm->pasid != req->pasid) {
 			rcu_read_lock();
-			svm = intel_pasid_lookup_id(req->pasid);
+			svm = idr_find(&iommu->pasid_idr, req->pasid);
 			/* It *can't* go away, because the driver is not permitted
 			 * to unbind the mm while any page faults are outstanding.
 			 * So we only need RCU to protect the internal idr code. */
@@ -619,27 +686,24 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 	no_pasid:
 		if (req->lpig) {
 			/* Page Group Response */
-			resp.qw0 = QI_PGRP_PASID(req->pasid) |
+			resp.low = QI_PGRP_PASID(req->pasid) |
 				QI_PGRP_DID((req->bus << 8) | req->devfn) |
 				QI_PGRP_PASID_P(req->pasid_present) |
 				QI_PGRP_RESP_TYPE;
-			resp.qw1 = QI_PGRP_IDX(req->prg_index) |
-				QI_PGRP_PRIV(req->private) |
-				QI_PGRP_RESP_CODE(result);
+			resp.high = QI_PGRP_IDX(req->prg_index) |
+				QI_PGRP_PRIV(req->private) | QI_PGRP_RESP_CODE(result);
+
+			qi_submit_sync(&resp, iommu);
 		} else if (req->srr) {
 			/* Page Stream Response */
-			resp.qw0 = QI_PSTRM_IDX(req->prg_index) |
-				QI_PSTRM_PRIV(req->private) |
-				QI_PSTRM_BUS(req->bus) |
-				QI_PSTRM_PASID(req->pasid) |
-				QI_PSTRM_RESP_TYPE;
-			resp.qw1 = QI_PSTRM_ADDR(address) |
-				QI_PSTRM_DEVFN(req->devfn) |
+			resp.low = QI_PSTRM_IDX(req->prg_index) |
+				QI_PSTRM_PRIV(req->private) | QI_PSTRM_BUS(req->bus) |
+				QI_PSTRM_PASID(req->pasid) | QI_PSTRM_RESP_TYPE;
+			resp.high = QI_PSTRM_ADDR(address) | QI_PSTRM_DEVFN(req->devfn) |
 				QI_PSTRM_RESP_CODE(result);
+
+			qi_submit_sync(&resp, iommu);
 		}
-		resp.qw2 = 0;
-		resp.qw3 = 0;
-		qi_submit_sync(&resp, iommu);
 
 		head = (head + sizeof(*req)) & PRQ_RING_MASK;
 	}

@@ -29,9 +29,10 @@
 #include <linux/unistd.h>
 #include <linux/serial.h>
 #include <linux/serial_8250.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/pci.h>
 #include <linux/lockdep.h>
+#include <linux/memblock.h>
 #include <linux/memory.h>
 #include <linux/nmi.h>
 
@@ -67,7 +68,6 @@
 #include <asm/opal.h>
 #include <asm/cputhreads.h>
 #include <asm/hw_irq.h>
-#include <asm/feature-fixups.h>
 
 #include "setup.h"
 
@@ -110,7 +110,7 @@ void __init setup_tlb_core_data(void)
 		if (cpu_first_thread_sibling(boot_cpuid) == first)
 			first = boot_cpuid;
 
-		paca_ptrs[cpu]->tcd_ptr = &paca_ptrs[first]->tcd;
+		paca[cpu].tcd_ptr = &paca[first].tcd;
 
 		/*
 		 * If we have threads, we need either tlbsrx.
@@ -242,30 +242,16 @@ static void cpu_ready_for_interrupts(void)
 	}
 
 	/*
-	 * Set HFSCR:TM based on CPU features:
-	 * In the special case of TM no suspend (P9N DD2.1), Linux is
-	 * told TM is off via the dt-ftrs but told to (partially) use
-	 * it via OPAL_REINIT_CPUS_TM_SUSPEND_DISABLED. So HFSCR[TM]
-	 * will be off from dt-ftrs but we need to turn it on for the
-	 * no suspend case.
+	 * Fixup HFSCR:TM based on CPU features. The bit is set by our
+	 * early asm init because at that point we haven't updated our
+	 * CPU features from firmware and device-tree. Here we have,
+	 * so let's do it.
 	 */
-	if (cpu_has_feature(CPU_FTR_HVMODE)) {
-		if (cpu_has_feature(CPU_FTR_TM_COMP))
-			mtspr(SPRN_HFSCR, mfspr(SPRN_HFSCR) | HFSCR_TM);
-		else
-			mtspr(SPRN_HFSCR, mfspr(SPRN_HFSCR) & ~HFSCR_TM);
-	}
+	if (cpu_has_feature(CPU_FTR_HVMODE) && !cpu_has_feature(CPU_FTR_TM_COMP))
+		mtspr(SPRN_HFSCR, mfspr(SPRN_HFSCR) & ~HFSCR_TM);
 
 	/* Set IR and DR in PACA MSR */
 	get_paca()->kernel_msr = MSR_KERNEL;
-}
-
-unsigned long spr_default_dscr = 0;
-
-void __init record_spr_defaults(void)
-{
-	if (early_cpu_has_feature(CPU_FTR_DSCR))
-		spr_default_dscr = mfspr(SPRN_DSCR);
 }
 
 /*
@@ -318,11 +304,7 @@ void __init early_setup(unsigned long dt_ptr)
 	early_init_devtree(__va(dt_ptr));
 
 	/* Now we know the logical id of our boot cpu, setup the paca. */
-	if (boot_cpuid != 0) {
-		/* Poison paca_ptrs[0] again if it's not the boot cpu */
-		memset(&paca_ptrs[0], 0x88, sizeof(paca_ptrs[0]));
-	}
-	setup_paca(paca_ptrs[boot_cpuid]);
+	setup_paca(&paca[boot_cpuid]);
 	fixup_boot_paca();
 
 	/*
@@ -351,13 +333,6 @@ void __init early_setup(unsigned long dt_ptr)
 	 * have IR and DR set and enable AIL if it exists
 	 */
 	cpu_ready_for_interrupts();
-
-	/*
-	 * We enable ftrace here, but since we only support DYNAMIC_FTRACE, it
-	 * will only actually get enabled on the boot cpu much later once
-	 * ftrace itself has been initialized.
-	 */
-	this_cpu_enable_ftrace();
 
 	DBG(" <- early_setup()\n");
 
@@ -392,14 +367,6 @@ void early_setup_secondary(void)
 }
 
 #endif /* CONFIG_SMP */
-
-void panic_smp_self_stop(void)
-{
-	hard_irq_disable();
-	spin_begin();
-	while (1)
-		spin_cpu_relax();
-}
 
 #if defined(CONFIG_SMP) || defined(CONFIG_KEXEC_CORE)
 static bool use_spinloop(void)
@@ -632,23 +599,6 @@ __init u64 ppc64_bolted_size(void)
 #endif
 }
 
-static void *__init alloc_stack(unsigned long limit, int cpu)
-{
-	unsigned long pa;
-
-	BUILD_BUG_ON(STACK_INT_FRAME_SIZE % 16);
-
-	pa = memblock_alloc_base_nid(THREAD_SIZE, THREAD_SIZE, limit,
-					early_cpu_to_node(cpu), MEMBLOCK_NONE);
-	if (!pa) {
-		pa = memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit);
-		if (!pa)
-			panic("cannot allocate stacks");
-	}
-
-	return __va(pa);
-}
-
 void __init irqstack_early_init(void)
 {
 	u64 limit = ppc64_bolted_size();
@@ -660,8 +610,12 @@ void __init irqstack_early_init(void)
 	 * accessed in realmode.
 	 */
 	for_each_possible_cpu(i) {
-		softirq_ctx[i] = alloc_stack(limit, i);
-		hardirq_ctx[i] = alloc_stack(limit, i);
+		softirq_ctx[i] = (struct thread_info *)
+			__va(memblock_alloc_base(THREAD_SIZE,
+					    THREAD_SIZE, limit));
+		hardirq_ctx[i] = (struct thread_info *)
+			__va(memblock_alloc_base(THREAD_SIZE,
+					    THREAD_SIZE, limit));
 	}
 }
 
@@ -669,21 +623,20 @@ void __init irqstack_early_init(void)
 void __init exc_lvl_early_init(void)
 {
 	unsigned int i;
+	unsigned long sp;
 
 	for_each_possible_cpu(i) {
-		void *sp;
+		sp = memblock_alloc(THREAD_SIZE, THREAD_SIZE);
+		critirq_ctx[i] = (struct thread_info *)__va(sp);
+		paca[i].crit_kstack = __va(sp + THREAD_SIZE);
 
-		sp = alloc_stack(ULONG_MAX, i);
-		critirq_ctx[i] = sp;
-		paca_ptrs[i]->crit_kstack = sp + THREAD_SIZE;
+		sp = memblock_alloc(THREAD_SIZE, THREAD_SIZE);
+		dbgirq_ctx[i] = (struct thread_info *)__va(sp);
+		paca[i].dbg_kstack = __va(sp + THREAD_SIZE);
 
-		sp = alloc_stack(ULONG_MAX, i);
-		dbgirq_ctx[i] = sp;
-		paca_ptrs[i]->dbg_kstack = sp + THREAD_SIZE;
-
-		sp = alloc_stack(ULONG_MAX, i);
-		mcheckirq_ctx[i] = sp;
-		paca_ptrs[i]->mc_kstack = sp + THREAD_SIZE;
+		sp = memblock_alloc(THREAD_SIZE, THREAD_SIZE);
+		mcheckirq_ctx[i] = (struct thread_info *)__va(sp);
+		paca[i].mc_kstack = __va(sp + THREAD_SIZE);
 	}
 
 	if (cpu_has_feature(CPU_FTR_DEBUG_LVL_EXC))
@@ -737,24 +690,23 @@ void __init emergency_stack_init(void)
 
 	for_each_possible_cpu(i) {
 		struct thread_info *ti;
-
-		ti = alloc_stack(limit, i);
+		ti = __va(memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit));
 		memset(ti, 0, THREAD_SIZE);
 		emerg_stack_init_thread_info(ti, i);
-		paca_ptrs[i]->emergency_sp = (void *)ti + THREAD_SIZE;
+		paca[i].emergency_sp = (void *)ti + THREAD_SIZE;
 
 #ifdef CONFIG_PPC_BOOK3S_64
 		/* emergency stack for NMI exception handling. */
-		ti = alloc_stack(limit, i);
+		ti = __va(memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit));
 		memset(ti, 0, THREAD_SIZE);
 		emerg_stack_init_thread_info(ti, i);
-		paca_ptrs[i]->nmi_emergency_sp = (void *)ti + THREAD_SIZE;
+		paca[i].nmi_emergency_sp = (void *)ti + THREAD_SIZE;
 
 		/* emergency stack for machine check exception handling. */
-		ti = alloc_stack(limit, i);
+		ti = __va(memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit));
 		memset(ti, 0, THREAD_SIZE);
 		emerg_stack_init_thread_info(ti, i);
-		paca_ptrs[i]->mc_emergency_sp = (void *)ti + THREAD_SIZE;
+		paca[i].mc_emergency_sp = (void *)ti + THREAD_SIZE;
 #endif
 	}
 }
@@ -764,15 +716,13 @@ void __init emergency_stack_init(void)
 
 static void * __init pcpu_fc_alloc(unsigned int cpu, size_t size, size_t align)
 {
-	return memblock_alloc_try_nid(size, align, __pa(MAX_DMA_ADDRESS),
-				      MEMBLOCK_ALLOC_ACCESSIBLE,
-				      early_cpu_to_node(cpu));
-
+	return __alloc_bootmem_node(NODE_DATA(early_cpu_to_node(cpu)), size, align,
+				    __pa(MAX_DMA_ADDRESS));
 }
 
 static void __init pcpu_fc_free(void *ptr, size_t size)
 {
-	memblock_free(__pa(ptr), size);
+	free_bootmem(__pa(ptr), size);
 }
 
 static int pcpu_cpu_distance(unsigned int from, unsigned int to)
@@ -812,7 +762,7 @@ void __init setup_per_cpu_areas(void)
 	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
 	for_each_possible_cpu(cpu) {
                 __per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
-		paca_ptrs[cpu]->data_offset = __per_cpu_offset[cpu];
+		paca[cpu].data_offset = __per_cpu_offset[cpu];
 	}
 }
 #endif
@@ -896,6 +846,9 @@ static void do_nothing(void *unused)
 
 void rfi_flush_enable(bool enable)
 {
+	if (rfi_flush == enable)
+		return;
+
 	if (enable) {
 		do_rfi_flush_fixups(enabled_flush_types);
 		on_each_cpu(do_nothing, NULL, 1);
@@ -905,27 +858,12 @@ void rfi_flush_enable(bool enable)
 	rfi_flush = enable;
 }
 
-static void __ref init_fallback_flush(void)
+static void init_fallback_flush(void)
 {
 	u64 l1d_size, limit;
 	int cpu;
 
-	/* Only allocate the fallback flush area once (at boot time). */
-	if (l1d_flush_fallback_area)
-		return;
-
 	l1d_size = ppc64_caches.l1d.size;
-
-	/*
-	 * If there is no d-cache-size property in the device tree, l1d_size
-	 * could be zero. That leads to the loop in the asm wrapping around to
-	 * 2^64-1, and then walking off the end of the fallback area and
-	 * eventually causing a page fault which is fatal. Just default to
-	 * something vaguely sane.
-	 */
-	if (!l1d_size)
-		l1d_size = (64 * 1024);
-
 	limit = min(ppc64_bolted_size(), ppc64_rma_size);
 
 	/*
@@ -937,24 +875,23 @@ static void __ref init_fallback_flush(void)
 	memset(l1d_flush_fallback_area, 0, l1d_size * 2);
 
 	for_each_possible_cpu(cpu) {
-		struct paca_struct *paca = paca_ptrs[cpu];
-		paca->rfi_flush_fallback_area = l1d_flush_fallback_area;
-		paca->l1d_flush_size = l1d_size;
+		paca[cpu].rfi_flush_fallback_area = l1d_flush_fallback_area;
+		paca[cpu].l1d_flush_size = l1d_size;
 	}
 }
 
-void setup_rfi_flush(enum l1d_flush_type types, bool enable)
+void __init setup_rfi_flush(enum l1d_flush_type types, bool enable)
 {
 	if (types & L1D_FLUSH_FALLBACK) {
-		pr_info("rfi-flush: fallback displacement flush available\n");
+		pr_info("rfi-flush: Using fallback displacement flush\n");
 		init_fallback_flush();
 	}
 
 	if (types & L1D_FLUSH_ORI)
-		pr_info("rfi-flush: ori type flush available\n");
+		pr_info("rfi-flush: Using ori type flush\n");
 
 	if (types & L1D_FLUSH_MTTRIG)
-		pr_info("rfi-flush: mttrig type flush available\n");
+		pr_info("rfi-flush: Using mttrig type flush\n");
 
 	enabled_flush_types = types;
 
@@ -965,18 +902,12 @@ void setup_rfi_flush(enum l1d_flush_type types, bool enable)
 #ifdef CONFIG_DEBUG_FS
 static int rfi_flush_set(void *data, u64 val)
 {
-	bool enable;
-
 	if (val == 1)
-		enable = true;
+		rfi_flush_enable(true);
 	else if (val == 0)
-		enable = false;
+		rfi_flush_enable(false);
 	else
 		return -EINVAL;
-
-	/* Only do anything if we're changing state */
-	if (enable != rfi_flush)
-		rfi_flush_enable(enable);
 
 	return 0;
 }
@@ -996,4 +927,12 @@ static __init int rfi_flush_debugfs_init(void)
 }
 device_initcall(rfi_flush_debugfs_init);
 #endif
+
+ssize_t cpu_show_meltdown(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	if (rfi_flush)
+		return sprintf(buf, "Mitigation: RFI Flush\n");
+
+	return sprintf(buf, "Vulnerable\n");
+}
 #endif /* CONFIG_PPC_BOOK3S_64 */

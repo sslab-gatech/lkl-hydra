@@ -177,7 +177,7 @@ static void do_catch_up(struct spk_synth *synth)
 	jiffy_delta = spk_get_var(JIFFY);
 	delay_time = spk_get_var(DELAY);
 	full_time = spk_get_var(FULL);
-	spin_lock_irqsave(&speakup_info.spinlock, flags);
+spin_lock_irqsave(&speakup_info.spinlock, flags);
 	jiffy_delta_val = jiffy_delta->u.n.value;
 	spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 
@@ -260,7 +260,7 @@ static int synth_probe(struct spk_synth *synth)
 	if (port_forced) {
 		synth_port = port_forced;
 		pr_info("probe forced to %x by kernel command line\n",
-			synth_port);
+				synth_port);
 		if (synth_request_region(synth_port-1, SYNTH_IO_EXTENT)) {
 			pr_warn("sorry, port already reserved\n");
 			return -EBUSY;
@@ -269,7 +269,7 @@ static int synth_probe(struct spk_synth *synth)
 	} else {
 		for (i = 0; synth_portlist[i]; i++) {
 			if (synth_request_region(synth_portlist[i],
-						 SYNTH_IO_EXTENT)) {
+						SYNTH_IO_EXTENT)) {
 				pr_warn
 				    ("request_region: failed with 0x%x, %d\n",
 				     synth_portlist[i], SYNTH_IO_EXTENT);

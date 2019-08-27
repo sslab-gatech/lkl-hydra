@@ -65,6 +65,7 @@
 &mmc_0 {
 	status = "okay";
 	broken-cd;
+	bypass-smu;
 	cap-mmc-highspeed;
 	supports-hs200-mode; /* 200 MHz */
 	card-detect-delay = <200>;

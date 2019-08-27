@@ -71,7 +71,7 @@ static struct pcistub_device *pcistub_device_alloc(struct pci_dev *dev)
 
 	dev_dbg(&dev->dev, "pcistub_device_alloc\n");
 
-	psdev = kzalloc(sizeof(*psdev), GFP_KERNEL);
+	psdev = kzalloc(sizeof(*psdev), GFP_ATOMIC);
 	if (!psdev)
 		return NULL;
 
@@ -106,8 +106,7 @@ static void pcistub_device_release(struct kref *kref)
 	 * is called from "unbind" which takes a device_lock mutex.
 	 */
 	__pci_reset_function_locked(dev);
-	if (dev_data &&
-	    pci_load_and_free_saved_state(dev, &dev_data->pci_saved_state))
+	if (pci_load_and_free_saved_state(dev, &dev_data->pci_saved_state))
 		dev_info(&dev->dev, "Could not reload PCI state\n");
 	else
 		pci_restore_state(dev);
@@ -365,7 +364,7 @@ static int pcistub_init_device(struct pci_dev *dev)
 	 * here and then to call kfree(pci_get_drvdata(psdev->dev)).
 	 */
 	dev_data = kzalloc(sizeof(*dev_data) +  strlen(DRV_NAME "[]")
-				+ strlen(pci_name(dev)) + 1, GFP_KERNEL);
+				+ strlen(pci_name(dev)) + 1, GFP_ATOMIC);
 	if (!dev_data) {
 		err = -ENOMEM;
 		goto out;
@@ -578,7 +577,7 @@ static int pcistub_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		}
 
 		if (!match) {
-			pci_dev_id = kmalloc(sizeof(*pci_dev_id), GFP_KERNEL);
+			pci_dev_id = kmalloc(sizeof(*pci_dev_id), GFP_ATOMIC);
 			if (!pci_dev_id) {
 				err = -ENOMEM;
 				goto out;
@@ -1150,7 +1149,7 @@ static int pcistub_reg_add(int domain, int bus, int slot, int func,
 	}
 	dev = psdev->dev;
 
-	field = kzalloc(sizeof(*field), GFP_KERNEL);
+	field = kzalloc(sizeof(*field), GFP_ATOMIC);
 	if (!field) {
 		err = -ENOMEM;
 		goto out;

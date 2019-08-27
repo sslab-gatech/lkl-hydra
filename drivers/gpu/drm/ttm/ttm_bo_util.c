@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
  * Copyright (c) 2007-2009 VMware, Inc., Palo Alto, CA., USA
@@ -39,11 +38,6 @@
 #include <linux/vmalloc.h>
 #include <linux/module.h>
 #include <linux/reservation.h>
-
-struct ttm_transfer_obj {
-	struct ttm_buffer_object base;
-	struct ttm_buffer_object *bo;
-};
 
 void ttm_bo_free_old_node(struct ttm_buffer_object *bo)
 {
@@ -261,54 +255,6 @@ static int ttm_copy_io_page(void *dst, void *src, unsigned long page)
 	return 0;
 }
 
-#ifdef CONFIG_X86
-#define __ttm_kmap_atomic_prot(__page, __prot) kmap_atomic_prot(__page, __prot)
-#define __ttm_kunmap_atomic(__addr) kunmap_atomic(__addr)
-#else
-#define __ttm_kmap_atomic_prot(__page, __prot) vmap(&__page, 1, 0,  __prot)
-#define __ttm_kunmap_atomic(__addr) vunmap(__addr)
-#endif
-
-
-/**
- * ttm_kmap_atomic_prot - Efficient kernel map of a single page with
- * specified page protection.
- *
- * @page: The page to map.
- * @prot: The page protection.
- *
- * This function maps a TTM page using the kmap_atomic api if available,
- * otherwise falls back to vmap. The user must make sure that the
- * specified page does not have an aliased mapping with a different caching
- * policy unless the architecture explicitly allows it. Also mapping and
- * unmapping using this api must be correctly nested. Unmapping should
- * occur in the reverse order of mapping.
- */
-void *ttm_kmap_atomic_prot(struct page *page, pgprot_t prot)
-{
-	if (pgprot_val(prot) == pgprot_val(PAGE_KERNEL))
-		return kmap_atomic(page);
-	else
-		return __ttm_kmap_atomic_prot(page, prot);
-}
-EXPORT_SYMBOL(ttm_kmap_atomic_prot);
-
-/**
- * ttm_kunmap_atomic_prot - Unmap a page that was mapped using
- * ttm_kmap_atomic_prot.
- *
- * @addr: The virtual address from the map.
- * @prot: The page protection.
- */
-void ttm_kunmap_atomic_prot(void *addr, pgprot_t prot)
-{
-	if (pgprot_val(prot) == pgprot_val(PAGE_KERNEL))
-		kunmap_atomic(addr);
-	else
-		__ttm_kunmap_atomic(addr);
-}
-EXPORT_SYMBOL(ttm_kunmap_atomic_prot);
-
 static int ttm_copy_io_ttm_page(struct ttm_tt *ttm, void *src,
 				unsigned long page,
 				pgprot_t prot)
@@ -320,13 +266,28 @@ static int ttm_copy_io_ttm_page(struct ttm_tt *ttm, void *src,
 		return -ENOMEM;
 
 	src = (void *)((unsigned long)src + (page << PAGE_SHIFT));
-	dst = ttm_kmap_atomic_prot(d, prot);
+
+#ifdef CONFIG_X86
+	dst = kmap_atomic_prot(d, prot);
+#else
+	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+		dst = vmap(&d, 1, 0, prot);
+	else
+		dst = kmap(d);
+#endif
 	if (!dst)
 		return -ENOMEM;
 
 	memcpy_fromio(dst, src, PAGE_SIZE);
 
-	ttm_kunmap_atomic_prot(dst, prot);
+#ifdef CONFIG_X86
+	kunmap_atomic(dst);
+#else
+	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+		vunmap(dst);
+	else
+		kunmap(d);
+#endif
 
 	return 0;
 }
@@ -342,13 +303,27 @@ static int ttm_copy_ttm_io_page(struct ttm_tt *ttm, void *dst,
 		return -ENOMEM;
 
 	dst = (void *)((unsigned long)dst + (page << PAGE_SHIFT));
-	src = ttm_kmap_atomic_prot(s, prot);
+#ifdef CONFIG_X86
+	src = kmap_atomic_prot(s, prot);
+#else
+	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+		src = vmap(&s, 1, 0, prot);
+	else
+		src = kmap(s);
+#endif
 	if (!src)
 		return -ENOMEM;
 
 	memcpy_toio(dst, src, PAGE_SIZE);
 
-	ttm_kunmap_atomic_prot(src, prot);
+#ifdef CONFIG_X86
+	kunmap_atomic(src);
+#else
+	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+		vunmap(src);
+	else
+		kunmap(s);
+#endif
 
 	return 0;
 }
@@ -400,8 +375,8 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 	/*
 	 * TTM might be null for moves within the same region.
 	 */
-	if (ttm) {
-		ret = ttm_tt_populate(ttm, ctx);
+	if (ttm && ttm->state == tt_unpopulated) {
+		ret = ttm->bdev->driver->ttm_tt_populate(ttm, ctx);
 		if (ret)
 			goto out1;
 	}
@@ -427,9 +402,8 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 						    PAGE_KERNEL);
 			ret = ttm_copy_io_ttm_page(ttm, old_iomap, page,
 						   prot);
-		} else {
+		} else
 			ret = ttm_copy_io_page(new_iomap, old_iomap, page);
-		}
 		if (ret)
 			goto out1;
 	}
@@ -460,11 +434,7 @@ EXPORT_SYMBOL(ttm_bo_move_memcpy);
 
 static void ttm_transfered_destroy(struct ttm_buffer_object *bo)
 {
-	struct ttm_transfer_obj *fbo;
-
-	fbo = container_of(bo, struct ttm_transfer_obj, base);
-	ttm_bo_put(fbo->bo);
-	kfree(fbo);
+	kfree(bo);
 }
 
 /**
@@ -485,44 +455,40 @@ static void ttm_transfered_destroy(struct ttm_buffer_object *bo)
 static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 				      struct ttm_buffer_object **new_obj)
 {
-	struct ttm_transfer_obj *fbo;
+	struct ttm_buffer_object *fbo;
 	int ret;
 
 	fbo = kmalloc(sizeof(*fbo), GFP_KERNEL);
 	if (!fbo)
 		return -ENOMEM;
 
-	fbo->base = *bo;
-	fbo->base.mem.placement |= TTM_PL_FLAG_NO_EVICT;
-
-	ttm_bo_get(bo);
-	fbo->bo = bo;
+	*fbo = *bo;
 
 	/**
 	 * Fix up members that we shouldn't copy directly:
 	 * TODO: Explicit member copy would probably be better here.
 	 */
 
-	atomic_inc(&bo->bdev->glob->bo_count);
-	INIT_LIST_HEAD(&fbo->base.ddestroy);
-	INIT_LIST_HEAD(&fbo->base.lru);
-	INIT_LIST_HEAD(&fbo->base.swap);
-	INIT_LIST_HEAD(&fbo->base.io_reserve_lru);
-	mutex_init(&fbo->base.wu_mutex);
-	fbo->base.moving = NULL;
-	drm_vma_node_reset(&fbo->base.vma_node);
-	atomic_set(&fbo->base.cpu_writers, 0);
+	atomic_inc(&bo->glob->bo_count);
+	INIT_LIST_HEAD(&fbo->ddestroy);
+	INIT_LIST_HEAD(&fbo->lru);
+	INIT_LIST_HEAD(&fbo->swap);
+	INIT_LIST_HEAD(&fbo->io_reserve_lru);
+	mutex_init(&fbo->wu_mutex);
+	fbo->moving = NULL;
+	drm_vma_node_reset(&fbo->vma_node);
+	atomic_set(&fbo->cpu_writers, 0);
 
-	kref_init(&fbo->base.list_kref);
-	kref_init(&fbo->base.kref);
-	fbo->base.destroy = &ttm_transfered_destroy;
-	fbo->base.acc_size = 0;
-	fbo->base.resv = &fbo->base.ttm_resv;
-	reservation_object_init(fbo->base.resv);
-	ret = reservation_object_trylock(fbo->base.resv);
+	kref_init(&fbo->list_kref);
+	kref_init(&fbo->kref);
+	fbo->destroy = &ttm_transfered_destroy;
+	fbo->acc_size = 0;
+	fbo->resv = &fbo->ttm_resv;
+	reservation_object_init(fbo->resv);
+	ret = reservation_object_trylock(fbo->resv);
 	WARN_ON(!ret);
 
-	*new_obj = &fbo->base;
+	*new_obj = fbo;
 	return 0;
 }
 
@@ -590,9 +556,11 @@ static int ttm_bo_kmap_ttm(struct ttm_buffer_object *bo,
 
 	BUG_ON(!ttm);
 
-	ret = ttm_tt_populate(ttm, &ctx);
-	if (ret)
-		return ret;
+	if (ttm->state == tt_unpopulated) {
+		ret = ttm->bdev->driver->ttm_tt_populate(ttm, &ctx);
+		if (ret)
+			return ret;
+	}
 
 	if (num_pages == 1 && (mem->placement & TTM_PL_FLAG_CACHED)) {
 		/*
@@ -631,7 +599,10 @@ int ttm_bo_kmap(struct ttm_buffer_object *bo,
 		return -EINVAL;
 	if (start_page > bo->num_pages)
 		return -EINVAL;
-
+#if 0
+	if (num_pages > 1 && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+#endif
 	(void) ttm_mem_io_lock(man, false);
 	ret = ttm_mem_io_reserve(bo->bdev, &bo->mem);
 	ttm_mem_io_unlock(man);
@@ -730,7 +701,7 @@ int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
 			bo->ttm = NULL;
 
 		ttm_bo_unreserve(ghost_obj);
-		ttm_bo_put(ghost_obj);
+		ttm_bo_unref(&ghost_obj);
 	}
 
 	*old_mem = *new_mem;
@@ -786,7 +757,7 @@ int ttm_bo_pipeline_move(struct ttm_buffer_object *bo,
 			bo->ttm = NULL;
 
 		ttm_bo_unreserve(ghost_obj);
-		ttm_bo_put(ghost_obj);
+		ttm_bo_unref(&ghost_obj);
 
 	} else if (from->flags & TTM_MEMTYPE_FLAG_FIXED) {
 
@@ -831,27 +802,3 @@ int ttm_bo_pipeline_move(struct ttm_buffer_object *bo,
 	return 0;
 }
 EXPORT_SYMBOL(ttm_bo_pipeline_move);
-
-int ttm_bo_pipeline_gutting(struct ttm_buffer_object *bo)
-{
-	struct ttm_buffer_object *ghost;
-	int ret;
-
-	ret = ttm_buffer_object_transfer(bo, &ghost);
-	if (ret)
-		return ret;
-
-	ret = reservation_object_copy_fences(ghost->resv, bo->resv);
-	/* Last resort, wait for the BO to be idle when we are OOM */
-	if (ret)
-		ttm_bo_wait(bo, false, false);
-
-	memset(&bo->mem, 0, sizeof(bo->mem));
-	bo->mem.mem_type = TTM_PL_SYSTEM;
-	bo->ttm = NULL;
-
-	ttm_bo_unreserve(ghost);
-	ttm_bo_put(ghost);
-
-	return 0;
-}

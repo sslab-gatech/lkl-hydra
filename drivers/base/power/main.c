@@ -32,7 +32,6 @@
 #include <trace/events/power.h>
 #include <linux/cpufreq.h>
 #include <linux/cpuidle.h>
-#include <linux/devfreq.h>
 #include <linux/timer.h>
 
 #include "../base.h"
@@ -193,31 +192,34 @@ void device_pm_move_last(struct device *dev)
 	list_move_tail(&dev->power.entry, &dpm_list);
 }
 
-static ktime_t initcall_debug_start(struct device *dev, void *cb)
+static ktime_t initcall_debug_start(struct device *dev)
 {
-	if (!pm_print_times_enabled)
-		return 0;
+	ktime_t calltime = 0;
 
-	dev_info(dev, "calling %pF @ %i, parent: %s\n", cb,
-		 task_pid_nr(current),
-		 dev->parent ? dev_name(dev->parent) : "none");
-	return ktime_get();
+	if (pm_print_times_enabled) {
+		pr_info("calling  %s+ @ %i, parent: %s\n",
+			dev_name(dev), task_pid_nr(current),
+			dev->parent ? dev_name(dev->parent) : "none");
+		calltime = ktime_get();
+	}
+
+	return calltime;
 }
 
 static void initcall_debug_report(struct device *dev, ktime_t calltime,
-				  void *cb, int error)
+				  int error, pm_message_t state,
+				  const char *info)
 {
 	ktime_t rettime;
 	s64 nsecs;
 
-	if (!pm_print_times_enabled)
-		return;
-
 	rettime = ktime_get();
 	nsecs = (s64) ktime_to_ns(ktime_sub(rettime, calltime));
 
-	dev_info(dev, "%pF returned %d after %Ld usecs\n", cb, error,
-		 (unsigned long long)nsecs >> 10);
+	if (pm_print_times_enabled) {
+		pr_info("call %s+ returned %d after %Ld usecs\n", dev_name(dev),
+			error, (unsigned long long)nsecs >> 10);
+	}
 }
 
 /**
@@ -444,7 +446,7 @@ static int dpm_run_callback(pm_callback_t cb, struct device *dev,
 	if (!cb)
 		return 0;
 
-	calltime = initcall_debug_start(dev, cb);
+	calltime = initcall_debug_start(dev);
 
 	pm_dev_dbg(dev, state, info);
 	trace_device_pm_callback_start(dev, info, state.event);
@@ -452,7 +454,7 @@ static int dpm_run_callback(pm_callback_t cb, struct device *dev,
 	trace_device_pm_callback_end(dev, error);
 	suspend_report_result(cb, error);
 
-	initcall_debug_report(dev, calltime, cb, error);
+	initcall_debug_report(dev, calltime, error, state, info);
 
 	return error;
 }
@@ -1079,7 +1081,6 @@ void dpm_resume(pm_message_t state)
 	dpm_show_time(starttime, state, 0, NULL);
 
 	cpufreq_resume();
-	devfreq_resume();
 	trace_suspend_resume(TPS("dpm_resume"), state.event, false);
 }
 
@@ -1663,14 +1664,14 @@ static int legacy_suspend(struct device *dev, pm_message_t state,
 	int error;
 	ktime_t calltime;
 
-	calltime = initcall_debug_start(dev, cb);
+	calltime = initcall_debug_start(dev);
 
 	trace_device_pm_callback_start(dev, info, state.event);
 	error = cb(dev, state);
 	trace_device_pm_callback_end(dev, error);
 	suspend_report_result(cb, error);
 
-	initcall_debug_report(dev, calltime, cb, error);
+	initcall_debug_report(dev, calltime, error, state, info);
 
 	return error;
 }
@@ -1715,10 +1716,8 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 
 	dpm_wait_for_subordinate(dev, async);
 
-	if (async_error) {
-		dev->power.direct_complete = false;
+	if (async_error)
 		goto Complete;
-	}
 
 	/*
 	 * If a device configured to wake up the system from sleep states
@@ -1730,7 +1729,6 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		pm_wakeup_event(dev, 0);
 
 	if (pm_wakeup_pending()) {
-		dev->power.direct_complete = false;
 		async_error = -EBUSY;
 		goto Complete;
 	}
@@ -1854,7 +1852,6 @@ int dpm_suspend(pm_message_t state)
 	trace_suspend_resume(TPS("dpm_suspend"), state.event, true);
 	might_sleep();
 
-	devfreq_suspend();
 	cpufreq_suspend();
 
 	mutex_lock(&dpm_list_mtx);
@@ -1926,8 +1923,10 @@ static int device_prepare(struct device *dev, pm_message_t state)
 
 	dev->power.wakeup_path = false;
 
-	if (dev->power.no_pm_callbacks)
+	if (dev->power.no_pm_callbacks) {
+		ret = 1;	/* Let device go direct_complete */
 		goto unlock;
+	}
 
 	if (dev->pm_domain)
 		callback = dev->pm_domain->ops.prepare;
@@ -1961,8 +1960,7 @@ unlock:
 	 */
 	spin_lock_irq(&dev->power.lock);
 	dev->power.direct_complete = state.event == PM_EVENT_SUSPEND &&
-		((pm_runtime_suspended(dev) && ret > 0) ||
-		 dev->power.no_pm_callbacks) &&
+		pm_runtime_suspended(dev) && ret > 0 &&
 		!dev_pm_test_driver_flags(dev, DPM_FLAG_NEVER_SKIP);
 	spin_unlock_irq(&dev->power.lock);
 	return 0;

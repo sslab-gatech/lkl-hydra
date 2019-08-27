@@ -387,14 +387,10 @@ static void __init test_lxvd2x_stxvd2x(void)
 	/* lxvd2x vsr39, r3, r4 */
 	stepped = emulate_step(&regs, TEST_LXVD2X(39, 3, 4));
 
-	if (stepped == 1 && cpu_has_feature(CPU_FTR_VSX)) {
+	if (stepped == 1)
 		show_result("lxvd2x", "PASS");
-	} else {
-		if (!cpu_has_feature(CPU_FTR_VSX))
-			show_result("lxvd2x", "PASS (!CPU_FTR_VSX)");
-		else
-			show_result("lxvd2x", "FAIL");
-	}
+	else
+		show_result("lxvd2x", "FAIL");
 
 
 	/*** stxvd2x ***/
@@ -408,15 +404,10 @@ static void __init test_lxvd2x_stxvd2x(void)
 	stepped = emulate_step(&regs, TEST_STXVD2X(39, 3, 4));
 
 	if (stepped == 1 && cached_b[0] == c.b[0] && cached_b[1] == c.b[1] &&
-	    cached_b[2] == c.b[2] && cached_b[3] == c.b[3] &&
-	    cpu_has_feature(CPU_FTR_VSX)) {
+	    cached_b[2] == c.b[2] && cached_b[3] == c.b[3])
 		show_result("stxvd2x", "PASS");
-	} else {
-		if (!cpu_has_feature(CPU_FTR_VSX))
-			show_result("stxvd2x", "PASS (!CPU_FTR_VSX)");
-		else
-			show_result("stxvd2x", "FAIL");
-	}
+	else
+		show_result("stxvd2x", "FAIL");
 }
 #else
 static void __init test_lxvd2x_stxvd2x(void)

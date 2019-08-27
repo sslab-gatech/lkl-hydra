@@ -31,10 +31,8 @@ FEATURE_TESTS_BASIC :=                  \
         backtrace                       \
         dwarf                           \
         dwarf_getlocations              \
-        eventfd                         \
         fortify-source                  \
         sync-compare-and-swap           \
-        get_current_dir_name            \
         glibc                           \
         gtk2                            \
         gtk2-infobar                    \
@@ -59,7 +57,6 @@ FEATURE_TESTS_BASIC :=                  \
         libunwind-aarch64               \
         pthread-attr-setaffinity-np     \
         pthread-barrier     		\
-        reallocarray                    \
         stackprotector-all              \
         timerfd                         \
         libdw-dwarf-unwind              \
@@ -70,8 +67,7 @@ FEATURE_TESTS_BASIC :=                  \
         sched_getcpu			\
         sdt				\
         setns				\
-        libopencsd			\
-        libaio
+        libopencsd
 
 # FEATURE_TESTS_BASIC + FEATURE_TESTS_EXTRA is the complete list
 # of all feature tests
@@ -82,15 +78,11 @@ FEATURE_TESTS_EXTRA :=                  \
          cplus-demangle                 \
          hello                          \
          libbabeltrace                  \
-         libbfd-liberty                 \
-         libbfd-liberty-z               \
+         liberty                        \
+         liberty-z                      \
          libunwind-debug-frame          \
          libunwind-debug-frame-arm      \
-         libunwind-debug-frame-aarch64  \
-         cxx                            \
-         llvm                           \
-         llvm-version                   \
-         clang
+         libunwind-debug-frame-aarch64
 
 FEATURE_TESTS ?= $(FEATURE_TESTS_BASIC)
 
@@ -117,8 +109,7 @@ FEATURE_DISPLAY ?=              \
          zlib                   \
          lzma                   \
          get_cpuid              \
-         bpf			\
-         libaio
+         bpf
 
 # Set FEATURE_CHECK_(C|LD)FLAGS-all for all FEATURE_TESTS features.
 # If in the future we need per-feature checks/flags for features not

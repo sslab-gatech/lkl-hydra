@@ -442,10 +442,9 @@
 	pinctrl-0 = <&mmc2_pins_default>;
 
 	vmmc-supply = <&vdd_3v3>;
-	vqmmc-supply = <&vdd_3v3>;
 	bus-width = <8>;
-	non-removable;
-	no-1-8-v;
+	ti,non-removable;
+	cap-mmc-dual-data-rate;
 };
 
 &sata {
@@ -555,7 +554,7 @@
 
 &mcasp3 {
 	#sound-dai-cells = <0>;
-	assigned-clocks = <&l4per2_clkctrl DRA7_L4PER2_MCASP3_CLKCTRL 24>;
+	assigned-clocks = <&l4per_clkctrl DRA7_MCASP3_CLKCTRL 24>;
 	assigned-clock-parents = <&sys_clkin2>;
 	status = "okay";
 

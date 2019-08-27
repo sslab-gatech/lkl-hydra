@@ -99,14 +99,21 @@ static bool write_ok_or_segv(unsigned long ptr, size_t size)
 	 * sig_on_uaccess_err, this could go away.
 	 */
 
-	if (!access_ok((void __user *)ptr, size)) {
+	if (!access_ok(VERIFY_WRITE, (void __user *)ptr, size)) {
+		siginfo_t info;
 		struct thread_struct *thread = &current->thread;
 
-		thread->error_code	= X86_PF_USER | X86_PF_WRITE;
+		thread->error_code	= 6;  /* user fault, no page, write */
 		thread->cr2		= ptr;
 		thread->trap_nr		= X86_TRAP_PF;
 
-		force_sig_fault(SIGSEGV, SEGV_MAPERR, (void __user *)ptr, current);
+		memset(&info, 0, sizeof(info));
+		info.si_signo		= SIGSEGV;
+		info.si_errno		= 0;
+		info.si_code		= SEGV_MAPERR;
+		info.si_addr		= (void __user *)ptr;
+
+		force_sig_info(SIGSEGV, &info, current);
 		return false;
 	} else {
 		return true;
@@ -120,7 +127,6 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	int vsyscall_nr, syscall_nr, tmp;
 	int prev_sig_on_uaccess_err;
 	long ret;
-	unsigned long orig_dx;
 
 	/*
 	 * No point in checking CS -- the only way to get here is a user mode
@@ -194,7 +200,7 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 
 	/*
 	 * Handle seccomp.  regs->ip must be the original value.
-	 * See seccomp_send_sigsys and Documentation/userspace-api/seccomp_filter.rst.
+	 * See seccomp_send_sigsys and Documentation/prctl/seccomp_filter.txt.
 	 *
 	 * We could optimize the seccomp disabled case, but performance
 	 * here doesn't matter.
@@ -221,22 +227,19 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	ret = -EFAULT;
 	switch (vsyscall_nr) {
 	case 0:
-		/* this decodes regs->di and regs->si on its own */
-		ret = __x64_sys_gettimeofday(regs);
+		ret = sys_gettimeofday(
+			(struct timeval __user *)regs->di,
+			(struct timezone __user *)regs->si);
 		break;
 
 	case 1:
-		/* this decodes regs->di on its own */
-		ret = __x64_sys_time(regs);
+		ret = sys_time((time_t __user *)regs->di);
 		break;
 
 	case 2:
-		/* while we could clobber regs->dx, we didn't in the past... */
-		orig_dx = regs->dx;
-		regs->dx = 0;
-		/* this decodes regs->di, regs->si and regs->dx on its own */
-		ret = __x64_sys_getcpu(regs);
-		regs->dx = orig_dx;
+		ret = sys_getcpu((unsigned __user *)regs->di,
+				 (unsigned __user *)regs->si,
+				 NULL);
 		break;
 	}
 

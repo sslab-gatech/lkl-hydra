@@ -1,8 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
-//
-// Socionext UniPhier EVEA ADC/DAC codec driver.
-//
-// Copyright (c) 2016-2017 Socionext Inc.
+/*
+ * Socionext UniPhier EVEA ADC/DAC codec driver.
+ *
+ * Copyright (c) 2016-2017 Socionext Inc.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; version 2
+ * of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include <linux/clk.h>
 #include <linux/module.h>
@@ -18,8 +32,6 @@
 
 #define AADCPOW(n)                           (0x0078 + 0x04 * (n))
 #define   AADCPOW_AADC_POWD                   BIT(0)
-#define ALINSW1                              0x0088
-#define   ALINSW1_SEL1_SHIFT                  3
 #define AHPOUTPOW                            0x0098
 #define   AHPOUTPOW_HP_ON                     BIT(4)
 #define ALINEPOW                             0x009c
@@ -54,21 +66,8 @@ struct evea_priv {
 	int switch_hp;
 };
 
-static const char * const linsw1_sel1_text[] = {
-	"LIN1", "LIN2", "LIN3"
-};
-
-static SOC_ENUM_SINGLE_DECL(linsw1_sel1_enum,
-	ALINSW1, ALINSW1_SEL1_SHIFT,
-	linsw1_sel1_text);
-
-static const struct snd_kcontrol_new linesw1_mux[] = {
-	SOC_DAPM_ENUM("Line In 1 Source", linsw1_sel1_enum),
-};
-
 static const struct snd_soc_dapm_widget evea_widgets[] = {
-	SND_SOC_DAPM_ADC("ADC", NULL, SND_SOC_NOPM, 0, 0),
-	SND_SOC_DAPM_MUX("Line In 1 Mux", SND_SOC_NOPM, 0, 0, linesw1_mux),
+	SND_SOC_DAPM_ADC("ADC", "Capture", SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_INPUT("LIN1_LP"),
 	SND_SOC_DAPM_INPUT("LIN1_RP"),
 	SND_SOC_DAPM_INPUT("LIN2_LP"),
@@ -76,9 +75,7 @@ static const struct snd_soc_dapm_widget evea_widgets[] = {
 	SND_SOC_DAPM_INPUT("LIN3_LP"),
 	SND_SOC_DAPM_INPUT("LIN3_RP"),
 
-	SND_SOC_DAPM_DAC("DAC HP", NULL, SND_SOC_NOPM, 0, 0),
-	SND_SOC_DAPM_DAC("DAC LO1", NULL, SND_SOC_NOPM, 0, 0),
-	SND_SOC_DAPM_DAC("DAC LO2", NULL, SND_SOC_NOPM, 0, 0),
+	SND_SOC_DAPM_DAC("DAC", "Playback", SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_OUTPUT("HP1_L"),
 	SND_SOC_DAPM_OUTPUT("HP1_R"),
 	SND_SOC_DAPM_OUTPUT("LO2_L"),
@@ -86,22 +83,17 @@ static const struct snd_soc_dapm_widget evea_widgets[] = {
 };
 
 static const struct snd_soc_dapm_route evea_routes[] = {
-	{ "Line In 1", NULL, "ADC" },
-	{ "ADC", NULL, "Line In 1 Mux" },
-	{ "Line In 1 Mux", "LIN1", "LIN1_LP" },
-	{ "Line In 1 Mux", "LIN1", "LIN1_RP" },
-	{ "Line In 1 Mux", "LIN2", "LIN2_LP" },
-	{ "Line In 1 Mux", "LIN2", "LIN2_RP" },
-	{ "Line In 1 Mux", "LIN3", "LIN3_LP" },
-	{ "Line In 1 Mux", "LIN3", "LIN3_RP" },
+	{ "ADC", NULL, "LIN1_LP" },
+	{ "ADC", NULL, "LIN1_RP" },
+	{ "ADC", NULL, "LIN2_LP" },
+	{ "ADC", NULL, "LIN2_RP" },
+	{ "ADC", NULL, "LIN3_LP" },
+	{ "ADC", NULL, "LIN3_RP" },
 
-	{ "DAC HP", NULL, "Headphone 1" },
-	{ "DAC LO1", NULL, "Line Out 1" },
-	{ "DAC LO2", NULL, "Line Out 2" },
-	{ "HP1_L", NULL, "DAC HP" },
-	{ "HP1_R", NULL, "DAC HP" },
-	{ "LO2_L", NULL, "DAC LO2" },
-	{ "LO2_R", NULL, "DAC LO2" },
+	{ "HP1_L", NULL, "DAC" },
+	{ "HP1_R", NULL, "DAC" },
+	{ "LO2_L", NULL, "DAC" },
+	{ "LO2_R", NULL, "DAC" },
 };
 
 static void evea_set_power_state_on(struct evea_priv *evea)
@@ -228,8 +220,8 @@ static void evea_update_switch_all(struct evea_priv *evea)
 static int evea_get_switch_lin(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	ucontrol->value.integer.value[0] = evea->switch_lin;
 
@@ -239,8 +231,8 @@ static int evea_get_switch_lin(struct snd_kcontrol *kcontrol,
 static int evea_set_switch_lin(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	if (evea->switch_lin == ucontrol->value.integer.value[0])
 		return 0;
@@ -253,8 +245,8 @@ static int evea_set_switch_lin(struct snd_kcontrol *kcontrol,
 static int evea_get_switch_lo(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	ucontrol->value.integer.value[0] = evea->switch_lo;
 
@@ -264,8 +256,8 @@ static int evea_get_switch_lo(struct snd_kcontrol *kcontrol,
 static int evea_set_switch_lo(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	if (evea->switch_lo == ucontrol->value.integer.value[0])
 		return 0;
@@ -278,8 +270,8 @@ static int evea_set_switch_lo(struct snd_kcontrol *kcontrol,
 static int evea_get_switch_hp(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	ucontrol->value.integer.value[0] = evea->switch_hp;
 
@@ -289,8 +281,8 @@ static int evea_get_switch_hp(struct snd_kcontrol *kcontrol,
 static int evea_set_switch_hp(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	if (evea->switch_hp == ucontrol->value.integer.value[0])
 		return 0;
@@ -300,7 +292,7 @@ static int evea_set_switch_hp(struct snd_kcontrol *kcontrol,
 	return evea_update_switch_hp(evea);
 }
 
-static const struct snd_kcontrol_new evea_controls[] = {
+static const struct snd_kcontrol_new eva_controls[] = {
 	SOC_SINGLE_BOOL_EXT("Line Capture Switch", 0,
 			    evea_get_switch_lin, evea_set_switch_lin),
 	SOC_SINGLE_BOOL_EXT("Line Playback Switch", 0,
@@ -309,9 +301,9 @@ static const struct snd_kcontrol_new evea_controls[] = {
 			    evea_get_switch_hp, evea_set_switch_hp),
 };
 
-static int evea_codec_probe(struct snd_soc_component *component)
+static int evea_codec_probe(struct snd_soc_codec *codec)
 {
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	evea->switch_lin = 1;
 	evea->switch_lo = 1;
@@ -323,9 +315,9 @@ static int evea_codec_probe(struct snd_soc_component *component)
 	return 0;
 }
 
-static int evea_codec_suspend(struct snd_soc_component *component)
+static int evea_codec_suspend(struct snd_soc_codec *codec)
 {
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 
 	evea_set_power_state_off(evea);
 
@@ -339,9 +331,9 @@ static int evea_codec_suspend(struct snd_soc_component *component)
 	return 0;
 }
 
-static int evea_codec_resume(struct snd_soc_component *component)
+static int evea_codec_resume(struct snd_soc_codec *codec)
 {
-	struct evea_priv *evea = snd_soc_component_get_drvdata(component);
+	struct evea_priv *evea = snd_soc_codec_get_drvdata(codec);
 	int ret;
 
 	ret = clk_prepare_enable(evea->clk);
@@ -384,20 +376,19 @@ err_out_clock:
 	return ret;
 }
 
-static struct snd_soc_component_driver soc_codec_evea = {
-	.probe			= evea_codec_probe,
-	.suspend		= evea_codec_suspend,
-	.resume			= evea_codec_resume,
-	.dapm_widgets		= evea_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(evea_widgets),
-	.dapm_routes		= evea_routes,
-	.num_dapm_routes	= ARRAY_SIZE(evea_routes),
-	.controls		= evea_controls,
-	.num_controls		= ARRAY_SIZE(evea_controls),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static struct snd_soc_codec_driver soc_codec_evea = {
+	.probe   = evea_codec_probe,
+	.suspend = evea_codec_suspend,
+	.resume  = evea_codec_resume,
+
+	.component_driver = {
+		.dapm_widgets = evea_widgets,
+		.num_dapm_widgets = ARRAY_SIZE(evea_widgets),
+		.dapm_routes = evea_routes,
+		.num_dapm_routes = ARRAY_SIZE(evea_routes),
+		.controls = eva_controls,
+		.num_controls = ARRAY_SIZE(eva_controls),
+	},
 };
 
 static struct snd_soc_dai_driver soc_dai_evea[] = {
@@ -514,7 +505,7 @@ static int evea_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, evea);
 
-	ret = devm_snd_soc_register_component(&pdev->dev, &soc_codec_evea,
+	ret = snd_soc_register_codec(&pdev->dev, &soc_codec_evea,
 				     soc_dai_evea, ARRAY_SIZE(soc_dai_evea));
 	if (ret)
 		goto err_out_reset_adamv;
@@ -542,6 +533,8 @@ err_out_clock:
 static int evea_remove(struct platform_device *pdev)
 {
 	struct evea_priv *evea = platform_get_drvdata(pdev);
+
+	snd_soc_unregister_codec(&pdev->dev);
 
 	reset_control_assert(evea->rst_adamv);
 	reset_control_assert(evea->rst_exiv);

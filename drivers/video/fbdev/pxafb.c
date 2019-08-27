@@ -56,7 +56,6 @@
 #include <linux/freezer.h>
 #include <linux/console.h>
 #include <linux/of_graph.h>
-#include <linux/regulator/consumer.h>
 #include <video/of_display_timing.h>
 #include <video/videomode.h>
 
@@ -1424,21 +1423,6 @@ static inline void __pxafb_lcd_power(struct pxafb_info *fbi, int on)
 
 	if (fbi->lcd_power)
 		fbi->lcd_power(on, &fbi->fb.var);
-
-	if (fbi->lcd_supply && fbi->lcd_supply_enabled != on) {
-		int ret;
-
-		if (on)
-			ret = regulator_enable(fbi->lcd_supply);
-		else
-			ret = regulator_disable(fbi->lcd_supply);
-
-		if (ret < 0)
-			pr_warn("Unable to %s LCD supply regulator: %d\n",
-				on ? "enable" : "disable", ret);
-		else
-			fbi->lcd_supply_enabled = on;
-	}
 }
 
 static void pxafb_enable_controller(struct pxafb_info *fbi)
@@ -1815,17 +1799,19 @@ static struct pxafb_info *pxafb_init_fbinfo(struct device *dev,
 	void *addr;
 
 	/* Alloc the pxafb_info and pseudo_palette in one step */
-	fbi = devm_kzalloc(dev, sizeof(struct pxafb_info) + sizeof(u32) * 16,
-			   GFP_KERNEL);
+	fbi = kmalloc(sizeof(struct pxafb_info) + sizeof(u32) * 16, GFP_KERNEL);
 	if (!fbi)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
+	memset(fbi, 0, sizeof(struct pxafb_info));
 	fbi->dev = dev;
 	fbi->inf = inf;
 
-	fbi->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(fbi->clk))
-		return ERR_CAST(fbi->clk);
+	fbi->clk = clk_get(dev, NULL);
+	if (IS_ERR(fbi->clk)) {
+		kfree(fbi);
+		return NULL;
+	}
 
 	strcpy(fbi->fb.fix.id, PXA_NAME);
 
@@ -2129,10 +2115,12 @@ static int of_get_pxafb_display(struct device *dev, struct device_node *disp,
 	if (ret)
 		s = "color-tft";
 
-	i = match_string(lcd_types, -1, s);
-	if (i < 0) {
+	for (i = 0; lcd_types[i]; i++)
+		if (!strcmp(s, lcd_types[i]))
+			break;
+	if (!i || !lcd_types[i]) {
 		dev_err(dev, "lcd-type %s is unknown\n", s);
-		return i;
+		return -EINVAL;
 	}
 	info->lcd_conn |= LCD_CONN_TYPE(i);
 	info->lcd_conn |= LCD_CONN_WIDTH(bus_width);
@@ -2142,9 +2130,8 @@ static int of_get_pxafb_display(struct device *dev, struct device_node *disp,
 		return -EINVAL;
 
 	ret = -ENOMEM;
-	info->modes = devm_kcalloc(dev, timings->num_timings,
-				   sizeof(info->modes[0]),
-				   GFP_KERNEL);
+	info->modes = kmalloc_array(timings->num_timings,
+				    sizeof(info->modes[0]), GFP_KERNEL);
 	if (!info->modes)
 		goto out;
 	info->num_modes = timings->num_timings;
@@ -2234,8 +2221,10 @@ static struct pxafb_mach_info *of_pxafb_of_mach_info(struct device *dev)
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 	ret = of_get_pxafb_mode_info(dev, info);
-	if (ret)
+	if (ret) {
+		kfree(info->modes);
 		return ERR_PTR(ret);
+	}
 
 	/*
 	 * On purpose, neither lccrX registers nor video memory size can be
@@ -2301,9 +2290,10 @@ static int pxafb_probe(struct platform_device *dev)
 	}
 
 	fbi = pxafb_init_fbinfo(&dev->dev, inf);
-	if (IS_ERR(fbi)) {
+	if (!fbi) {
+		/* only reason for pxafb_init_fbinfo to fail is kmalloc */
 		dev_err(&dev->dev, "Failed to initialize framebuffer device\n");
-		ret = PTR_ERR(fbi);
+		ret = -ENOMEM;
 		goto failed;
 	}
 
@@ -2313,26 +2303,25 @@ static int pxafb_probe(struct platform_device *dev)
 	fbi->backlight_power = inf->pxafb_backlight_power;
 	fbi->lcd_power = inf->pxafb_lcd_power;
 
-	fbi->lcd_supply = devm_regulator_get_optional(&dev->dev, "lcd");
-	if (IS_ERR(fbi->lcd_supply)) {
-		if (PTR_ERR(fbi->lcd_supply) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-
-		fbi->lcd_supply = NULL;
-	}
-
 	r = platform_get_resource(dev, IORESOURCE_MEM, 0);
 	if (r == NULL) {
 		dev_err(&dev->dev, "no I/O memory resource defined\n");
 		ret = -ENODEV;
-		goto failed;
+		goto failed_fbi;
 	}
 
-	fbi->mmio_base = devm_ioremap_resource(&dev->dev, r);
-	if (IS_ERR(fbi->mmio_base)) {
-		dev_err(&dev->dev, "failed to get I/O memory\n");
+	r = request_mem_region(r->start, resource_size(r), dev->name);
+	if (r == NULL) {
+		dev_err(&dev->dev, "failed to request I/O memory\n");
 		ret = -EBUSY;
-		goto failed;
+		goto failed_fbi;
+	}
+
+	fbi->mmio_base = ioremap(r->start, resource_size(r));
+	if (fbi->mmio_base == NULL) {
+		dev_err(&dev->dev, "failed to map I/O memory\n");
+		ret = -EBUSY;
+		goto failed_free_res;
 	}
 
 	fbi->dma_buff_size = PAGE_ALIGN(sizeof(struct pxafb_dma_buff));
@@ -2341,7 +2330,7 @@ static int pxafb_probe(struct platform_device *dev)
 	if (fbi->dma_buff == NULL) {
 		dev_err(&dev->dev, "failed to allocate memory for DMA\n");
 		ret = -ENOMEM;
-		goto failed;
+		goto failed_free_io;
 	}
 
 	ret = pxafb_init_video_memory(fbi);
@@ -2358,7 +2347,7 @@ static int pxafb_probe(struct platform_device *dev)
 		goto failed_free_mem;
 	}
 
-	ret = devm_request_irq(&dev->dev, irq, pxafb_handle_irq, 0, "LCD", fbi);
+	ret = request_irq(irq, pxafb_handle_irq, 0, "LCD", fbi);
 	if (ret) {
 		dev_err(&dev->dev, "request_irq failed: %d\n", ret);
 		ret = -EBUSY;
@@ -2368,7 +2357,7 @@ static int pxafb_probe(struct platform_device *dev)
 	ret = pxafb_smart_init(fbi);
 	if (ret) {
 		dev_err(&dev->dev, "failed to initialize smartpanel\n");
-		goto failed_free_mem;
+		goto failed_free_irq;
 	}
 
 	/*
@@ -2378,13 +2367,13 @@ static int pxafb_probe(struct platform_device *dev)
 	ret = pxafb_check_var(&fbi->fb.var, &fbi->fb);
 	if (ret) {
 		dev_err(&dev->dev, "failed to get suitable mode\n");
-		goto failed_free_mem;
+		goto failed_free_irq;
 	}
 
 	ret = pxafb_set_par(&fbi->fb);
 	if (ret) {
 		dev_err(&dev->dev, "Failed to set parameters\n");
-		goto failed_free_mem;
+		goto failed_free_irq;
 	}
 
 	platform_set_drvdata(dev, fbi);
@@ -2417,11 +2406,20 @@ static int pxafb_probe(struct platform_device *dev)
 failed_free_cmap:
 	if (fbi->fb.cmap.len)
 		fb_dealloc_cmap(&fbi->fb.cmap);
+failed_free_irq:
+	free_irq(irq, fbi);
 failed_free_mem:
 	free_pages_exact(fbi->video_mem, fbi->video_mem_size);
 failed_free_dma:
 	dma_free_coherent(&dev->dev, fbi->dma_buff_size,
 			fbi->dma_buff, fbi->dma_buff_phys);
+failed_free_io:
+	iounmap(fbi->mmio_base);
+failed_free_res:
+	release_mem_region(r->start, resource_size(r));
+failed_fbi:
+	clk_put(fbi->clk);
+	kfree(fbi);
 failed:
 	return ret;
 }
@@ -2429,6 +2427,8 @@ failed:
 static int pxafb_remove(struct platform_device *dev)
 {
 	struct pxafb_info *fbi = platform_get_drvdata(dev);
+	struct resource *r;
+	int irq;
 	struct fb_info *info;
 
 	if (!fbi)
@@ -2444,10 +2444,21 @@ static int pxafb_remove(struct platform_device *dev)
 	if (fbi->fb.cmap.len)
 		fb_dealloc_cmap(&fbi->fb.cmap);
 
+	irq = platform_get_irq(dev, 0);
+	free_irq(irq, fbi);
+
 	free_pages_exact(fbi->video_mem, fbi->video_mem_size);
 
 	dma_free_wc(&dev->dev, fbi->dma_buff_size, fbi->dma_buff,
 		    fbi->dma_buff_phys);
+
+	iounmap(fbi->mmio_base);
+
+	r = platform_get_resource(dev, IORESOURCE_MEM, 0);
+	release_mem_region(r->start, resource_size(r));
+
+	clk_put(fbi->clk);
+	kfree(fbi);
 
 	return 0;
 }

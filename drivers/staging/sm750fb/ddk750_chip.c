@@ -8,9 +8,9 @@
 
 #define MHz(x) ((x) * 1000000)
 
-static enum logical_chip_type chip;
+static logical_chip_type_t chip;
 
-enum logical_chip_type sm750_get_chip_type(void)
+logical_chip_type_t sm750_get_chip_type(void)
 {
 	return chip;
 }

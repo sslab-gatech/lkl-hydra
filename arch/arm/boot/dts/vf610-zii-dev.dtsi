@@ -49,8 +49,7 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory@80000000 {
-		device_type = "memory";
+	memory {
 		reg = <0x80000000 0x20000000>;
 	};
 
@@ -221,10 +220,6 @@
 
 &usbphy1 {
 	status = "okay";
-};
-
-&tempsensor {
-	io-channels = <&adc0 16>;
 };
 
 &iomuxc {

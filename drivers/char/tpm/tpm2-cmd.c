@@ -27,6 +27,51 @@ enum tpm2_session_attributes {
 	TPM2_SA_CONTINUE_SESSION	= BIT(0),
 };
 
+struct tpm2_startup_in {
+	__be16	startup_type;
+} __packed;
+
+struct tpm2_self_test_in {
+	u8	full_test;
+} __packed;
+
+struct tpm2_get_tpm_pt_in {
+	__be32	cap_id;
+	__be32	property_id;
+	__be32	property_cnt;
+} __packed;
+
+struct tpm2_get_tpm_pt_out {
+	u8	more_data;
+	__be32	subcap_id;
+	__be32	property_cnt;
+	__be32	property_id;
+	__be32	value;
+} __packed;
+
+struct tpm2_get_random_in {
+	__be16	size;
+} __packed;
+
+struct tpm2_get_random_out {
+	__be16	size;
+	u8	buffer[TPM_MAX_RNG_DATA];
+} __packed;
+
+union tpm2_cmd_params {
+	struct	tpm2_startup_in		startup_in;
+	struct	tpm2_self_test_in	selftest_in;
+	struct	tpm2_get_tpm_pt_in	get_tpm_pt_in;
+	struct	tpm2_get_tpm_pt_out	get_tpm_pt_out;
+	struct	tpm2_get_random_in	getrandom_in;
+	struct	tpm2_get_random_out	getrandom_out;
+};
+
+struct tpm2_cmd {
+	tpm_cmd_header		header;
+	union tpm2_cmd_params	params;
+} __packed;
+
 struct tpm2_hash {
 	unsigned int crypto_id;
 	unsigned int tpm_id;
@@ -40,121 +85,127 @@ static struct tpm2_hash tpm2_hash_map[] = {
 	{HASH_ALGO_SM3_256, TPM2_ALG_SM3_256},
 };
 
-int tpm2_get_timeouts(struct tpm_chip *chip)
-{
-	/* Fixed timeouts for TPM2 */
-	chip->timeout_a = msecs_to_jiffies(TPM2_TIMEOUT_A);
-	chip->timeout_b = msecs_to_jiffies(TPM2_TIMEOUT_B);
-	chip->timeout_c = msecs_to_jiffies(TPM2_TIMEOUT_C);
-	chip->timeout_d = msecs_to_jiffies(TPM2_TIMEOUT_D);
-
-	/* PTP spec timeouts */
-	chip->duration[TPM_SHORT] = msecs_to_jiffies(TPM2_DURATION_SHORT);
-	chip->duration[TPM_MEDIUM] = msecs_to_jiffies(TPM2_DURATION_MEDIUM);
-	chip->duration[TPM_LONG] = msecs_to_jiffies(TPM2_DURATION_LONG);
-
-	/* Key creation commands long timeouts */
-	chip->duration[TPM_LONG_LONG] =
-		msecs_to_jiffies(TPM2_DURATION_LONG_LONG);
-
-	chip->flags |= TPM_CHIP_FLAG_HAVE_TIMEOUTS;
-
-	return 0;
-}
-
-/**
- * tpm2_ordinal_duration_index() - returns an index to the chip duration table
- * @ordinal: TPM command ordinal.
- *
- * The function returns an index to the chip duration table
- * (enum tpm_duration), that describes the maximum amount of
- * time the chip could take to return the result for a  particular ordinal.
- *
- * The values of the MEDIUM, and LONG durations are taken
- * from the PC Client Profile (PTP) specification (750, 2000 msec)
- *
- * LONG_LONG is for commands that generates keys which empirically takes
- * a longer time on some systems.
- *
- * Return:
- * * TPM_MEDIUM
- * * TPM_LONG
- * * TPM_LONG_LONG
- * * TPM_UNDEFINED
+/*
+ * Array with one entry per ordinal defining the maximum amount
+ * of time the chip could take to return the result. The values
+ * of the SHORT, MEDIUM, and LONG durations are taken from the
+ * PC Client Profile (PTP) specification.
  */
-static u8 tpm2_ordinal_duration_index(u32 ordinal)
-{
-	switch (ordinal) {
-	/* Startup */
-	case TPM2_CC_STARTUP:                 /* 144 */
-		return TPM_MEDIUM;
-
-	case TPM2_CC_SELF_TEST:               /* 143 */
-		return TPM_LONG;
-
-	case TPM2_CC_GET_RANDOM:              /* 17B */
-		return TPM_LONG;
-
-	case TPM2_CC_SEQUENCE_UPDATE:         /* 15C */
-		return TPM_MEDIUM;
-	case TPM2_CC_SEQUENCE_COMPLETE:       /* 13E */
-		return TPM_MEDIUM;
-	case TPM2_CC_EVENT_SEQUENCE_COMPLETE: /* 185 */
-		return TPM_MEDIUM;
-	case TPM2_CC_HASH_SEQUENCE_START:     /* 186 */
-		return TPM_MEDIUM;
-
-	case TPM2_CC_VERIFY_SIGNATURE:        /* 177 */
-		return TPM_LONG;
-
-	case TPM2_CC_PCR_EXTEND:              /* 182 */
-		return TPM_MEDIUM;
-
-	case TPM2_CC_HIERARCHY_CONTROL:       /* 121 */
-		return TPM_LONG;
-	case TPM2_CC_HIERARCHY_CHANGE_AUTH:   /* 129 */
-		return TPM_LONG;
-
-	case TPM2_CC_GET_CAPABILITY:          /* 17A */
-		return TPM_MEDIUM;
-
-	case TPM2_CC_NV_READ:                 /* 14E */
-		return TPM_LONG;
-
-	case TPM2_CC_CREATE_PRIMARY:          /* 131 */
-		return TPM_LONG_LONG;
-	case TPM2_CC_CREATE:                  /* 153 */
-		return TPM_LONG_LONG;
-	case TPM2_CC_CREATE_LOADED:           /* 191 */
-		return TPM_LONG_LONG;
-
-	default:
-		return TPM_UNDEFINED;
-	}
-}
-
-/**
- * tpm2_calc_ordinal_duration() - calculate the maximum command duration
- * @chip:    TPM chip to use.
- * @ordinal: TPM command ordinal.
- *
- * The function returns the maximum amount of time the chip could take
- * to return the result for a particular ordinal in jiffies.
- *
- * Return: A maximal duration time for an ordinal in jiffies.
- */
-unsigned long tpm2_calc_ordinal_duration(struct tpm_chip *chip, u32 ordinal)
-{
-	unsigned int index;
-
-	index = tpm2_ordinal_duration_index(ordinal);
-
-	if (index != TPM_UNDEFINED)
-		return chip->duration[index];
-	else
-		return msecs_to_jiffies(TPM2_DURATION_DEFAULT);
-}
-
+static const u8 tpm2_ordinal_duration[TPM2_CC_LAST - TPM2_CC_FIRST + 1] = {
+	TPM_UNDEFINED,		/* 11F */
+	TPM_UNDEFINED,		/* 120 */
+	TPM_LONG,		/* 121 */
+	TPM_UNDEFINED,		/* 122 */
+	TPM_UNDEFINED,		/* 123 */
+	TPM_UNDEFINED,		/* 124 */
+	TPM_UNDEFINED,		/* 125 */
+	TPM_UNDEFINED,		/* 126 */
+	TPM_UNDEFINED,		/* 127 */
+	TPM_UNDEFINED,		/* 128 */
+	TPM_LONG,		/* 129 */
+	TPM_UNDEFINED,		/* 12a */
+	TPM_UNDEFINED,		/* 12b */
+	TPM_UNDEFINED,		/* 12c */
+	TPM_UNDEFINED,		/* 12d */
+	TPM_UNDEFINED,		/* 12e */
+	TPM_UNDEFINED,		/* 12f */
+	TPM_UNDEFINED,		/* 130 */
+	TPM_UNDEFINED,		/* 131 */
+	TPM_UNDEFINED,		/* 132 */
+	TPM_UNDEFINED,		/* 133 */
+	TPM_UNDEFINED,		/* 134 */
+	TPM_UNDEFINED,		/* 135 */
+	TPM_UNDEFINED,		/* 136 */
+	TPM_UNDEFINED,		/* 137 */
+	TPM_UNDEFINED,		/* 138 */
+	TPM_UNDEFINED,		/* 139 */
+	TPM_UNDEFINED,		/* 13a */
+	TPM_UNDEFINED,		/* 13b */
+	TPM_UNDEFINED,		/* 13c */
+	TPM_UNDEFINED,		/* 13d */
+	TPM_MEDIUM,		/* 13e */
+	TPM_UNDEFINED,		/* 13f */
+	TPM_UNDEFINED,		/* 140 */
+	TPM_UNDEFINED,		/* 141 */
+	TPM_UNDEFINED,		/* 142 */
+	TPM_LONG,		/* 143 */
+	TPM_MEDIUM,		/* 144 */
+	TPM_UNDEFINED,		/* 145 */
+	TPM_UNDEFINED,		/* 146 */
+	TPM_UNDEFINED,		/* 147 */
+	TPM_UNDEFINED,		/* 148 */
+	TPM_UNDEFINED,		/* 149 */
+	TPM_UNDEFINED,		/* 14a */
+	TPM_UNDEFINED,		/* 14b */
+	TPM_UNDEFINED,		/* 14c */
+	TPM_UNDEFINED,		/* 14d */
+	TPM_LONG,		/* 14e */
+	TPM_UNDEFINED,		/* 14f */
+	TPM_UNDEFINED,		/* 150 */
+	TPM_UNDEFINED,		/* 151 */
+	TPM_UNDEFINED,		/* 152 */
+	TPM_UNDEFINED,		/* 153 */
+	TPM_UNDEFINED,		/* 154 */
+	TPM_UNDEFINED,		/* 155 */
+	TPM_UNDEFINED,		/* 156 */
+	TPM_UNDEFINED,		/* 157 */
+	TPM_UNDEFINED,		/* 158 */
+	TPM_UNDEFINED,		/* 159 */
+	TPM_UNDEFINED,		/* 15a */
+	TPM_UNDEFINED,		/* 15b */
+	TPM_MEDIUM,		/* 15c */
+	TPM_UNDEFINED,		/* 15d */
+	TPM_UNDEFINED,		/* 15e */
+	TPM_UNDEFINED,		/* 15f */
+	TPM_UNDEFINED,		/* 160 */
+	TPM_UNDEFINED,		/* 161 */
+	TPM_UNDEFINED,		/* 162 */
+	TPM_UNDEFINED,		/* 163 */
+	TPM_UNDEFINED,		/* 164 */
+	TPM_UNDEFINED,		/* 165 */
+	TPM_UNDEFINED,		/* 166 */
+	TPM_UNDEFINED,		/* 167 */
+	TPM_UNDEFINED,		/* 168 */
+	TPM_UNDEFINED,		/* 169 */
+	TPM_UNDEFINED,		/* 16a */
+	TPM_UNDEFINED,		/* 16b */
+	TPM_UNDEFINED,		/* 16c */
+	TPM_UNDEFINED,		/* 16d */
+	TPM_UNDEFINED,		/* 16e */
+	TPM_UNDEFINED,		/* 16f */
+	TPM_UNDEFINED,		/* 170 */
+	TPM_UNDEFINED,		/* 171 */
+	TPM_UNDEFINED,		/* 172 */
+	TPM_UNDEFINED,		/* 173 */
+	TPM_UNDEFINED,		/* 174 */
+	TPM_UNDEFINED,		/* 175 */
+	TPM_UNDEFINED,		/* 176 */
+	TPM_LONG,		/* 177 */
+	TPM_UNDEFINED,		/* 178 */
+	TPM_UNDEFINED,		/* 179 */
+	TPM_MEDIUM,		/* 17a */
+	TPM_LONG,		/* 17b */
+	TPM_UNDEFINED,		/* 17c */
+	TPM_UNDEFINED,		/* 17d */
+	TPM_UNDEFINED,		/* 17e */
+	TPM_UNDEFINED,		/* 17f */
+	TPM_UNDEFINED,		/* 180 */
+	TPM_UNDEFINED,		/* 181 */
+	TPM_MEDIUM,		/* 182 */
+	TPM_UNDEFINED,		/* 183 */
+	TPM_UNDEFINED,		/* 184 */
+	TPM_MEDIUM,		/* 185 */
+	TPM_MEDIUM,		/* 186 */
+	TPM_UNDEFINED,		/* 187 */
+	TPM_UNDEFINED,		/* 188 */
+	TPM_UNDEFINED,		/* 189 */
+	TPM_UNDEFINED,		/* 18a */
+	TPM_UNDEFINED,		/* 18b */
+	TPM_UNDEFINED,		/* 18c */
+	TPM_UNDEFINED,		/* 18d */
+	TPM_UNDEFINED,		/* 18e */
+	TPM_UNDEFINED		/* 18f */
+};
 
 struct tpm2_pcr_read_out {
 	__be32	update_cnt;
@@ -175,7 +226,7 @@ struct tpm2_pcr_read_out {
  *
  * Return: Same as with tpm_transmit_cmd.
  */
-int tpm2_pcr_read(struct tpm_chip *chip, u32 pcr_idx, u8 *res_buf)
+int tpm2_pcr_read(struct tpm_chip *chip, int pcr_idx, u8 *res_buf)
 {
 	int rc;
 	struct tpm_buf buf;
@@ -225,7 +276,7 @@ struct tpm2_null_auth_area {
  *
  * Return: Same as with tpm_transmit_cmd.
  */
-int tpm2_pcr_extend(struct tpm_chip *chip, u32 pcr_idx, u32 count,
+int tpm2_pcr_extend(struct tpm_chip *chip, int pcr_idx, u32 count,
 		    struct tpm2_digest *digests)
 {
 	struct tpm_buf buf;
@@ -272,80 +323,90 @@ int tpm2_pcr_extend(struct tpm_chip *chip, u32 pcr_idx, u32 count,
 	return rc;
 }
 
-struct tpm2_get_random_out {
-	__be16 size;
-	u8 buffer[TPM_MAX_RNG_DATA];
-} __packed;
+
+#define TPM2_GETRANDOM_IN_SIZE \
+	(sizeof(struct tpm_input_header) + \
+	 sizeof(struct tpm2_get_random_in))
+
+static const struct tpm_input_header tpm2_getrandom_header = {
+	.tag = cpu_to_be16(TPM2_ST_NO_SESSIONS),
+	.length = cpu_to_be32(TPM2_GETRANDOM_IN_SIZE),
+	.ordinal = cpu_to_be32(TPM2_CC_GET_RANDOM)
+};
 
 /**
  * tpm2_get_random() - get random bytes from the TPM RNG
  *
- * @chip:	a &tpm_chip instance
- * @dest:	destination buffer
- * @max:	the max number of random bytes to pull
+ * @chip: TPM chip to use
+ * @out: destination buffer for the random bytes
+ * @max: the max number of bytes to write to @out
  *
  * Return:
- *   size of the buffer on success,
- *   -errno otherwise
+ *    Size of the output buffer, or -EIO on error.
  */
-int tpm2_get_random(struct tpm_chip *chip, u8 *dest, size_t max)
+int tpm2_get_random(struct tpm_chip *chip, u8 *out, size_t max)
 {
-	struct tpm2_get_random_out *out;
-	struct tpm_buf buf;
-	u32 recd;
-	u32 num_bytes = max;
+	struct tpm2_cmd cmd;
+	u32 recd, rlength;
+	u32 num_bytes;
 	int err;
 	int total = 0;
 	int retries = 5;
-	u8 *dest_ptr = dest;
+	u8 *dest = out;
 
-	if (!num_bytes || max > TPM_MAX_RNG_DATA)
+	num_bytes = min_t(u32, max, sizeof(cmd.params.getrandom_out.buffer));
+
+	if (!out || !num_bytes ||
+	    max > sizeof(cmd.params.getrandom_out.buffer))
 		return -EINVAL;
 
-	err = tpm_buf_init(&buf, 0, 0);
-	if (err)
-		return err;
-
 	do {
-		tpm_buf_reset(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_GET_RANDOM);
-		tpm_buf_append_u16(&buf, num_bytes);
-		err = tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE,
+		cmd.header.in = tpm2_getrandom_header;
+		cmd.params.getrandom_in.size = cpu_to_be16(num_bytes);
+
+		err = tpm_transmit_cmd(chip, NULL, &cmd, sizeof(cmd),
 				       offsetof(struct tpm2_get_random_out,
 						buffer),
 				       0, "attempting get random");
 		if (err)
-			goto out;
+			break;
 
-		out = (struct tpm2_get_random_out *)
-			&buf.data[TPM_HEADER_SIZE];
-		recd = min_t(u32, be16_to_cpu(out->size), num_bytes);
-		if (tpm_buf_length(&buf) <
-		    TPM_HEADER_SIZE +
-		    offsetof(struct tpm2_get_random_out, buffer) +
-		    recd) {
-			err = -EFAULT;
-			goto out;
-		}
-		memcpy(dest_ptr, out->buffer, recd);
+		recd = min_t(u32, be16_to_cpu(cmd.params.getrandom_out.size),
+			     num_bytes);
+		rlength = be32_to_cpu(cmd.header.out.length);
+		if (rlength < offsetof(struct tpm2_get_random_out, buffer) +
+			      recd)
+			return -EFAULT;
+		memcpy(dest, cmd.params.getrandom_out.buffer, recd);
 
-		dest_ptr += recd;
+		dest += recd;
 		total += recd;
 		num_bytes -= recd;
 	} while (retries-- && total < max);
 
-	tpm_buf_destroy(&buf);
 	return total ? total : -EIO;
-out:
-	tpm_buf_destroy(&buf);
-	return err;
 }
+
+#define TPM2_GET_TPM_PT_IN_SIZE \
+	(sizeof(struct tpm_input_header) + \
+	 sizeof(struct tpm2_get_tpm_pt_in))
+
+#define TPM2_GET_TPM_PT_OUT_BODY_SIZE \
+	 sizeof(struct tpm2_get_tpm_pt_out)
+
+static const struct tpm_input_header tpm2_get_tpm_pt_header = {
+	.tag = cpu_to_be16(TPM2_ST_NO_SESSIONS),
+	.length = cpu_to_be32(TPM2_GET_TPM_PT_IN_SIZE),
+	.ordinal = cpu_to_be32(TPM2_CC_GET_CAPABILITY)
+};
 
 /**
  * tpm2_flush_context_cmd() - execute a TPM2_FlushContext command
- * @chip:	TPM chip to use
- * @handle:	context handle
- * @flags:	tpm transmit flags - bitmap
+ * @chip: TPM chip to use
+ * @payload: the key data in clear and encrypted form
+ * @options: authentication values and other options
  *
+ * Return: same as with tpm_transmit_cmd
  */
 void tpm2_flush_context_cmd(struct tpm_chip *chip, u32 handle,
 			    unsigned int flags)
@@ -413,7 +474,7 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 {
 	unsigned int blob_len;
 	struct tpm_buf buf;
-	u32 hash;
+	u32 hash, rlength;
 	int i;
 	int rc;
 
@@ -488,7 +549,8 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 		rc = -E2BIG;
 		goto out;
 	}
-	if (tpm_buf_length(&buf) < TPM_HEADER_SIZE + 4 + blob_len) {
+	rlength = be32_to_cpu(((struct tpm2_cmd *)&buf)->header.out.length);
+	if (rlength < TPM_HEADER_SIZE + 4 + blob_len) {
 		rc = -EFAULT;
 		goto out;
 	}
@@ -598,6 +660,7 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 	u16 data_len;
 	u8 *data;
 	int rc;
+	u32 rlength;
 
 	rc = tpm_buf_init(&buf, TPM2_ST_SESSIONS, TPM2_CC_UNSEAL);
 	if (rc)
@@ -625,7 +688,9 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 			goto out;
 		}
 
-		if (tpm_buf_length(&buf) < TPM_HEADER_SIZE + 6 + data_len) {
+		rlength = be32_to_cpu(((struct tpm2_cmd *)&buf)
+					->header.out.length);
+		if (rlength < TPM_HEADER_SIZE + 6 + data_len) {
 			rc = -EFAULT;
 			goto out;
 		}
@@ -671,72 +736,106 @@ out:
 	return rc;
 }
 
-struct tpm2_get_cap_out {
-	u8 more_data;
-	__be32 subcap_id;
-	__be32 property_cnt;
-	__be32 property_id;
-	__be32 value;
-} __packed;
-
 /**
  * tpm2_get_tpm_pt() - get value of a TPM_CAP_TPM_PROPERTIES type property
- * @chip:		a &tpm_chip instance
+ * @chip:		TPM chip to use.
  * @property_id:	property ID.
  * @value:		output variable.
  * @desc:		passed to tpm_transmit_cmd()
  *
- * Return:
- *   0 on success,
- *   -errno or a TPM return code otherwise
+ * Return: Same as with tpm_transmit_cmd.
  */
 ssize_t tpm2_get_tpm_pt(struct tpm_chip *chip, u32 property_id,  u32 *value,
 			const char *desc)
 {
-	struct tpm2_get_cap_out *out;
-	struct tpm_buf buf;
+	struct tpm2_cmd cmd;
 	int rc;
 
-	rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_GET_CAPABILITY);
-	if (rc)
-		return rc;
-	tpm_buf_append_u32(&buf, TPM2_CAP_TPM_PROPERTIES);
-	tpm_buf_append_u32(&buf, property_id);
-	tpm_buf_append_u32(&buf, 1);
-	rc = tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE, 0, 0, NULL);
-	if (!rc) {
-		out = (struct tpm2_get_cap_out *)
-			&buf.data[TPM_HEADER_SIZE];
-		*value = be32_to_cpu(out->value);
-	}
-	tpm_buf_destroy(&buf);
+	cmd.header.in = tpm2_get_tpm_pt_header;
+	cmd.params.get_tpm_pt_in.cap_id = cpu_to_be32(TPM2_CAP_TPM_PROPERTIES);
+	cmd.params.get_tpm_pt_in.property_id = cpu_to_be32(property_id);
+	cmd.params.get_tpm_pt_in.property_cnt = cpu_to_be32(1);
+
+	rc = tpm_transmit_cmd(chip, NULL, &cmd, sizeof(cmd),
+			      TPM2_GET_TPM_PT_OUT_BODY_SIZE, 0, desc);
+	if (!rc)
+		*value = be32_to_cpu(cmd.params.get_tpm_pt_out.value);
+
 	return rc;
 }
 EXPORT_SYMBOL_GPL(tpm2_get_tpm_pt);
 
+#define TPM2_SHUTDOWN_IN_SIZE \
+	(sizeof(struct tpm_input_header) + \
+	 sizeof(struct tpm2_startup_in))
+
+static const struct tpm_input_header tpm2_shutdown_header = {
+	.tag = cpu_to_be16(TPM2_ST_NO_SESSIONS),
+	.length = cpu_to_be32(TPM2_SHUTDOWN_IN_SIZE),
+	.ordinal = cpu_to_be32(TPM2_CC_SHUTDOWN)
+};
+
 /**
- * tpm2_shutdown() - send a TPM shutdown command
+ * tpm2_shutdown() - send shutdown command to the TPM chip
  *
- * Sends a TPM shutdown command. The shutdown command is used in call
- * sites where the system is going down. If it fails, there is not much
- * that can be done except print an error message.
- *
- * @chip:		a &tpm_chip instance
- * @shutdown_type:	TPM_SU_CLEAR or TPM_SU_STATE.
+ * @chip:		TPM chip to use.
+ * @shutdown_type:	shutdown type. The value is either
+ *			TPM_SU_CLEAR or TPM_SU_STATE.
  */
 void tpm2_shutdown(struct tpm_chip *chip, u16 shutdown_type)
 {
-	struct tpm_buf buf;
+	struct tpm2_cmd cmd;
 	int rc;
 
-	rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_SHUTDOWN);
-	if (rc)
-		return;
-	tpm_buf_append_u16(&buf, shutdown_type);
-	tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE, 0, 0,
-			 "stopping the TPM");
-	tpm_buf_destroy(&buf);
+	cmd.header.in = tpm2_shutdown_header;
+	cmd.params.startup_in.startup_type = cpu_to_be16(shutdown_type);
+
+	rc = tpm_transmit_cmd(chip, NULL, &cmd, sizeof(cmd), 0, 0,
+			      "stopping the TPM");
+
+	/* In places where shutdown command is sent there's no much we can do
+	 * except print the error code on a system failure.
+	 */
+	if (rc < 0 && rc != -EPIPE)
+		dev_warn(&chip->dev, "transmit returned %d while stopping the TPM",
+			 rc);
 }
+
+/*
+ * tpm2_calc_ordinal_duration() - maximum duration for a command
+ *
+ * @chip:	TPM chip to use.
+ * @ordinal:	command code number.
+ *
+ * Return: maximum duration for a command
+ */
+unsigned long tpm2_calc_ordinal_duration(struct tpm_chip *chip, u32 ordinal)
+{
+	int index = TPM_UNDEFINED;
+	int duration = 0;
+
+	if (ordinal >= TPM2_CC_FIRST && ordinal <= TPM2_CC_LAST)
+		index = tpm2_ordinal_duration[ordinal - TPM2_CC_FIRST];
+
+	if (index != TPM_UNDEFINED)
+		duration = chip->duration[index];
+
+	if (duration <= 0)
+		duration = 2 * 60 * HZ;
+
+	return duration;
+}
+EXPORT_SYMBOL_GPL(tpm2_calc_ordinal_duration);
+
+#define TPM2_SELF_TEST_IN_SIZE \
+	(sizeof(struct tpm_input_header) + \
+	 sizeof(struct tpm2_self_test_in))
+
+static const struct tpm_input_header tpm2_selftest_header = {
+	.tag = cpu_to_be16(TPM2_ST_NO_SESSIONS),
+	.length = cpu_to_be32(TPM2_SELF_TEST_IN_SIZE),
+	.ordinal = cpu_to_be32(TPM2_CC_SELF_TEST)
+};
 
 /**
  * tpm2_do_selftest() - ensure that all self tests have passed
@@ -753,61 +852,58 @@ void tpm2_shutdown(struct tpm_chip *chip, u16 shutdown_type)
  */
 static int tpm2_do_selftest(struct tpm_chip *chip)
 {
-	struct tpm_buf buf;
-	int full;
 	int rc;
+	unsigned int delay_msec = 10;
+	long duration;
+	struct tpm2_cmd cmd;
 
-	for (full = 0; full < 2; full++) {
-		rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_SELF_TEST);
-		if (rc)
-			return rc;
+	duration = jiffies_to_msecs(
+		tpm2_calc_ordinal_duration(chip, TPM2_CC_SELF_TEST));
 
-		tpm_buf_append_u8(&buf, full);
-		rc = tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE, 0, 0,
-				      "attempting the self test");
-		tpm_buf_destroy(&buf);
+	while (1) {
+		cmd.header.in = tpm2_selftest_header;
+		cmd.params.selftest_in.full_test = 0;
 
-		if (rc == TPM2_RC_TESTING)
-			rc = TPM2_RC_SUCCESS;
-		if (rc == TPM2_RC_INITIALIZE || rc == TPM2_RC_SUCCESS)
-			return rc;
+		rc = tpm_transmit_cmd(chip, NULL, &cmd, TPM2_SELF_TEST_IN_SIZE,
+				      0, 0, "continue selftest");
+
+		if (rc != TPM2_RC_TESTING || delay_msec >= duration)
+			break;
+
+		/* wait longer than before */
+		delay_msec *= 2;
+		tpm_msleep(delay_msec);
 	}
 
 	return rc;
 }
 
 /**
- * tpm2_probe() - probe for the TPM 2.0 protocol
- * @chip:	a &tpm_chip instance
+ * tpm2_probe() - probe TPM 2.0
+ * @chip: TPM chip to use
  *
- * Send an idempotent TPM 2.0 command and see whether there is TPM2 chip in the
- * other end based on the response tag. The flag TPM_CHIP_FLAG_TPM2 is set by
- * this function if this is the case.
+ * Return: < 0 error and 0 on success.
  *
- * Return:
- *   0 on success,
- *   -errno otherwise
+ * Send idempotent TPM 2.0 command and see whether TPM 2.0 chip replied based on
+ * the reply tag.
  */
 int tpm2_probe(struct tpm_chip *chip)
 {
-	struct tpm_output_header *out;
-	struct tpm_buf buf;
+	struct tpm2_cmd cmd;
 	int rc;
 
-	rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_GET_CAPABILITY);
-	if (rc)
+	cmd.header.in = tpm2_get_tpm_pt_header;
+	cmd.params.get_tpm_pt_in.cap_id = cpu_to_be32(TPM2_CAP_TPM_PROPERTIES);
+	cmd.params.get_tpm_pt_in.property_id = cpu_to_be32(0x100);
+	cmd.params.get_tpm_pt_in.property_cnt = cpu_to_be32(1);
+
+	rc = tpm_transmit_cmd(chip, NULL, &cmd, sizeof(cmd), 0, 0, NULL);
+	if (rc <  0)
 		return rc;
-	tpm_buf_append_u32(&buf, TPM2_CAP_TPM_PROPERTIES);
-	tpm_buf_append_u32(&buf, TPM_PT_TOTAL_COMMANDS);
-	tpm_buf_append_u32(&buf, 1);
-	rc = tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE, 0, 0, NULL);
-	/* We ignore TPM return codes on purpose. */
-	if (rc >=  0) {
-		out = (struct tpm_output_header *)buf.data;
-		if (be16_to_cpu(out->tag) == TPM2_ST_NO_SESSIONS)
-			chip->flags |= TPM_CHIP_FLAG_TPM2;
-	}
-	tpm_buf_destroy(&buf);
+
+	if (be16_to_cpu(cmd.header.out.tag) == TPM2_ST_NO_SESSIONS)
+		chip->flags |= TPM_CHIP_FLAG_TPM2;
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tpm2_probe);
@@ -900,7 +996,7 @@ static int tpm2_get_cc_attrs_tbl(struct tpm_chip *chip)
 		goto out;
 	}
 
-	chip->cc_attrs_tbl = devm_kcalloc(&chip->dev, 4, nr_commands,
+	chip->cc_attrs_tbl = devm_kzalloc(&chip->dev, 4 * nr_commands,
 					  GFP_KERNEL);
 
 	rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_GET_CAPABILITY);
@@ -947,36 +1043,6 @@ out:
 }
 
 /**
- * tpm2_startup - turn on the TPM
- * @chip: TPM chip to use
- *
- * Normally the firmware should start the TPM. This function is provided as a
- * workaround if this does not happen. A legal case for this could be for
- * example when a TPM emulator is used.
- *
- * Return: same as tpm_transmit_cmd()
- */
-
-static int tpm2_startup(struct tpm_chip *chip)
-{
-	struct tpm_buf buf;
-	int rc;
-
-	dev_info(&chip->dev, "starting up the TPM manually\n");
-
-	rc = tpm_buf_init(&buf, TPM2_ST_NO_SESSIONS, TPM2_CC_STARTUP);
-	if (rc < 0)
-		return rc;
-
-	tpm_buf_append_u16(&buf, TPM2_SU_CLEAR);
-	rc = tpm_transmit_cmd(chip, NULL, buf.data, PAGE_SIZE, 0, 0,
-			      "attempting to start the TPM");
-	tpm_buf_destroy(&buf);
-
-	return rc;
-}
-
-/**
  * tpm2_auto_startup - Perform the standard automatic TPM initialization
  *                     sequence
  * @chip: TPM chip to use
@@ -987,22 +1053,26 @@ int tpm2_auto_startup(struct tpm_chip *chip)
 {
 	int rc;
 
-	rc = tpm2_get_timeouts(chip);
+	rc = tpm_get_timeouts(chip);
 	if (rc)
 		goto out;
 
 	rc = tpm2_do_selftest(chip);
-	if (rc && rc != TPM2_RC_INITIALIZE)
+	if (rc != 0 && rc != TPM2_RC_INITIALIZE) {
+		dev_err(&chip->dev, "TPM self test failed\n");
 		goto out;
+	}
 
 	if (rc == TPM2_RC_INITIALIZE) {
-		rc = tpm2_startup(chip);
+		rc = tpm_startup(chip);
 		if (rc)
 			goto out;
 
 		rc = tpm2_do_selftest(chip);
-		if (rc)
+		if (rc) {
+			dev_err(&chip->dev, "TPM self test failed\n");
 			goto out;
+		}
 	}
 
 	rc = tpm2_get_pcr_allocation(chip);

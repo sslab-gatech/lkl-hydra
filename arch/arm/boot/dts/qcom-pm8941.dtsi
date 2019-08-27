@@ -139,9 +139,6 @@
 			#size-cells = <0>;
 			#io-channel-cells = <1>;
 
-			bat_temp {
-				reg = <VADC_LR_MUX1_BAT_THERM>;
-			};
 			die_temp {
 				reg = <VADC_DIE_TEMP>;
 			};
@@ -156,9 +153,6 @@
 			};
 			ref_vdd {
 				reg = <VADC_VDD_VADC>;
-			};
-			vbat_sns {
-				reg = <VADC_VBAT_SNS>;
 			};
 		};
 

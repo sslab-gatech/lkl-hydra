@@ -223,9 +223,9 @@ static snd_pcm_uframes_t snd_solo_pcm_pointer(struct snd_pcm_substream *ss)
 	return idx * G723_FRAMES_PER_PAGE;
 }
 
-static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
-				  unsigned long pos, void __user *dst,
-				  unsigned long count)
+static int __snd_solo_pcm_copy(struct snd_pcm_substream *ss,
+			       unsigned long pos, void *dst,
+			       unsigned long count, bool in_kernel)
 {
 	struct solo_snd_pcm *solo_pcm = snd_pcm_substream_chip(ss);
 	struct solo_dev *solo_dev = solo_pcm->solo_dev;
@@ -242,7 +242,10 @@ static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
 		if (err)
 			return err;
 
-		if (copy_to_user(dst, solo_pcm->g723_buf, G723_PERIOD_BYTES))
+		if (in_kernel)
+			memcpy(dst, solo_pcm->g723_buf, G723_PERIOD_BYTES);
+		else if (copy_to_user((void __user *)dst,
+				      solo_pcm->g723_buf, G723_PERIOD_BYTES))
 			return -EFAULT;
 		dst += G723_PERIOD_BYTES;
 	}
@@ -250,30 +253,18 @@ static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
 	return 0;
 }
 
+static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
+				  unsigned long pos, void __user *dst,
+				  unsigned long count)
+{
+	return __snd_solo_pcm_copy(ss, pos, (void *)dst, count, false);
+}
+
 static int snd_solo_pcm_copy_kernel(struct snd_pcm_substream *ss, int channel,
 				    unsigned long pos, void *dst,
 				    unsigned long count)
 {
-	struct solo_snd_pcm *solo_pcm = snd_pcm_substream_chip(ss);
-	struct solo_dev *solo_dev = solo_pcm->solo_dev;
-	int err, i;
-
-	for (i = 0; i < (count / G723_FRAMES_PER_PAGE); i++) {
-		int page = (pos / G723_FRAMES_PER_PAGE) + i;
-
-		err = solo_p2m_dma_t(solo_dev, 0, solo_pcm->g723_dma,
-				     SOLO_G723_EXT_ADDR(solo_dev) +
-				     (page * G723_PERIOD_BLOCK) +
-				     (ss->number * G723_PERIOD_BYTES),
-				     G723_PERIOD_BYTES, 0, 0);
-		if (err)
-			return err;
-
-		memcpy(dst, solo_pcm->g723_buf, G723_PERIOD_BYTES);
-		dst += G723_PERIOD_BYTES;
-	}
-
-	return 0;
+	return __snd_solo_pcm_copy(ss, pos, dst, count, true);
 }
 
 static const struct snd_pcm_ops snd_solo_pcm_ops = {
@@ -354,7 +345,7 @@ static int solo_snd_pcm_init(struct solo_dev *solo_dev)
 
 	snd_pcm_chip(pcm) = solo_dev;
 	pcm->info_flags = 0;
-	strscpy(pcm->name, card->shortname, sizeof(pcm->name));
+	strcpy(pcm->name, card->shortname);
 
 	for (i = 0, ss = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 	     ss; ss = ss->next, i++)
@@ -394,8 +385,8 @@ int solo_g723_init(struct solo_dev *solo_dev)
 
 	card = solo_dev->snd_card;
 
-	strscpy(card->driver, SOLO6X10_NAME, sizeof(card->driver));
-	strscpy(card->shortname, "SOLO-6x10 Audio", sizeof(card->shortname));
+	strcpy(card->driver, SOLO6X10_NAME);
+	strcpy(card->shortname, "SOLO-6x10 Audio");
 	sprintf(card->longname, "%s on %s IRQ %d", card->shortname,
 		pci_name(solo_dev->pdev), solo_dev->pdev->irq);
 
@@ -404,7 +395,7 @@ int solo_g723_init(struct solo_dev *solo_dev)
 		goto snd_error;
 
 	/* Mixer controls */
-	strscpy(card->mixername, "SOLO-6x10", sizeof(card->mixername));
+	strcpy(card->mixername, "SOLO-6x10");
 	kctl = snd_solo_capture_volume;
 	kctl.count = solo_dev->nr_chans;
 

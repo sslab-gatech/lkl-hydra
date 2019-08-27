@@ -17,7 +17,6 @@
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/interrupt.h>
-#include <linux/kmemleak.h>
 #include <linux/list.h>
 #include <linux/of.h>
 #include <linux/of_iommu.h>
@@ -1239,6 +1238,17 @@ static phys_addr_t exynos_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
 	return phys;
 }
 
+static struct iommu_group *get_device_iommu_group(struct device *dev)
+{
+	struct iommu_group *group;
+
+	group = iommu_group_get(dev);
+	if (!group)
+		group = iommu_group_alloc();
+
+	return group;
+}
+
 static int exynos_iommu_add_device(struct device *dev)
 {
 	struct exynos_iommu_owner *owner = dev->archdata.iommu;
@@ -1332,8 +1342,9 @@ static const struct iommu_ops exynos_iommu_ops = {
 	.detach_dev = exynos_iommu_detach_device,
 	.map = exynos_iommu_map,
 	.unmap = exynos_iommu_unmap,
+	.map_sg = default_iommu_map_sg,
 	.iova_to_phys = exynos_iommu_iova_to_phys,
-	.device_group = generic_device_group,
+	.device_group = get_device_iommu_group,
 	.add_device = exynos_iommu_add_device,
 	.remove_device = exynos_iommu_remove_device,
 	.pgsize_bitmap = SECT_SIZE | LPAGE_SIZE | SPAGE_SIZE,
@@ -1389,3 +1400,5 @@ err_reg_driver:
 	return ret;
 }
 core_initcall(exynos_iommu_init);
+
+IOMMU_OF_DECLARE(exynos_iommu_of, "samsung,exynos-sysmmu");

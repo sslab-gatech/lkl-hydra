@@ -8,7 +8,6 @@
  * Copyright (c) 2006 Novell, Inc.
  */
 
-#include <linux/acpi.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/fwnode.h>
@@ -106,7 +105,7 @@ static int device_is_dependent(struct device *dev, void *target)
 	struct device_link *link;
 	int ret;
 
-	if (dev == target)
+	if (WARN_ON(dev == target))
 		return 1;
 
 	ret = device_for_each_child(dev, target, device_is_dependent);
@@ -114,7 +113,7 @@ static int device_is_dependent(struct device *dev, void *target)
 		return ret;
 
 	list_for_each_entry(link, &dev->links.consumers, s_node) {
-		if (link->consumer == target)
+		if (WARN_ON(link->consumer == target))
 			return 1;
 
 		ret = device_is_dependent(link->consumer, target);
@@ -146,26 +145,6 @@ static int device_reorder_to_tail(struct device *dev, void *not_used)
 }
 
 /**
- * device_pm_move_to_tail - Move set of devices to the end of device lists
- * @dev: Device to move
- *
- * This is a device_reorder_to_tail() wrapper taking the requisite locks.
- *
- * It moves the @dev along with all of its children and all of its consumers
- * to the ends of the device_kset and dpm_list, recursively.
- */
-void device_pm_move_to_tail(struct device *dev)
-{
-	int idx;
-
-	idx = device_links_read_lock();
-	device_pm_lock();
-	device_reorder_to_tail(dev, NULL);
-	device_pm_unlock();
-	device_links_read_unlock(idx);
-}
-
-/**
  * device_link_add - Create a link between two devices.
  * @consumer: Consumer end of the link.
  * @supplier: Supplier end of the link.
@@ -179,10 +158,10 @@ void device_pm_move_to_tail(struct device *dev)
  * of the link.  If DL_FLAG_PM_RUNTIME is not set, DL_FLAG_RPM_ACTIVE will be
  * ignored.
  *
- * If the DL_FLAG_AUTOREMOVE_CONSUMER is set, the link will be removed
- * automatically when the consumer device driver unbinds from it.
- * The combination of both DL_FLAG_AUTOREMOVE_CONSUMER and DL_FLAG_STATELESS
- * set is invalid and will cause NULL to be returned.
+ * If the DL_FLAG_AUTOREMOVE is set, the link will be removed automatically
+ * when the consumer device driver unbinds from it.  The combination of both
+ * DL_FLAG_AUTOREMOVE and DL_FLAG_STATELESS set is invalid and will cause NULL
+ * to be returned.
  *
  * A side effect of the link creation is re-ordering of dpm_list and the
  * devices_kset list by moving the consumer device and all devices depending
@@ -199,8 +178,7 @@ struct device_link *device_link_add(struct device *consumer,
 	struct device_link *link;
 
 	if (!consumer || !supplier ||
-	    ((flags & DL_FLAG_STATELESS) &&
-	     (flags & DL_FLAG_AUTOREMOVE_CONSUMER)))
+	    ((flags & DL_FLAG_STATELESS) && (flags & DL_FLAG_AUTOREMOVE)))
 		return NULL;
 
 	device_links_write_lock();
@@ -218,10 +196,8 @@ struct device_link *device_link_add(struct device *consumer,
 	}
 
 	list_for_each_entry(link, &supplier->links.consumers, s_node)
-		if (link->consumer == consumer) {
-			kref_get(&link->kref);
+		if (link->consumer == consumer)
 			goto out;
-		}
 
 	link = kzalloc(sizeof(*link), GFP_KERNEL);
 	if (!link)
@@ -238,13 +214,6 @@ struct device_link *device_link_add(struct device *consumer,
 			link->rpm_active = true;
 		}
 		pm_runtime_new_link(consumer);
-		/*
-		 * If the link is being added by the consumer driver at probe
-		 * time, balance the decrementation of the supplier's runtime PM
-		 * usage counter after consumer probe in driver_probe_device().
-		 */
-		if (consumer->links.status == DL_DEV_PROBING)
-			pm_runtime_get_noresume(supplier);
 	}
 	get_device(supplier);
 	link->supplier = supplier;
@@ -253,7 +222,6 @@ struct device_link *device_link_add(struct device *consumer,
 	link->consumer = consumer;
 	INIT_LIST_HEAD(&link->c_node);
 	link->flags = flags;
-	kref_init(&link->kref);
 
 	/* Determine the initial link state. */
 	if (flags & DL_FLAG_STATELESS) {
@@ -264,12 +232,12 @@ struct device_link *device_link_add(struct device *consumer,
 			switch (consumer->links.status) {
 			case DL_DEV_PROBING:
 				/*
-				 * Some callers expect the link creation during
-				 * consumer driver probe to resume the supplier
-				 * even without DL_FLAG_RPM_ACTIVE.
+				 * Balance the decrementation of the supplier's
+				 * runtime PM usage counter after consumer probe
+				 * in driver_probe_device().
 				 */
 				if (flags & DL_FLAG_PM_RUNTIME)
-					pm_runtime_resume(supplier);
+					pm_runtime_get_sync(supplier);
 
 				link->status = DL_STATE_CONSUMER_PROBE;
 				break;
@@ -324,10 +292,8 @@ static void __device_link_free_srcu(struct rcu_head *rhead)
 	device_link_free(container_of(rhead, struct device_link, rcu_head));
 }
 
-static void __device_link_del(struct kref *kref)
+static void __device_link_del(struct device_link *link)
 {
-	struct device_link *link = container_of(kref, struct device_link, kref);
-
 	dev_info(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
@@ -339,10 +305,8 @@ static void __device_link_del(struct kref *kref)
 	call_srcu(&device_links_srcu, &link->rcu_head, __device_link_free_srcu);
 }
 #else /* !CONFIG_SRCU */
-static void __device_link_del(struct kref *kref)
+static void __device_link_del(struct device_link *link)
 {
-	struct device_link *link = container_of(kref, struct device_link, kref);
-
 	dev_info(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
@@ -360,49 +324,17 @@ static void __device_link_del(struct kref *kref)
  * @link: Device link to delete.
  *
  * The caller must ensure proper synchronization of this function with runtime
- * PM.  If the link was added multiple times, it needs to be deleted as often.
- * Care is required for hotplugged devices:  Their links are purged on removal
- * and calling device_link_del() is then no longer allowed.
+ * PM.
  */
 void device_link_del(struct device_link *link)
 {
 	device_links_write_lock();
 	device_pm_lock();
-	kref_put(&link->kref, __device_link_del);
+	__device_link_del(link);
 	device_pm_unlock();
 	device_links_write_unlock();
 }
 EXPORT_SYMBOL_GPL(device_link_del);
-
-/**
- * device_link_remove - remove a link between two devices.
- * @consumer: Consumer end of the link.
- * @supplier: Supplier end of the link.
- *
- * The caller must ensure proper synchronization of this function with runtime
- * PM.
- */
-void device_link_remove(void *consumer, struct device *supplier)
-{
-	struct device_link *link;
-
-	if (WARN_ON(consumer == supplier))
-		return;
-
-	device_links_write_lock();
-	device_pm_lock();
-
-	list_for_each_entry(link, &supplier->links.consumers, s_node) {
-		if (link->consumer == consumer) {
-			kref_put(&link->kref, __device_link_del);
-			break;
-		}
-	}
-
-	device_pm_unlock();
-	device_links_write_unlock();
-}
-EXPORT_SYMBOL_GPL(device_link_remove);
 
 static void device_links_missing_supplier(struct device *dev)
 {
@@ -511,8 +443,8 @@ static void __device_links_no_driver(struct device *dev)
 		if (link->flags & DL_FLAG_STATELESS)
 			continue;
 
-		if (link->flags & DL_FLAG_AUTOREMOVE_CONSUMER)
-			kref_put(&link->kref, __device_link_del);
+		if (link->flags & DL_FLAG_AUTOREMOVE)
+			__device_link_del(link);
 		else if (link->status != DL_STATE_SUPPLIER_UNBIND)
 			WRITE_ONCE(link->status, DL_STATE_AVAILABLE);
 	}
@@ -547,18 +479,8 @@ void device_links_driver_cleanup(struct device *dev)
 		if (link->flags & DL_FLAG_STATELESS)
 			continue;
 
-		WARN_ON(link->flags & DL_FLAG_AUTOREMOVE_CONSUMER);
+		WARN_ON(link->flags & DL_FLAG_AUTOREMOVE);
 		WARN_ON(link->status != DL_STATE_SUPPLIER_UNBIND);
-
-		/*
-		 * autoremove the links between this @dev and its consumer
-		 * devices that are not active, i.e. where the link state
-		 * has moved to DL_STATE_SUPPLIER_UNBIND.
-		 */
-		if (link->status == DL_STATE_SUPPLIER_UNBIND &&
-		    link->flags & DL_FLAG_AUTOREMOVE_SUPPLIER)
-			kref_put(&link->kref, __device_link_del);
-
 		WRITE_ONCE(link->status, DL_STATE_DORMANT);
 	}
 
@@ -675,13 +597,13 @@ static void device_links_purge(struct device *dev)
 
 	list_for_each_entry_safe_reverse(link, ln, &dev->links.suppliers, c_node) {
 		WARN_ON(link->status == DL_STATE_ACTIVE);
-		__device_link_del(&link->kref);
+		__device_link_del(link);
 	}
 
 	list_for_each_entry_safe_reverse(link, ln, &dev->links.consumers, s_node) {
 		WARN_ON(link->status != DL_STATE_DORMANT &&
 			link->status != DL_STATE_NONE);
-		__device_link_del(&link->kref);
+		__device_link_del(link);
 	}
 
 	device_links_write_unlock();
@@ -728,26 +650,6 @@ static inline int device_is_not_partition(struct device *dev)
 	return 1;
 }
 #endif
-
-static int
-device_platform_notify(struct device *dev, enum kobject_action action)
-{
-	int ret;
-
-	ret = acpi_platform_notify(dev, action);
-	if (ret)
-		return ret;
-
-	ret = software_node_notify(dev, action);
-	if (ret)
-		return ret;
-
-	if (platform_notify && action == KOBJ_ADD)
-		platform_notify(dev);
-	else if (platform_notify_remove && action == KOBJ_REMOVE)
-		platform_notify_remove(dev);
-	return 0;
-}
 
 /**
  * dev_driver_string - Return a device's driver name, if at all possible
@@ -815,12 +717,10 @@ ssize_t device_store_ulong(struct device *dev,
 			   const char *buf, size_t size)
 {
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
-	int ret;
-	unsigned long new;
-
-	ret = kstrtoul(buf, 0, &new);
-	if (ret)
-		return ret;
+	char *end;
+	unsigned long new = simple_strtoul(buf, &end, 0);
+	if (end == buf)
+		return -EINVAL;
 	*(unsigned long *)(ea->var) = new;
 	/* Always return full write size even if we didn't consume all */
 	return size;
@@ -841,14 +741,9 @@ ssize_t device_store_int(struct device *dev,
 			 const char *buf, size_t size)
 {
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
-	int ret;
-	long new;
-
-	ret = kstrtol(buf, 0, &new);
-	if (ret)
-		return ret;
-
-	if (new > INT_MAX || new < INT_MIN)
+	char *end;
+	long new = simple_strtol(buf, &end, 0);
+	if (end == buf || new > INT_MAX || new < INT_MIN)
 		return -EINVAL;
 	*(int *)(ea->var) = new;
 	/* Always return full write size even if we didn't consume all */
@@ -918,7 +813,8 @@ static void device_release(struct kobject *kobj)
 	else if (dev->class && dev->class->dev_release)
 		dev->class->dev_release(dev);
 	else
-		WARN(1, KERN_ERR "Device '%s' does not have a release() function, it is broken and must be fixed. See Documentation/kobject.txt.\n",
+		WARN(1, KERN_ERR "Device '%s' does not have a release() "
+			"function, it is broken and must be fixed.\n",
 			dev_name(dev));
 	kfree(p);
 }
@@ -934,19 +830,10 @@ static const void *device_namespace(struct kobject *kobj)
 	return ns;
 }
 
-static void device_get_ownership(struct kobject *kobj, kuid_t *uid, kgid_t *gid)
-{
-	struct device *dev = kobj_to_dev(kobj);
-
-	if (dev->class && dev->class->get_ownership)
-		dev->class->get_ownership(dev, uid, gid);
-}
-
 static struct kobj_type device_ktype = {
 	.release	= device_release,
 	.sysfs_ops	= &dev_sysfs_ops,
 	.namespace	= device_namespace,
-	.get_ownership	= device_get_ownership,
 };
 
 
@@ -1094,14 +981,8 @@ out:
 static ssize_t uevent_store(struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	int rc;
-
-	rc = kobject_synth_uevent(&dev->kobj, buf, count);
-
-	if (rc) {
+	if (kobject_synth_uevent(&dev->kobj, buf, count))
 		dev_err(dev, "uevent: failed to send synthetic uevent\n");
-		return rc;
-	}
 
 	return count;
 }
@@ -1577,7 +1458,7 @@ class_dir_create_and_add(struct class *class, struct kobject *parent_kobj)
 
 	dir = kzalloc(sizeof(*dir), GFP_KERNEL);
 	if (!dir)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	dir->class = class;
 	kobject_init(&dir->kobj, &class_dir_ktype);
@@ -1587,7 +1468,7 @@ class_dir_create_and_add(struct class *class, struct kobject *parent_kobj)
 	retval = kobject_add(&dir->kobj, parent_kobj, "%s", class->name);
 	if (retval < 0) {
 		kobject_put(&dir->kobj);
-		return ERR_PTR(retval);
+		return NULL;
 	}
 	return &dir->kobj;
 }
@@ -1680,8 +1561,6 @@ static void cleanup_glue_dir(struct device *dev, struct kobject *glue_dir)
 		return;
 
 	mutex_lock(&gdp_mutex);
-	if (!kobject_has_children(glue_dir))
-		kobject_del(glue_dir);
 	kobject_put(glue_dir);
 	mutex_unlock(&gdp_mutex);
 }
@@ -1821,7 +1700,7 @@ static void device_remove_sys_dev_entry(struct device *dev)
 	}
 }
 
-static int device_private_init(struct device *dev)
+int device_private_init(struct device *dev)
 {
 	dev->p = kzalloc(sizeof(*dev->p), GFP_KERNEL);
 	if (!dev->p)
@@ -1896,10 +1775,6 @@ int device_add(struct device *dev)
 
 	parent = get_device(dev->parent);
 	kobj = get_device_parent(dev, parent);
-	if (IS_ERR(kobj)) {
-		error = PTR_ERR(kobj);
-		goto parent_error;
-	}
 	if (kobj)
 		dev->kobj.parent = kobj;
 
@@ -1916,9 +1791,8 @@ int device_add(struct device *dev)
 	}
 
 	/* notify platform of device entry */
-	error = device_platform_notify(dev, KOBJ_ADD);
-	if (error)
-		goto platform_error;
+	if (platform_notify)
+		platform_notify(dev);
 
 	error = device_create_file(dev, &dev_attr_uevent);
 	if (error)
@@ -1994,14 +1868,11 @@ done:
  SymlinkError:
 	device_remove_file(dev, &dev_attr_uevent);
  attrError:
-	device_platform_notify(dev, KOBJ_REMOVE);
-platform_error:
 	kobject_uevent(&dev->kobj, KOBJ_REMOVE);
 	glue_dir = get_glue_dir(dev);
 	kobject_del(&dev->kobj);
  Error:
 	cleanup_glue_dir(dev, glue_dir);
-parent_error:
 	put_device(parent);
 name_error:
 	kfree(dev->p);
@@ -2113,10 +1984,14 @@ void device_del(struct device *dev)
 	bus_remove_device(dev);
 	device_pm_remove(dev);
 	driver_deferred_probe_del(dev);
-	device_platform_notify(dev, KOBJ_REMOVE);
 	device_remove_properties(dev);
 	device_links_purge(dev);
 
+	/* Notify the platform of the removal, in case they
+	 * need to do anything...
+	 */
+	if (platform_notify_remove)
+		platform_notify_remove(dev);
 	if (dev->bus)
 		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 					     BUS_NOTIFY_REMOVED_DEVICE, dev);
@@ -2522,7 +2397,7 @@ static void device_create_release(struct device *dev)
 	kfree(dev);
 }
 
-static __printf(6, 0) struct device *
+static struct device *
 device_create_groups_vargs(struct class *class, struct device *parent,
 			   dev_t devt, void *drvdata,
 			   const struct attribute_group **groups,
@@ -2800,7 +2675,7 @@ static int device_move_class_links(struct device *dev,
 /**
  * device_move - moves a device to a new parent
  * @dev: the pointer to the struct device to be moved
- * @new_parent: the new parent of the device (can be NULL)
+ * @new_parent: the new parent of the device (can by NULL)
  * @dpm_order: how to reorder the dpm_list
  */
 int device_move(struct device *dev, struct device *new_parent,
@@ -2817,11 +2692,6 @@ int device_move(struct device *dev, struct device *new_parent,
 	device_pm_lock();
 	new_parent = get_device(new_parent);
 	new_parent_kobj = get_device_parent(dev, new_parent);
-	if (IS_ERR(new_parent_kobj)) {
-		error = PTR_ERR(new_parent_kobj);
-		put_device(new_parent);
-		goto out;
-	}
 
 	pr_debug("device: '%s': %s: moving to '%s'\n", dev_name(dev),
 		 __func__, new_parent ? dev_name(new_parent) : "<NULL>");
@@ -2892,9 +2762,6 @@ EXPORT_SYMBOL_GPL(device_move);
 void device_shutdown(void)
 {
 	struct device *dev, *parent;
-
-	wait_for_device_probe();
-	device_block_probing();
 
 	spin_lock(&devices_kset->list_lock);
 	/*
@@ -3089,12 +2956,12 @@ void func(const struct device *dev, const char *fmt, ...)	\
 }								\
 EXPORT_SYMBOL(func);
 
-define_dev_printk_level(_dev_emerg, KERN_EMERG);
-define_dev_printk_level(_dev_alert, KERN_ALERT);
-define_dev_printk_level(_dev_crit, KERN_CRIT);
-define_dev_printk_level(_dev_err, KERN_ERR);
-define_dev_printk_level(_dev_warn, KERN_WARNING);
-define_dev_printk_level(_dev_notice, KERN_NOTICE);
+define_dev_printk_level(dev_emerg, KERN_EMERG);
+define_dev_printk_level(dev_alert, KERN_ALERT);
+define_dev_printk_level(dev_crit, KERN_CRIT);
+define_dev_printk_level(dev_err, KERN_ERR);
+define_dev_printk_level(dev_warn, KERN_WARNING);
+define_dev_printk_level(dev_notice, KERN_NOTICE);
 define_dev_printk_level(_dev_info, KERN_INFO);
 
 #endif

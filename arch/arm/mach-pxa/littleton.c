@@ -20,7 +20,7 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
-#include <linux/gpio/machine.h>
+#include <linux/gpio.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/smc91x.h>
@@ -50,6 +50,8 @@
 #include <linux/platform_data/mtd-nand-pxa3xx.h>
 
 #include "generic.h"
+
+#define GPIO_MMC1_CARD_DETECT	mfp_to_gpio(MFP_PIN_GPIO15)
 
 /* Littleton MFP configurations */
 static mfp_cfg_t littleton_mfp_cfg[] __initdata = {
@@ -182,7 +184,7 @@ static struct pxafb_mach_info littleton_lcd_info = {
 	.lcd_conn		= LCD_COLOR_TFT_16BPP,
 };
 
-static void __init littleton_init_lcd(void)
+static void littleton_init_lcd(void)
 {
 	pxa_set_fb_info(NULL, &littleton_lcd_info);
 }
@@ -276,28 +278,20 @@ static inline void littleton_init_keypad(void) {}
 static struct pxamci_platform_data littleton_mci_platform_data = {
 	.detect_delay_ms	= 200,
 	.ocr_mask		= MMC_VDD_32_33 | MMC_VDD_33_34,
-};
-
-static struct gpiod_lookup_table littleton_mci_gpio_table = {
-	.dev_id = "pxa2xx-mci.0",
-	.table = {
-		/* Card detect on MFP (gpio-pxa) GPIO 15 */
-		GPIO_LOOKUP("gpio-pxa", MFP_PIN_GPIO15,
-			    "cd", GPIO_ACTIVE_LOW),
-		{ },
-	},
+	.gpio_card_detect	= GPIO_MMC1_CARD_DETECT,
+	.gpio_card_ro		= -1,
+	.gpio_power		= -1,
 };
 
 static void __init littleton_init_mmc(void)
 {
-	gpiod_add_lookup_table(&littleton_mci_gpio_table);
 	pxa_set_mci_info(&littleton_mci_platform_data);
 }
 #else
 static inline void littleton_init_mmc(void) {}
 #endif
 
-#if IS_ENABLED(CONFIG_MTD_NAND_MARVELL)
+#if defined(CONFIG_MTD_NAND_PXA3xx) || defined(CONFIG_MTD_NAND_PXA3xx_MODULE)
 static struct mtd_partition littleton_nand_partitions[] = {
 	[0] = {
 		.name        = "Bootloader",
@@ -335,8 +329,10 @@ static struct mtd_partition littleton_nand_partitions[] = {
 };
 
 static struct pxa3xx_nand_platform_data littleton_nand_info = {
-	.parts		= littleton_nand_partitions,
-	.nr_parts	= ARRAY_SIZE(littleton_nand_partitions),
+	.enable_arbiter	= 1,
+	.num_cs		= 1,
+	.parts[0]	= littleton_nand_partitions,
+	.nr_parts[0]	= ARRAY_SIZE(littleton_nand_partitions),
 };
 
 static void __init littleton_init_nand(void)
@@ -345,7 +341,7 @@ static void __init littleton_init_nand(void)
 }
 #else
 static inline void littleton_init_nand(void) {}
-#endif /* IS_ENABLED(CONFIG_MTD_NAND_MARVELL) */
+#endif /* CONFIG_MTD_NAND_PXA3xx || CONFIG_MTD_NAND_PXA3xx_MODULE */
 
 #if defined(CONFIG_I2C_PXA) || defined(CONFIG_I2C_PXA_MODULE)
 static struct led_info littleton_da9034_leds[] = {

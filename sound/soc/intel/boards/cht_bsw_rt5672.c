@@ -16,7 +16,6 @@
  *  General Public License for more details.
  */
 
-#include <linux/input.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -184,18 +183,25 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 {
 	int ret;
 	struct snd_soc_dai *codec_dai = runtime->codec_dai;
-	struct snd_soc_component *component = codec_dai->component;
+	struct snd_soc_codec *codec = codec_dai->codec;
 	struct cht_mc_private *ctx = snd_soc_card_get_drvdata(runtime->card);
 
-	if (devm_acpi_dev_add_driver_gpios(component->dev, cht_rt5672_gpios))
+	if (devm_acpi_dev_add_driver_gpios(codec->dev, cht_rt5672_gpios))
 		dev_warn(runtime->dev, "Unable to add GPIO mapping table\n");
+
+	/* TDM 4 slots 24 bit, set Rx & Tx bitmask to 4 active slots */
+	ret = snd_soc_dai_set_tdm_slot(codec_dai, 0xF, 0xF, 4, 24);
+	if (ret < 0) {
+		dev_err(runtime->dev, "can't set codec TDM slot %d\n", ret);
+		return ret;
+	}
 
 	/* Select codec ASRC clock source to track I2S1 clock, because codec
 	 * is in slave mode and 100fs I2S format (BCLK = 100 * LRCLK) cannot
 	 * be supported by RT5672. Otherwise, ASRC will be disabled and cause
 	 * noise.
 	 */
-	rt5670_sel_asrc_clk_src(component,
+	rt5670_sel_asrc_clk_src(codec,
 				RT5670_DA_STEREO_FILTER
 				| RT5670_DA_MONO_L_FILTER
 				| RT5670_DA_MONO_R_FILTER
@@ -213,11 +219,7 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
         if (ret)
                 return ret;
 
-	snd_jack_set_key(ctx->headset.jack, SND_JACK_BTN_0, KEY_PLAYPAUSE);
-	snd_jack_set_key(ctx->headset.jack, SND_JACK_BTN_1, KEY_VOLUMEUP);
-	snd_jack_set_key(ctx->headset.jack, SND_JACK_BTN_2, KEY_VOLUMEDOWN);
-
-	rt5670_set_jack_detect(component, &ctx->headset);
+	rt5670_set_jack_detect(codec, &ctx->headset);
 	if (ctx->mclk) {
 		/*
 		 * The firmware might enable the clock at
@@ -250,7 +252,6 @@ static int cht_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 			SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
 						SNDRV_PCM_HW_PARAM_CHANNELS);
-	int ret;
 
 	/* The DSP will covert the FE rate to 48k, stereo, 24bits */
 	rate->min = rate->max = 48000;
@@ -258,26 +259,6 @@ static int cht_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	/* set SSP2 to 24-bit */
 	params_set_format(params, SNDRV_PCM_FORMAT_S24_LE);
-
-	/*
-	 * Default mode for SSP configuration is TDM 4 slot
-	 */
-	ret = snd_soc_dai_set_fmt(rtd->codec_dai,
-				  SND_SOC_DAIFMT_DSP_B |
-				  SND_SOC_DAIFMT_IB_NF |
-				  SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0) {
-		dev_err(rtd->dev, "can't set format to TDM %d\n", ret);
-		return ret;
-	}
-
-	/* TDM 4 slots 24 bit, set Rx & Tx bitmask to 4 active slots */
-	ret = snd_soc_dai_set_tdm_slot(rtd->codec_dai, 0xF, 0xF, 4, 24);
-	if (ret < 0) {
-		dev_err(rtd->dev, "can't set codec TDM slot %d\n", ret);
-		return ret;
-	}
-
 	return 0;
 }
 
@@ -334,6 +315,8 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.nonatomic = true,
 		.codec_dai_name = "rt5670-aif1",
 		.codec_name = "i2c-10EC5670:00",
+		.dai_fmt = SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_IB_NF
+					| SND_SOC_DAIFMT_CBS_CFS,
 		.init = cht_codec_init,
 		.be_hw_params_fixup = cht_codec_fixup,
 		.dpcm_playback = 1,
@@ -347,12 +330,13 @@ static int cht_suspend_pre(struct snd_soc_card *card)
 	struct snd_soc_component *component;
 	struct cht_mc_private *ctx = snd_soc_card_get_drvdata(card);
 
-	for_each_card_components(card, component) {
+	list_for_each_entry(component, &card->component_dev_list, card_list) {
 		if (!strncmp(component->name,
 			     ctx->codec_name, sizeof(ctx->codec_name))) {
+			struct snd_soc_codec *codec = snd_soc_component_to_codec(component);
 
-			dev_dbg(component->dev, "disabling jack detect before going to suspend.\n");
-			rt5670_jack_suspend(component);
+			dev_dbg(codec->dev, "disabling jack detect before going to suspend.\n");
+			rt5670_jack_suspend(codec);
 			break;
 		}
 	}
@@ -364,12 +348,13 @@ static int cht_resume_post(struct snd_soc_card *card)
 	struct snd_soc_component *component;
 	struct cht_mc_private *ctx = snd_soc_card_get_drvdata(card);
 
-	for_each_card_components(card, component) {
+	list_for_each_entry(component, &card->component_dev_list, card_list) {
 		if (!strncmp(component->name,
 			     ctx->codec_name, sizeof(ctx->codec_name))) {
+			struct snd_soc_codec *codec = snd_soc_component_to_codec(component);
 
-			dev_dbg(component->dev, "enabling jack detect for resume.\n");
-			rt5670_jack_resume(component);
+			dev_dbg(codec->dev, "enabling jack detect for resume.\n");
+			rt5670_jack_resume(codec);
 			break;
 		}
 	}
@@ -403,7 +388,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 	const char *i2c_name;
 	int i;
 
-	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
+	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_ATOMIC);
 	if (!drv)
 		return -ENOMEM;
 

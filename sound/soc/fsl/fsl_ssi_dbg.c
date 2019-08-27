@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Freescale SSI ALSA SoC Digital Audio Interface (DAI) debugging functions
-//
-// Copyright 2014 Markus Pargmann <mpa@pengutronix.de>, Pengutronix
-//
-// Split from fsl_ssi.c
+/*
+ * Freescale SSI ALSA SoC Digital Audio Interface (DAI) debugging functions
+ *
+ * Copyright 2014 Markus Pargmann <mpa@pengutronix.de>, Pengutronix
+ *
+ * Splitted from fsl_ssi.c
+ *
+ * This file is licensed under the terms of the GNU General Public License
+ * version 2.  This program is licensed "as is" without any warranty of any
+ * kind, whether express or implied.
+ */
 
 #include <linux/debugfs.h>
 #include <linux/device.h>
@@ -124,7 +128,17 @@ static int fsl_ssi_stats_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(fsl_ssi_stats);
+static int fsl_ssi_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, fsl_ssi_stats_show, inode->i_private);
+}
+
+static const struct file_operations fsl_ssi_stats_ops = {
+	.open = fsl_ssi_stats_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 int fsl_ssi_debugfs_create(struct fsl_ssi_dbg *ssi_dbg, struct device *dev)
 {
@@ -132,9 +146,9 @@ int fsl_ssi_debugfs_create(struct fsl_ssi_dbg *ssi_dbg, struct device *dev)
 	if (!ssi_dbg->dbg_dir)
 		return -ENOMEM;
 
-	ssi_dbg->dbg_stats = debugfs_create_file("stats", 0444,
+	ssi_dbg->dbg_stats = debugfs_create_file("stats", S_IRUGO,
 						 ssi_dbg->dbg_dir, ssi_dbg,
-						 &fsl_ssi_stats_fops);
+						 &fsl_ssi_stats_ops);
 	if (!ssi_dbg->dbg_stats) {
 		debugfs_remove(ssi_dbg->dbg_dir);
 		return -ENOMEM;

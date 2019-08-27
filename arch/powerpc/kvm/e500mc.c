@@ -21,6 +21,7 @@
 
 #include <asm/reg.h>
 #include <asm/cputable.h>
+#include <asm/tlbflush.h>
 #include <asm/kvm_ppc.h>
 #include <asm/dbell.h>
 

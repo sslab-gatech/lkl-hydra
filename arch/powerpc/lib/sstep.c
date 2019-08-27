@@ -280,7 +280,7 @@ static nokprobe_inline int read_mem_aligned(unsigned long *dest,
  * Copy from userspace to a buffer, using the largest possible
  * aligned accesses, up to sizeof(long).
  */
-static nokprobe_inline int copy_mem_in(u8 *dest, unsigned long ea, int nb,
+static int nokprobe_inline copy_mem_in(u8 *dest, unsigned long ea, int nb,
 				       struct pt_regs *regs)
 {
 	int err = 0;
@@ -385,7 +385,7 @@ static nokprobe_inline int write_mem_aligned(unsigned long val,
  * Copy from a buffer to userspace, using the largest possible
  * aligned accesses, up to sizeof(long).
  */
-static nokprobe_inline int copy_mem_out(u8 *dest, unsigned long ea, int nb,
+static int nokprobe_inline copy_mem_out(u8 *dest, unsigned long ea, int nb,
 					struct pt_regs *regs)
 {
 	int err = 0;
@@ -1065,10 +1065,9 @@ static nokprobe_inline void do_popcnt(const struct pt_regs *regs,
 {
 	unsigned long long out = v1;
 
-	out -= (out >> 1) & 0x5555555555555555ULL;
-	out = (0x3333333333333333ULL & out) +
-	      (0x3333333333333333ULL & (out >> 2));
-	out = (out + (out >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
+	out -= (out >> 1) & 0x5555555555555555;
+	out = (0x3333333333333333 & out) + (0x3333333333333333 & (out >> 2));
+	out = (out + (out >> 4)) & 0x0f0f0f0f0f0f0f0f;
 
 	if (size == 8) {	/* popcntb */
 		op->val = out;
@@ -1077,7 +1076,7 @@ static nokprobe_inline void do_popcnt(const struct pt_regs *regs,
 	out += out >> 8;
 	out += out >> 16;
 	if (size == 32) {	/* popcntw */
-		op->val = out & 0x0000003f0000003fULL;
+		op->val = out & 0x0000003f0000003f;
 		return;
 	}
 
@@ -1115,7 +1114,7 @@ static nokprobe_inline void do_prty(const struct pt_regs *regs,
 
 	res ^= res >> 16;
 	if (size == 32) {		/* prtyw */
-		op->val = res & 0x0000000100000001ULL;
+		op->val = res & 0x0000000100000001;
 		return;
 	}
 
@@ -2545,15 +2544,6 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 #endif /* __powerpc64__ */
 
 	}
-
-#ifdef CONFIG_VSX
-	if ((GETTYPE(op->type) == LOAD_VSX ||
-	     GETTYPE(op->type) == STORE_VSX) &&
-	    !cpu_has_feature(CPU_FTR_VSX)) {
-		return -1;
-	}
-#endif /* CONFIG_VSX */
-
 	return 0;
 
  logical_done:
@@ -2651,7 +2641,7 @@ void emulate_update_regs(struct pt_regs *regs, struct instruction_op *op)
 	unsigned long next_pc;
 
 	next_pc = truncate_if_32bit(regs->msr, regs->nip + 4);
-	switch (GETTYPE(op->type)) {
+	switch (op->type & INSTR_TYPE_MASK) {
 	case COMPUTE:
 		if (op->type & SETREG)
 			regs->gpr[op->reg] = op->val;
@@ -2749,7 +2739,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 
 	err = 0;
 	size = GETSIZE(op->type);
-	type = GETTYPE(op->type);
+	type = op->type & INSTR_TYPE_MASK;
 	cross_endian = (regs->msr & MSR_LE) != (MSR_KERNEL & MSR_LE);
 	ea = truncate_if_32bit(regs->msr, op->ea);
 
@@ -3011,7 +3001,7 @@ int emulate_step(struct pt_regs *regs, unsigned int instr)
 	}
 
 	err = 0;
-	type = GETTYPE(op.type);
+	type = op.type & INSTR_TYPE_MASK;
 
 	if (OP_IS_LOAD_STORE(type)) {
 		err = emulate_loadstore(regs, &op);

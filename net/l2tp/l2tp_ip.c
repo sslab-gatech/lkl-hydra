@@ -144,7 +144,7 @@ static int l2tp_ip_recv(struct sk_buff *skb)
 	}
 
 	/* Ok, this is a data packet. Lookup the session. */
-	session = l2tp_session_get(net, session_id);
+	session = l2tp_session_get(net, NULL, session_id);
 	if (!session)
 		goto discard;
 
@@ -165,10 +165,7 @@ static int l2tp_ip_recv(struct sk_buff *skb)
 		print_hex_dump_bytes("", DUMP_PREFIX_OFFSET, ptr, length);
 	}
 
-	if (l2tp_v3_ensure_opt_in_linear(session, skb, &ptr, &optr))
-		goto discard_sess;
-
-	l2tp_recv_common(session, skb, ptr, optr, 0, skb->len);
+	l2tp_recv_common(session, skb, ptr, optr, 0, skb->len, tunnel->recv_payload_hook);
 	l2tp_session_dec_refcount(session);
 
 	return 0;
@@ -348,7 +345,7 @@ static int l2tp_ip_disconnect(struct sock *sk, int flags)
 }
 
 static int l2tp_ip_getname(struct socket *sock, struct sockaddr *uaddr,
-			   int peer)
+			   int *uaddr_len, int peer)
 {
 	struct sock *sk		= sock->sk;
 	struct inet_sock *inet	= inet_sk(sk);
@@ -369,7 +366,8 @@ static int l2tp_ip_getname(struct socket *sock, struct sockaddr *uaddr,
 		lsa->l2tp_conn_id = lsk->conn_id;
 		lsa->l2tp_addr.s_addr = addr;
 	}
-	return sizeof(*lsa);
+	*uaddr_len = sizeof(*lsa);
+	return 0;
 }
 
 static int l2tp_ip_backlog_recv(struct sock *sk, struct sk_buff *skb)

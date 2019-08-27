@@ -18,6 +18,7 @@
 struct tcf_tunnel_key_params {
 	struct rcu_head		rcu;
 	int			tcft_action;
+	int			action;
 	struct metadata_dst     *tcft_enc_metadata;
 };
 

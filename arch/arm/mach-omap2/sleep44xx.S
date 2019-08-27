@@ -90,7 +90,12 @@ skip_secure_l1_clean:
 	mcr	p15, 0, r0, c1, c0, 0
 	isb
 
-	bl	v7_invalidate_l1
+	/*
+	 * Invalidate L1 data cache. Even though only invalidate is
+	 * necessary exported flush API is used here. Doing clean
+	 * on already clean cache would be almost NOP.
+	 */
+	bl	v7_flush_dcache_all
 
 	/*
 	 * Switch the CPU from Symmetric Multiprocessing (SMP) mode

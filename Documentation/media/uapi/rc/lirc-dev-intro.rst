@@ -1,11 +1,4 @@
-.. Permission is granted to copy, distribute and/or modify this
-.. document under the terms of the GNU Free Documentation License,
-.. Version 1.1 or any later version published by the Free Software
-.. Foundation, with no Invariant Sections, no Front-Cover Texts
-.. and no Back-Cover Texts. A copy of the license is included at
-.. Documentation/media/uapi/fdl-appendix.rst.
-..
-.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
+.. -*- coding: utf-8; mode: rst -*-
 
 .. _lirc_dev_intro:
 
@@ -25,7 +18,8 @@ Example dmesg output upon a driver registering w/LIRC:
 .. code-block:: none
 
     $ dmesg |grep lirc_dev
-    rc rc0: lirc_dev: driver mceusb registered at minor = 0, raw IR receiver, raw IR transmitter
+    lirc_dev: IR Remote Control driver registered, major 248
+    rc rc0: lirc_dev: driver mceusb registered at minor = 0
 
 What you should see for a chardev:
 

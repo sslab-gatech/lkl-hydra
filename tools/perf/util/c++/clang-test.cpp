@@ -41,7 +41,7 @@ int test__clang_to_IR(void)
 	if (!M)
 		return -1;
 	for (llvm::Function& F : *M)
-		if (F.getName() == "bpf_func__SyS_epoll_pwait")
+		if (F.getName() == "bpf_func__SyS_epoll_wait")
 			return 0;
 	return -1;
 }

@@ -1,8 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Copyright 2013 Greg Ungerer <gerg@uclinux.org>
-// Copyright 2011 Freescale Semiconductor, Inc.
-// Copyright 2011 Linaro Ltd.
+/*
+ * Copyright 2013 Greg Ungerer <gerg@uclinux.org>
+ * Copyright 2011 Freescale Semiconductor, Inc.
+ * Copyright 2011 Linaro Ltd.
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
+ */
 
 #include "imx50-pinfunc.h"
 #include <dt-bindings/gpio/gpio.h>
@@ -15,8 +22,10 @@
 	 * The decompressor and also some bootloaders rely on a
 	 * pre-existing /chosen node to be available to insert the
 	 * command line and merge other ATAGS info.
+	 * Also for U-Boot there must be a pre-existing /memory node.
 	 */
 	chosen {};
+	memory { device_type = "memory"; reg = <0 0>; };
 
 	aliases {
 		ethernet0 = &fec;
@@ -51,6 +60,9 @@
 	};
 
 	clocks {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
 		ckil {
 			compatible = "fsl,imx-ckil", "fixed-clock";
 			#clock-cells = <0>;
@@ -131,7 +143,7 @@
 					status = "disabled";
 				};
 
-				ecspi1: spi@50010000 {
+				ecspi1: ecspi@50010000 {
 					#address-cells = <1>;
 					#size-cells = <0>;
 					compatible = "fsl,imx50-ecspi", "fsl,imx51-ecspi";
@@ -196,6 +208,24 @@
 				reg = <0x53f80200 0x0200>;
 				interrupts = <14>;
 				clocks = <&clks IMX5_CLK_USB_PHY2_GATE>;
+				dr_mode = "host";
+				status = "disabled";
+			};
+
+			usbh2: usb@53f80400 {
+				compatible = "fsl,imx50-usb", "fsl,imx27-usb";
+				reg = <0x53f80400 0x0200>;
+				interrupts = <16>;
+				clocks = <&clks IMX5_CLK_USBOH3_GATE>;
+				dr_mode = "host";
+				status = "disabled";
+			};
+
+			usbh3: usb@53f80600 {
+				compatible = "fsl,imx50-usb", "fsl,imx27-usb";
+				reg = <0x53f80600 0x0200>;
+				interrupts = <17>;
+				clocks = <&clks IMX5_CLK_USBOH3_GATE>;
 				dr_mode = "host";
 				status = "disabled";
 			};
@@ -394,7 +424,7 @@
 				status = "disabled";
 			};
 
-			ecspi2: spi@63fac000 {
+			ecspi2: ecspi@63fac000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
 				compatible = "fsl,imx50-ecspi", "fsl,imx51-ecspi";
@@ -417,7 +447,7 @@
 				fsl,sdma-ram-script-name = "imx/sdma/sdma-imx50.bin";
 			};
 
-			cspi: spi@63fc0000 {
+			cspi: cspi@63fc0000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
 				compatible = "fsl,imx50-cspi", "fsl,imx35-cspi";

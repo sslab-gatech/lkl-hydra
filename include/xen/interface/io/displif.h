@@ -189,13 +189,6 @@
  *
  *----------------------------- Connector settings ----------------------------
  *
- * unique-id
- *      Values:         <string>
- *
- *      After device instance initialization each connector is assigned a
- *      unique ID, so it can be identified by the backend by this ID.
- *      This can be UUID or such.
- *
  * resolution
  *      Values:         <width, uint32_t>x<height, uint32_t>
  *
@@ -375,7 +368,6 @@
 #define XENDISPL_FIELD_EVT_CHANNEL	"evt-event-channel"
 #define XENDISPL_FIELD_RESOLUTION	"resolution"
 #define XENDISPL_FIELD_BE_ALLOC		"be-alloc"
-#define XENDISPL_FIELD_UNIQUE_ID	"unique-id"
 
 /*
  ******************************************************************************

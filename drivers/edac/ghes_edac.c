@@ -81,18 +81,6 @@ static void ghes_edac_count_dimms(const struct dmi_header *dh, void *arg)
 		(*num_dimm)++;
 }
 
-static int get_dimm_smbios_index(u16 handle)
-{
-	struct mem_ctl_info *mci = ghes_pvt->mci;
-	int i;
-
-	for (i = 0; i < mci->tot_dimms; i++) {
-		if (mci->dimms[i]->smbios_handle == handle)
-			return i;
-	}
-	return -1;
-}
-
 static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 {
 	struct ghes_edac_dimm_fill *dimm_fill = arg;
@@ -103,7 +91,6 @@ static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 		struct dimm_info *dimm = EDAC_DIMM_PTR(mci->layers, mci->dimms,
 						       mci->n_layers,
 						       dimm_fill->count, 0, 0);
-		u16 rdr_mask = BIT(7) | BIT(13);
 
 		if (entry->size == 0xffff) {
 			pr_info("Can't get DIMM%i size\n",
@@ -112,21 +99,22 @@ static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 		} else if (entry->size == 0x7fff) {
 			dimm->nr_pages = MiB_TO_PAGES(entry->extended_size);
 		} else {
-			if (entry->size & BIT(15))
-				dimm->nr_pages = MiB_TO_PAGES((entry->size & 0x7fff) << 10);
+			if (entry->size & 1 << 15)
+				dimm->nr_pages = MiB_TO_PAGES((entry->size &
+							       0x7fff) << 10);
 			else
 				dimm->nr_pages = MiB_TO_PAGES(entry->size);
 		}
 
 		switch (entry->memory_type) {
 		case 0x12:
-			if (entry->type_detail & BIT(13))
+			if (entry->type_detail & 1 << 13)
 				dimm->mtype = MEM_RDDR;
 			else
 				dimm->mtype = MEM_DDR;
 			break;
 		case 0x13:
-			if (entry->type_detail & BIT(13))
+			if (entry->type_detail & 1 << 13)
 				dimm->mtype = MEM_RDDR2;
 			else
 				dimm->mtype = MEM_DDR2;
@@ -135,29 +123,20 @@ static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 			dimm->mtype = MEM_FB_DDR2;
 			break;
 		case 0x18:
-			if (entry->type_detail & BIT(12))
-				dimm->mtype = MEM_NVDIMM;
-			else if (entry->type_detail & BIT(13))
+			if (entry->type_detail & 1 << 13)
 				dimm->mtype = MEM_RDDR3;
 			else
 				dimm->mtype = MEM_DDR3;
 			break;
-		case 0x1a:
-			if (entry->type_detail & BIT(12))
-				dimm->mtype = MEM_NVDIMM;
-			else if (entry->type_detail & BIT(13))
-				dimm->mtype = MEM_RDDR4;
-			else
-				dimm->mtype = MEM_DDR4;
-			break;
 		default:
-			if (entry->type_detail & BIT(6))
+			if (entry->type_detail & 1 << 6)
 				dimm->mtype = MEM_RMBS;
-			else if ((entry->type_detail & rdr_mask) == rdr_mask)
+			else if ((entry->type_detail & ((1 << 7) | (1 << 13)))
+				 == ((1 << 7) | (1 << 13)))
 				dimm->mtype = MEM_RDR;
-			else if (entry->type_detail & BIT(7))
+			else if (entry->type_detail & 1 << 7)
 				dimm->mtype = MEM_SDR;
-			else if (entry->type_detail & BIT(9))
+			else if (entry->type_detail & 1 << 9)
 				dimm->mtype = MEM_EDO;
 			else
 				dimm->mtype = MEM_UNKNOWN;
@@ -189,13 +168,12 @@ static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 				entry->total_width, entry->data_width);
 		}
 
-		dimm->smbios_handle = entry->handle;
-
 		dimm_fill->count++;
 	}
 }
 
-void ghes_edac_report_mem_error(int sev, struct cper_sec_mem_err *mem_err)
+void ghes_edac_report_mem_error(struct ghes *ghes, int sev,
+				struct cper_sec_mem_err *mem_err)
 {
 	enum hw_event_mc_err_type type;
 	struct edac_raw_error_desc *e;
@@ -205,8 +183,10 @@ void ghes_edac_report_mem_error(int sev, struct cper_sec_mem_err *mem_err)
 	char *p;
 	u8 grain_bits;
 
-	if (!pvt)
+	if (!pvt) {
+		pr_err("Internal error: Can't find EDAC structure\n");
 		return;
+	}
 
 	/*
 	 * We can do the locking below because GHES defers error processing
@@ -341,21 +321,12 @@ void ghes_edac_report_mem_error(int sev, struct cper_sec_mem_err *mem_err)
 		p += sprintf(p, "bit_pos:%d ", mem_err->bit_pos);
 	if (mem_err->validation_bits & CPER_MEM_VALID_MODULE_HANDLE) {
 		const char *bank = NULL, *device = NULL;
-		int index = -1;
-
 		dmi_memdev_name(mem_err->mem_dev_handle, &bank, &device);
 		if (bank != NULL && device != NULL)
 			p += sprintf(p, "DIMM location:%s %s ", bank, device);
 		else
 			p += sprintf(p, "DIMM DMI handle: 0x%.4x ",
 				     mem_err->mem_dev_handle);
-
-		index = get_dimm_smbios_index(mem_err->mem_dev_handle);
-		if (index >= 0) {
-			e->top_layer = index;
-			e->enable_per_layer_report = true;
-		}
-
 	}
 	if (p > e->location)
 		*(p - 1) = '\0';
@@ -463,16 +434,12 @@ int ghes_edac_register(struct ghes *ghes, struct device *dev)
 	struct mem_ctl_info *mci;
 	struct edac_mc_layer layers[1];
 	struct ghes_edac_dimm_fill dimm_fill;
-	int idx = -1;
+	int idx;
 
-	if (IS_ENABLED(CONFIG_X86)) {
-		/* Check if safe to enable on this system */
-		idx = acpi_match_platform_list(plat_list);
-		if (!force_load && idx < 0)
-			return -ENODEV;
-	} else {
-		idx = 0;
-	}
+	/* Check if safe to enable on this system */
+	idx = acpi_match_platform_list(plat_list);
+	if (!force_load && idx < 0)
+		return 0;
 
 	/*
 	 * We have only one logical memory controller to which all DIMMs belong.
@@ -551,9 +518,6 @@ int ghes_edac_register(struct ghes *ghes, struct device *dev)
 void ghes_edac_unregister(struct ghes *ghes)
 {
 	struct mem_ctl_info *mci;
-
-	if (!ghes_pvt)
-		return;
 
 	mci = ghes_pvt->mci;
 	edac_mc_del_mc(mci->pdev);

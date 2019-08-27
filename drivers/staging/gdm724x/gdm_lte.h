@@ -1,5 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2012 GCT Semiconductor, Inc. All rights reserved. */
+/*
+ * Copyright (c) 2012 GCT Semiconductor, Inc. All rights reserved.
+ *
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ */
 
 #ifndef _GDM_LTE_H_
 #define _GDM_LTE_H_
@@ -46,7 +56,7 @@ struct phy_dev {
 			    int (*cb)(void *cb_data, void *data, int len,
 				      int context),
 			    void *cb_data, int context);
-	u8 (*get_endian)(void *priv_dev);
+	struct gdm_endian * (*get_endian)(void *priv_dev);
 };
 
 struct nic {

@@ -177,7 +177,17 @@ static int rbtree_show(struct seq_file *s, void *ignored)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(rbtree);
+static int rbtree_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rbtree_show, inode->i_private);
+}
+
+static const struct file_operations rbtree_fops = {
+	.open		= rbtree_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static void rbtree_debugfs_init(struct regmap *map)
 {

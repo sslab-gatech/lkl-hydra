@@ -2,7 +2,6 @@
 /dts-v1/;
 
 #include <dt-bindings/input/linux-event-codes.h>
-#include <dt-bindings/input/gpio-keys.h>
 
 #include "tegra186-p3310.dtsi"
 
@@ -49,10 +48,6 @@
 		status = "okay";
 
 		vmmc-supply = <&vdd_sd>;
-	};
-
-	hda@3510000 {
-		status = "okay";
 	};
 
 	pcie@10003000 {
@@ -126,7 +121,6 @@
 			linux,input-type = <EV_KEY>;
 			linux,code = <KEY_POWER>;
 			debounce-interval = <10>;
-			wakeup-event-action = <EV_ACT_ASSERTED>;
 			wakeup-source;
 		};
 

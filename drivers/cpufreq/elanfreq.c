@@ -165,8 +165,7 @@ static int elanfreq_cpu_init(struct cpufreq_policy *policy)
 		if (pos->frequency > max_freq)
 			pos->frequency = CPUFREQ_ENTRY_INVALID;
 
-	policy->freq_table = elanfreq_table;
-	return 0;
+	return cpufreq_table_validate_and_show(policy, elanfreq_table);
 }
 
 

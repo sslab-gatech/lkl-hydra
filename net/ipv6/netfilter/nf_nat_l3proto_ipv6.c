@@ -61,8 +61,22 @@ static void nf_nat_ipv6_decode_session(struct sk_buff *skb,
 }
 #endif
 
+static bool nf_nat_ipv6_in_range(const struct nf_conntrack_tuple *t,
+				 const struct nf_nat_range *range)
+{
+	return ipv6_addr_cmp(&t->src.u3.in6, &range->min_addr.in6) >= 0 &&
+	       ipv6_addr_cmp(&t->src.u3.in6, &range->max_addr.in6) <= 0;
+}
+
+static u32 nf_nat_ipv6_secure_port(const struct nf_conntrack_tuple *t,
+				   __be16 dport)
+{
+	return secure_ipv6_port_ephemeral(t->src.u3.ip6, t->dst.u3.ip6, dport);
+}
+
 static bool nf_nat_ipv6_manip_pkt(struct sk_buff *skb,
 				  unsigned int iphdroff,
+				  const struct nf_nat_l4proto *l4proto,
 				  const struct nf_conntrack_tuple *target,
 				  enum nf_nat_manip_type maniptype)
 {
@@ -82,8 +96,8 @@ static bool nf_nat_ipv6_manip_pkt(struct sk_buff *skb,
 		goto manip_addr;
 
 	if ((frag_off & htons(~0x7)) == 0 &&
-	    !nf_nat_l4proto_manip_pkt(skb, &nf_nat_l3proto_ipv6, iphdroff, hdroff,
-				      target, maniptype))
+	    !l4proto->manip_pkt(skb, &nf_nat_l3proto_ipv6, iphdroff, hdroff,
+				target, maniptype))
 		return false;
 
 	/* must reload, offset might have changed */
@@ -137,7 +151,7 @@ static void nf_nat_ipv6_csum_recalc(struct sk_buff *skb,
 
 #if IS_ENABLED(CONFIG_NF_CT_NETLINK)
 static int nf_nat_ipv6_nlattr_to_range(struct nlattr *tb[],
-				       struct nf_nat_range2 *range)
+				       struct nf_nat_range *range)
 {
 	if (tb[CTA_NAT_V6_MINIP]) {
 		nla_memcpy(&range->min_addr.ip6, tb[CTA_NAT_V6_MINIP],
@@ -157,6 +171,8 @@ static int nf_nat_ipv6_nlattr_to_range(struct nlattr *tb[],
 
 static const struct nf_nat_l3proto nf_nat_l3proto_ipv6 = {
 	.l3proto		= NFPROTO_IPV6,
+	.secure_port		= nf_nat_ipv6_secure_port,
+	.in_range		= nf_nat_ipv6_in_range,
 	.manip_pkt		= nf_nat_ipv6_manip_pkt,
 	.csum_update		= nf_nat_ipv6_csum_update,
 	.csum_recalc		= nf_nat_ipv6_csum_recalc,
@@ -180,6 +196,7 @@ int nf_nat_icmpv6_reply_translation(struct sk_buff *skb,
 	} *inside;
 	enum ip_conntrack_dir dir = CTINFO2DIR(ctinfo);
 	enum nf_nat_manip_type manip = HOOK2MANIP(hooknum);
+	const struct nf_nat_l4proto *l4proto;
 	struct nf_conntrack_tuple target;
 	unsigned long statusbit;
 
@@ -210,8 +227,9 @@ int nf_nat_icmpv6_reply_translation(struct sk_buff *skb,
 	if (!(ct->status & statusbit))
 		return 1;
 
+	l4proto = __nf_nat_l4proto_find(NFPROTO_IPV6, inside->ip6.nexthdr);
 	if (!nf_nat_ipv6_manip_pkt(skb, hdrlen + sizeof(inside->icmp6),
-				   &ct->tuplehash[!dir].tuple, !manip))
+				   l4proto, &ct->tuplehash[!dir].tuple, !manip))
 		return 0;
 
 	if (skb->ip_summed != CHECKSUM_PARTIAL) {
@@ -226,20 +244,26 @@ int nf_nat_icmpv6_reply_translation(struct sk_buff *skb,
 	}
 
 	nf_ct_invert_tuplepr(&target, &ct->tuplehash[!dir].tuple);
-	target.dst.protonum = IPPROTO_ICMPV6;
-	if (!nf_nat_ipv6_manip_pkt(skb, 0, &target, manip))
+	l4proto = __nf_nat_l4proto_find(NFPROTO_IPV6, IPPROTO_ICMPV6);
+	if (!nf_nat_ipv6_manip_pkt(skb, 0, l4proto, &target, manip))
 		return 0;
 
 	return 1;
 }
 EXPORT_SYMBOL_GPL(nf_nat_icmpv6_reply_translation);
 
-static unsigned int
+unsigned int
 nf_nat_ipv6_fn(void *priv, struct sk_buff *skb,
-	       const struct nf_hook_state *state)
+	       const struct nf_hook_state *state,
+	       unsigned int (*do_chain)(void *priv,
+					struct sk_buff *skb,
+					const struct nf_hook_state *state,
+					struct nf_conn *ct))
 {
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
+	struct nf_conn_nat *nat;
+	enum nf_nat_manip_type maniptype = HOOK2MANIP(state->hook);
 	__be16 frag_off;
 	int hdrlen;
 	u8 nexthdr;
@@ -253,7 +277,11 @@ nf_nat_ipv6_fn(void *priv, struct sk_buff *skb,
 	if (!ct)
 		return NF_ACCEPT;
 
-	if (ctinfo == IP_CT_RELATED || ctinfo == IP_CT_RELATED_REPLY) {
+	nat = nfct_nat(ct);
+
+	switch (ctinfo) {
+	case IP_CT_RELATED:
+	case IP_CT_RELATED_REPLY:
 		nexthdr = ipv6_hdr(skb)->nexthdr;
 		hdrlen = ipv6_skip_exthdr(skb, sizeof(struct ipv6hdr),
 					  &nexthdr, &frag_off);
@@ -266,29 +294,77 @@ nf_nat_ipv6_fn(void *priv, struct sk_buff *skb,
 			else
 				return NF_ACCEPT;
 		}
+		/* Only ICMPs can be IP_CT_IS_REPLY: */
+		/* fall through */
+	case IP_CT_NEW:
+		/* Seen it before?  This can happen for loopback, retrans,
+		 * or local packets.
+		 */
+		if (!nf_nat_initialized(ct, maniptype)) {
+			unsigned int ret;
+
+			ret = do_chain(priv, skb, state, ct);
+			if (ret != NF_ACCEPT)
+				return ret;
+
+			if (nf_nat_initialized(ct, HOOK2MANIP(state->hook)))
+				break;
+
+			ret = nf_nat_alloc_null_binding(ct, state->hook);
+			if (ret != NF_ACCEPT)
+				return ret;
+		} else {
+			pr_debug("Already setup manip %s for ct %p\n",
+				 maniptype == NF_NAT_MANIP_SRC ? "SRC" : "DST",
+				 ct);
+			if (nf_nat_oif_changed(state->hook, ctinfo, nat, state->out))
+				goto oif_changed;
+		}
+		break;
+
+	default:
+		/* ESTABLISHED */
+		WARN_ON(ctinfo != IP_CT_ESTABLISHED &&
+			ctinfo != IP_CT_ESTABLISHED_REPLY);
+		if (nf_nat_oif_changed(state->hook, ctinfo, nat, state->out))
+			goto oif_changed;
 	}
 
-	return nf_nat_inet_fn(priv, skb, state);
-}
+	return nf_nat_packet(ct, ctinfo, state->hook, skb);
 
-static unsigned int
+oif_changed:
+	nf_ct_kill_acct(ct, ctinfo, skb);
+	return NF_DROP;
+}
+EXPORT_SYMBOL_GPL(nf_nat_ipv6_fn);
+
+unsigned int
 nf_nat_ipv6_in(void *priv, struct sk_buff *skb,
-	       const struct nf_hook_state *state)
+	       const struct nf_hook_state *state,
+	       unsigned int (*do_chain)(void *priv,
+					struct sk_buff *skb,
+					const struct nf_hook_state *state,
+					struct nf_conn *ct))
 {
 	unsigned int ret;
 	struct in6_addr daddr = ipv6_hdr(skb)->daddr;
 
-	ret = nf_nat_ipv6_fn(priv, skb, state);
+	ret = nf_nat_ipv6_fn(priv, skb, state, do_chain);
 	if (ret != NF_DROP && ret != NF_STOLEN &&
 	    ipv6_addr_cmp(&daddr, &ipv6_hdr(skb)->daddr))
 		skb_dst_drop(skb);
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(nf_nat_ipv6_in);
 
-static unsigned int
+unsigned int
 nf_nat_ipv6_out(void *priv, struct sk_buff *skb,
-		const struct nf_hook_state *state)
+		const struct nf_hook_state *state,
+		unsigned int (*do_chain)(void *priv,
+					 struct sk_buff *skb,
+					 const struct nf_hook_state *state,
+					 struct nf_conn *ct))
 {
 #ifdef CONFIG_XFRM
 	const struct nf_conn *ct;
@@ -297,7 +373,7 @@ nf_nat_ipv6_out(void *priv, struct sk_buff *skb,
 #endif
 	unsigned int ret;
 
-	ret = nf_nat_ipv6_fn(priv, skb, state);
+	ret = nf_nat_ipv6_fn(priv, skb, state, do_chain);
 #ifdef CONFIG_XFRM
 	if (ret != NF_DROP && ret != NF_STOLEN &&
 	    !(IP6CB(skb)->flags & IP6SKB_XFRM_TRANSFORMED) &&
@@ -317,17 +393,22 @@ nf_nat_ipv6_out(void *priv, struct sk_buff *skb,
 #endif
 	return ret;
 }
+EXPORT_SYMBOL_GPL(nf_nat_ipv6_out);
 
-static unsigned int
+unsigned int
 nf_nat_ipv6_local_fn(void *priv, struct sk_buff *skb,
-		     const struct nf_hook_state *state)
+		     const struct nf_hook_state *state,
+		     unsigned int (*do_chain)(void *priv,
+					      struct sk_buff *skb,
+					      const struct nf_hook_state *state,
+					      struct nf_conn *ct))
 {
 	const struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 	unsigned int ret;
 	int err;
 
-	ret = nf_nat_ipv6_fn(priv, skb, state);
+	ret = nf_nat_ipv6_fn(priv, skb, state, do_chain);
 	if (ret != NF_DROP && ret != NF_STOLEN &&
 	    (ct = nf_ct_get(skb, &ctinfo)) != NULL) {
 		enum ip_conntrack_dir dir = CTINFO2DIR(ctinfo);
@@ -351,58 +432,30 @@ nf_nat_ipv6_local_fn(void *priv, struct sk_buff *skb,
 	}
 	return ret;
 }
-
-static const struct nf_hook_ops nf_nat_ipv6_ops[] = {
-	/* Before packet filtering, change destination */
-	{
-		.hook		= nf_nat_ipv6_in,
-		.pf		= NFPROTO_IPV6,
-		.hooknum	= NF_INET_PRE_ROUTING,
-		.priority	= NF_IP6_PRI_NAT_DST,
-	},
-	/* After packet filtering, change source */
-	{
-		.hook		= nf_nat_ipv6_out,
-		.pf		= NFPROTO_IPV6,
-		.hooknum	= NF_INET_POST_ROUTING,
-		.priority	= NF_IP6_PRI_NAT_SRC,
-	},
-	/* Before packet filtering, change destination */
-	{
-		.hook		= nf_nat_ipv6_local_fn,
-		.pf		= NFPROTO_IPV6,
-		.hooknum	= NF_INET_LOCAL_OUT,
-		.priority	= NF_IP6_PRI_NAT_DST,
-	},
-	/* After packet filtering, change source */
-	{
-		.hook		= nf_nat_ipv6_fn,
-		.pf		= NFPROTO_IPV6,
-		.hooknum	= NF_INET_LOCAL_IN,
-		.priority	= NF_IP6_PRI_NAT_SRC,
-	},
-};
-
-int nf_nat_l3proto_ipv6_register_fn(struct net *net, const struct nf_hook_ops *ops)
-{
-	return nf_nat_register_fn(net, ops, nf_nat_ipv6_ops, ARRAY_SIZE(nf_nat_ipv6_ops));
-}
-EXPORT_SYMBOL_GPL(nf_nat_l3proto_ipv6_register_fn);
-
-void nf_nat_l3proto_ipv6_unregister_fn(struct net *net, const struct nf_hook_ops *ops)
-{
-	nf_nat_unregister_fn(net, ops, ARRAY_SIZE(nf_nat_ipv6_ops));
-}
-EXPORT_SYMBOL_GPL(nf_nat_l3proto_ipv6_unregister_fn);
+EXPORT_SYMBOL_GPL(nf_nat_ipv6_local_fn);
 
 static int __init nf_nat_l3proto_ipv6_init(void)
 {
-	return nf_nat_l3proto_register(&nf_nat_l3proto_ipv6);
+	int err;
+
+	err = nf_nat_l4proto_register(NFPROTO_IPV6, &nf_nat_l4proto_icmpv6);
+	if (err < 0)
+		goto err1;
+	err = nf_nat_l3proto_register(&nf_nat_l3proto_ipv6);
+	if (err < 0)
+		goto err2;
+	return err;
+
+err2:
+	nf_nat_l4proto_unregister(NFPROTO_IPV6, &nf_nat_l4proto_icmpv6);
+err1:
+	return err;
 }
 
 static void __exit nf_nat_l3proto_ipv6_exit(void)
 {
 	nf_nat_l3proto_unregister(&nf_nat_l3proto_ipv6);
+	nf_nat_l4proto_unregister(NFPROTO_IPV6, &nf_nat_l4proto_icmpv6);
 }
 
 MODULE_LICENSE("GPL");

@@ -37,16 +37,16 @@
  */
 
 static int isight_decode(struct uvc_video_queue *queue, struct uvc_buffer *buf,
-		const u8 *data, unsigned int len)
+		const __u8 *data, unsigned int len)
 {
-	static const u8 hdr[] = {
+	static const __u8 hdr[] = {
 		0x11, 0x22, 0x33, 0x44,
 		0xde, 0xad, 0xbe, 0xef,
 		0xde, 0xad, 0xfa, 0xce
 	};
 
 	unsigned int maxlen, nbytes;
-	u8 *mem;
+	__u8 *mem;
 	int is_header = 0;
 
 	if (buf == NULL)
@@ -99,11 +99,9 @@ static int isight_decode(struct uvc_video_queue *queue, struct uvc_buffer *buf,
 	return 0;
 }
 
-void uvc_video_decode_isight(struct uvc_urb *uvc_urb, struct uvc_buffer *buf,
-			struct uvc_buffer *meta_buf)
+void uvc_video_decode_isight(struct urb *urb, struct uvc_streaming *stream,
+			struct uvc_buffer *buf, struct uvc_buffer *meta_buf)
 {
-	struct urb *urb = uvc_urb->urb;
-	struct uvc_streaming *stream = uvc_urb->stream;
 	int ret, i;
 
 	for (i = 0; i < urb->number_of_packets; ++i) {

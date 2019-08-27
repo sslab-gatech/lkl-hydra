@@ -362,32 +362,35 @@ EXPORT_SYMBOL(rdmacg_unregister_device);
 static int parse_resource(char *c, int *intval)
 {
 	substring_t argstr;
+	const char **table = &rdmacg_resource_names[0];
 	char *name, *value = c;
 	size_t len;
-	int ret, i;
+	int ret, i = 0;
 
 	name = strsep(&value, "=");
 	if (!name || !value)
 		return -EINVAL;
 
-	i = match_string(rdmacg_resource_names, RDMACG_RESOURCE_MAX, name);
-	if (i < 0)
-		return i;
-
 	len = strlen(value);
 
-	argstr.from = value;
-	argstr.to = value + len;
+	for (i = 0; i < RDMACG_RESOURCE_MAX; i++) {
+		if (strcmp(table[i], name))
+			continue;
 
-	ret = match_int(&argstr, intval);
-	if (ret >= 0) {
-		if (*intval < 0)
-			return -EINVAL;
-		return i;
-	}
-	if (strncmp(value, RDMACG_MAX_STR, len) == 0) {
-		*intval = S32_MAX;
-		return i;
+		argstr.from = value;
+		argstr.to = value + len;
+
+		ret = match_int(&argstr, intval);
+		if (ret >= 0) {
+			if (*intval < 0)
+				break;
+			return i;
+		}
+		if (strncmp(value, RDMACG_MAX_STR, len) == 0) {
+			*intval = S32_MAX;
+			return i;
+		}
+		break;
 	}
 	return -EINVAL;
 }

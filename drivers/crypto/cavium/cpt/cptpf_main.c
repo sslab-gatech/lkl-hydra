@@ -278,8 +278,8 @@ static int cpt_ucode_load_fw(struct cpt_device *cpt, const u8 *fw, bool is_ae)
 	mcode->num_cores = is_ae ? 6 : 10;
 
 	/*  Allocate DMAable space */
-	mcode->code = dma_alloc_coherent(&cpt->pdev->dev, mcode->code_size,
-					 &mcode->phys_base, GFP_KERNEL);
+	mcode->code = dma_zalloc_coherent(&cpt->pdev->dev, mcode->code_size,
+					  &mcode->phys_base, GFP_KERNEL);
 	if (!mcode->code) {
 		dev_err(dev, "Unable to allocate space for microcode");
 		ret = -ENOMEM;
@@ -436,7 +436,7 @@ static int cpt_device_init(struct cpt_device *cpt)
 
 	/* Reset the PF when probed first */
 	cpt_reset(cpt);
-	msleep(100);
+	mdelay(100);
 
 	/*Check BIST status*/
 	bist = (u64)cpt_check_bist_status(cpt);

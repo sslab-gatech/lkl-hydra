@@ -40,22 +40,14 @@ static void mmc_pwrseq_simple_set_gpios_value(struct mmc_pwrseq_simple *pwrseq,
 	struct gpio_descs *reset_gpios = pwrseq->reset_gpios;
 
 	if (!IS_ERR(reset_gpios)) {
-		unsigned long *values;
-		int nvalues = reset_gpios->ndescs;
+		int i;
+		int values[reset_gpios->ndescs];
 
-		values = bitmap_alloc(nvalues, GFP_KERNEL);
-		if (!values)
-			return;
+		for (i = 0; i < reset_gpios->ndescs; i++)
+			values[i] = value;
 
-		if (value)
-			bitmap_fill(values, nvalues);
-		else
-			bitmap_zero(values, nvalues);
-
-		gpiod_set_array_value_cansleep(nvalues, reset_gpios->desc,
-					       reset_gpios->info, values);
-
-		kfree(values);
+		gpiod_set_array_value_cansleep(
+			reset_gpios->ndescs, reset_gpios->desc, values);
 	}
 }
 

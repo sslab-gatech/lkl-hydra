@@ -143,7 +143,7 @@ int mwifiex_send_null_packet(struct mwifiex_private *priv, u8 flags)
 	int ret;
 	struct mwifiex_txinfo *tx_info = NULL;
 
-	if (test_bit(MWIFIEX_SURPRISE_REMOVED, &adapter->work_flags))
+	if (adapter->surprise_removed)
 		return -1;
 
 	if (!priv->media_connected)

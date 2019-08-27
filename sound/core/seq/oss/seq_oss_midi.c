@@ -29,7 +29,6 @@
 #include "../seq_lock.h"
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/nospec.h>
 
 
 /*
@@ -316,7 +315,6 @@ get_mididev(struct seq_oss_devinfo *dp, int dev)
 {
 	if (dev < 0 || dev >= dp->max_mididev)
 		return NULL;
-	dev = array_index_nospec(dev, dp->max_mididev);
 	return get_mdev(dev);
 }
 
@@ -637,7 +635,7 @@ snd_seq_oss_midi_putc(struct seq_oss_devinfo *dp, int dev, unsigned char c, stru
 
 	if ((mdev = get_mididev(dp, dev)) == NULL)
 		return -ENODEV;
-	if (snd_midi_event_encode_byte(mdev->coder, c, ev)) {
+	if (snd_midi_event_encode_byte(mdev->coder, c, ev) > 0) {
 		snd_seq_oss_fill_addr(dp, ev, mdev->client, mdev->port);
 		snd_use_lock_free(&mdev->use_lock);
 		return 0;

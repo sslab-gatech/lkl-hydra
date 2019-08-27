@@ -21,7 +21,7 @@
 /*
  * Regulator configuration
  */
-/* DA9063 and DA9063L regulator IDs */
+/* DA9063 regulator IDs */
 enum {
 	/* BUCKs */
 	DA9063_ID_BCORE1,
@@ -37,20 +37,18 @@ enum {
 	DA9063_ID_BMEM_BIO_MERGED,
 	/* When two BUCKs are merged, they cannot be reused separately */
 
-	/* LDOs on both DA9063 and DA9063L */
-	DA9063_ID_LDO3,
-	DA9063_ID_LDO7,
-	DA9063_ID_LDO8,
-	DA9063_ID_LDO9,
-	DA9063_ID_LDO11,
-
-	/* DA9063-only LDOs */
+	/* LDOs */
 	DA9063_ID_LDO1,
 	DA9063_ID_LDO2,
+	DA9063_ID_LDO3,
 	DA9063_ID_LDO4,
 	DA9063_ID_LDO5,
 	DA9063_ID_LDO6,
+	DA9063_ID_LDO7,
+	DA9063_ID_LDO8,
+	DA9063_ID_LDO9,
 	DA9063_ID_LDO10,
+	DA9063_ID_LDO11,
 };
 
 /* Regulators platform data */

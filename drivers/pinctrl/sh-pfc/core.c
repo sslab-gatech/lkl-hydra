@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Pin Control and GPIO driver for SuperH Pin Function Controller.
  *
@@ -6,6 +5,10 @@
  *
  * Copyright (C) 2008 Magnus Damm
  * Copyright (C) 2009 - 2012 Paul Mundt
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #define DRV_NAME "sh-pfc"
@@ -54,7 +57,7 @@ static int sh_pfc_map_resources(struct sh_pfc *pfc,
 		return -EINVAL;
 
 	/* Allocate memory windows and IRQs arrays. */
-	windows = devm_kcalloc(pfc->dev, num_windows, sizeof(*windows),
+	windows = devm_kzalloc(pfc->dev, num_windows * sizeof(*windows),
 			       GFP_KERNEL);
 	if (windows == NULL)
 		return -ENOMEM;
@@ -63,7 +66,7 @@ static int sh_pfc_map_resources(struct sh_pfc *pfc,
 	pfc->windows = windows;
 
 	if (num_irqs) {
-		irqs = devm_kcalloc(pfc->dev, num_irqs, sizeof(*irqs),
+		irqs = devm_kzalloc(pfc->dev, num_irqs * sizeof(*irqs),
 				    GFP_KERNEL);
 		if (irqs == NULL)
 			return -ENOMEM;
@@ -221,7 +224,7 @@ static void sh_pfc_write_config_reg(struct sh_pfc *pfc,
 
 	dev_dbg(pfc->dev, "write_reg addr = %x, value = 0x%x, field = %u, "
 		"r_width = %u, f_width = %u\n",
-		crp->reg, value, field, crp->reg_width, hweight32(mask));
+		crp->reg, value, field, crp->reg_width, crp->field_width);
 
 	mask = ~(mask << pos);
 	value = value << pos;
@@ -441,7 +444,7 @@ static int sh_pfc_init_ranges(struct sh_pfc *pfc)
 	}
 
 	pfc->nr_ranges = nr_ranges;
-	pfc->ranges = devm_kcalloc(pfc->dev, nr_ranges, sizeof(*pfc->ranges),
+	pfc->ranges = devm_kzalloc(pfc->dev, sizeof(*pfc->ranges) * nr_ranges,
 				   GFP_KERNEL);
 	if (pfc->ranges == NULL)
 		return -ENOMEM;
@@ -494,34 +497,10 @@ static const struct of_device_id sh_pfc_of_table[] = {
 		.data = &r8a7743_pinmux_info,
 	},
 #endif
-#ifdef CONFIG_PINCTRL_PFC_R8A7744
-	{
-		.compatible = "renesas,pfc-r8a7744",
-		.data = &r8a7744_pinmux_info,
-	},
-#endif
 #ifdef CONFIG_PINCTRL_PFC_R8A7745
 	{
 		.compatible = "renesas,pfc-r8a7745",
 		.data = &r8a7745_pinmux_info,
-	},
-#endif
-#ifdef CONFIG_PINCTRL_PFC_R8A77470
-	{
-		.compatible = "renesas,pfc-r8a77470",
-		.data = &r8a77470_pinmux_info,
-	},
-#endif
-#ifdef CONFIG_PINCTRL_PFC_R8A774A1
-	{
-		.compatible = "renesas,pfc-r8a774a1",
-		.data = &r8a774a1_pinmux_info,
-	},
-#endif
-#ifdef CONFIG_PINCTRL_PFC_R8A774C0
-	{
-		.compatible = "renesas,pfc-r8a774c0",
-		.data = &r8a774c0_pinmux_info,
 	},
 #endif
 #ifdef CONFIG_PINCTRL_PFC_R8A7778
@@ -578,28 +557,10 @@ static const struct of_device_id sh_pfc_of_table[] = {
 		.data = &r8a7796_pinmux_info,
 	},
 #endif
-#ifdef CONFIG_PINCTRL_PFC_R8A77965
-	{
-		.compatible = "renesas,pfc-r8a77965",
-		.data = &r8a77965_pinmux_info,
-	},
-#endif
 #ifdef CONFIG_PINCTRL_PFC_R8A77970
 	{
 		.compatible = "renesas,pfc-r8a77970",
 		.data = &r8a77970_pinmux_info,
-	},
-#endif
-#ifdef CONFIG_PINCTRL_PFC_R8A77980
-	{
-		.compatible = "renesas,pfc-r8a77980",
-		.data = &r8a77980_pinmux_info,
-	},
-#endif
-#ifdef CONFIG_PINCTRL_PFC_R8A77990
-	{
-		.compatible = "renesas,pfc-r8a77990",
-		.data = &r8a77990_pinmux_info,
 	},
 #endif
 #ifdef CONFIG_PINCTRL_PFC_R8A77995

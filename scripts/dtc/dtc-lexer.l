@@ -153,13 +153,6 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 			return DT_DEL_NODE;
 		}
 
-<*>"/omit-if-no-ref/"	{
-			DPRINT("Keyword: /omit-if-no-ref/\n");
-			DPRINT("<PROPNODENAME>\n");
-			BEGIN(PROPNODENAME);
-			return DT_OMIT_NO_REF;
-		}
-
 <*>{LABEL}:	{
 			DPRINT("Label: %s\n", yytext);
 			yylval.labelref = xstrdup(yytext);
@@ -213,14 +206,14 @@ static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
 <*>\&{LABEL}	{	/* label reference */
 			DPRINT("Ref: %s\n", yytext+1);
 			yylval.labelref = xstrdup(yytext+1);
-			return DT_LABEL_REF;
+			return DT_REF;
 		}
 
 <*>"&{/"{PATHCHAR}*\}	{	/* new-style path reference */
 			yytext[yyleng-1] = '\0';
 			DPRINT("Ref: %s\n", yytext+2);
 			yylval.labelref = xstrdup(yytext+2);
-			return DT_PATH_REF;
+			return DT_REF;
 		}
 
 <BYTESTRING>[0-9a-fA-F]{2} {

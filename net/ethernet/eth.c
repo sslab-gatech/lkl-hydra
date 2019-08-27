@@ -47,7 +47,6 @@
 #include <linux/inet.h>
 #include <linux/ip.h>
 #include <linux/netdevice.h>
-#include <linux/nvmem-consumer.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/errno.h>
@@ -129,15 +128,15 @@ u32 eth_get_headlen(void *data, unsigned int len)
 {
 	const unsigned int flags = FLOW_DISSECTOR_F_PARSE_1ST_FRAG;
 	const struct ethhdr *eth = (const struct ethhdr *)data;
-	struct flow_keys_basic keys;
+	struct flow_keys keys;
 
 	/* this should never happen, but better safe than sorry */
 	if (unlikely(len < sizeof(*eth)))
 		return len;
 
 	/* parse any remaining L2/L3 headers, check for L4 */
-	if (!skb_flow_dissect_flow_keys_basic(NULL, &keys, data, eth->h_proto,
-					      sizeof(*eth), len, flags))
+	if (!skb_flow_dissect_flow_keys_buf(&keys, data, eth->h_proto,
+					    sizeof(*eth), len, flags))
 		return max_t(u32, keys.control.thoff, sizeof(*eth));
 
 	/* parse for any L4 headers */
@@ -166,17 +165,15 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
 	eth = (struct ethhdr *)skb->data;
 	skb_pull_inline(skb, ETH_HLEN);
 
-	if (unlikely(!ether_addr_equal_64bits(eth->h_dest,
-					      dev->dev_addr))) {
-		if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
-			if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
-				skb->pkt_type = PACKET_BROADCAST;
-			else
-				skb->pkt_type = PACKET_MULTICAST;
-		} else {
-			skb->pkt_type = PACKET_OTHERHOST;
-		}
+	if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
+		if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
+			skb->pkt_type = PACKET_BROADCAST;
+		else
+			skb->pkt_type = PACKET_MULTICAST;
 	}
+	else if (unlikely(!ether_addr_equal_64bits(eth->h_dest,
+						   dev->dev_addr)))
+		skb->pkt_type = PACKET_OTHERHOST;
 
 	/*
 	 * Some variants of DSA tagging don't have an ethertype field
@@ -430,13 +427,13 @@ ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len)
 }
 EXPORT_SYMBOL(sysfs_format_mac);
 
-struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
+struct sk_buff **eth_gro_receive(struct sk_buff **head,
+				 struct sk_buff *skb)
 {
-	const struct packet_offload *ptype;
-	unsigned int hlen, off_eth;
-	struct sk_buff *pp = NULL;
+	struct sk_buff *p, **pp = NULL;
 	struct ethhdr *eh, *eh2;
-	struct sk_buff *p;
+	unsigned int hlen, off_eth;
+	const struct packet_offload *ptype;
 	__be16 type;
 	int flush = 1;
 
@@ -451,7 +448,7 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	flush = 0;
 
-	list_for_each_entry(p, head, list) {
+	for (p = *head; p; p = p->next) {
 		if (!NAPI_GRO_CB(p)->same_flow)
 			continue;
 
@@ -551,40 +548,3 @@ int eth_platform_get_mac_address(struct device *dev, u8 *mac_addr)
 	return 0;
 }
 EXPORT_SYMBOL(eth_platform_get_mac_address);
-
-/**
- * Obtain the MAC address from an nvmem cell named 'mac-address' associated
- * with given device.
- *
- * @dev:	Device with which the mac-address cell is associated.
- * @addrbuf:	Buffer to which the MAC address will be copied on success.
- *
- * Returns 0 on success or a negative error number on failure.
- */
-int nvmem_get_mac_address(struct device *dev, void *addrbuf)
-{
-	struct nvmem_cell *cell;
-	const void *mac;
-	size_t len;
-
-	cell = nvmem_cell_get(dev, "mac-address");
-	if (IS_ERR(cell))
-		return PTR_ERR(cell);
-
-	mac = nvmem_cell_read(cell, &len);
-	nvmem_cell_put(cell);
-
-	if (IS_ERR(mac))
-		return PTR_ERR(mac);
-
-	if (len != ETH_ALEN || !is_valid_ether_addr(mac)) {
-		kfree(mac);
-		return -EINVAL;
-	}
-
-	ether_addr_copy(addrbuf, mac);
-	kfree(mac);
-
-	return 0;
-}
-EXPORT_SYMBOL(nvmem_get_mac_address);

@@ -36,8 +36,11 @@ static inline unsigned long local_daif_save(void)
 {
 	unsigned long flags;
 
-	flags = arch_local_save_flags();
-
+	asm volatile(
+		"mrs	%0, daif		// local_daif_save\n"
+		: "=r" (flags)
+		:
+		: "memory");
 	local_daif_mask();
 
 	return flags;
@@ -57,9 +60,11 @@ static inline void local_daif_restore(unsigned long flags)
 {
 	if (!arch_irqs_disabled_flags(flags))
 		trace_hardirqs_on();
-
-	arch_local_irq_restore(flags);
-
+	asm volatile(
+		"msr	daif, %0		// local_daif_restore"
+		:
+		: "r" (flags)
+		: "memory");
 	if (arch_irqs_disabled_flags(flags))
 		trace_hardirqs_off();
 }

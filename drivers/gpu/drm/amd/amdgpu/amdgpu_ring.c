@@ -135,6 +135,9 @@ void amdgpu_ring_commit(struct amdgpu_ring *ring)
 
 	if (ring->funcs->end_use)
 		ring->funcs->end_use(ring);
+
+	if (ring->funcs->type != AMDGPU_RING_TYPE_KIQ)
+		amdgpu_ring_lru_touch(ring->adev, ring);
 }
 
 /**
@@ -208,8 +211,7 @@ void amdgpu_ring_priority_get(struct amdgpu_ring *ring,
 	if (!ring->funcs->set_priority)
 		return;
 
-	if (atomic_inc_return(&ring->num_jobs[priority]) <= 0)
-		return;
+	atomic_inc(&ring->num_jobs[priority]);
 
 	mutex_lock(&ring->priority_mutex);
 	if (priority <= ring->priority)
@@ -302,7 +304,7 @@ int amdgpu_ring_init(struct amdgpu_device *adev, struct amdgpu_ring *ring,
 		0xffffffffffffffff : ring->buf_mask;
 	/* Allocate ring buffer */
 	if (ring->ring_obj == NULL) {
-		r = amdgpu_bo_create_kernel(adev, ring->ring_size + ring->funcs->extra_dw, PAGE_SIZE,
+		r = amdgpu_bo_create_kernel(adev, ring->ring_size, PAGE_SIZE,
 					    AMDGPU_GEM_DOMAIN_GTT,
 					    &ring->ring_obj,
 					    &ring->gpu_addr,
@@ -317,6 +319,8 @@ int amdgpu_ring_init(struct amdgpu_device *adev, struct amdgpu_ring *ring,
 	ring->max_dw = max_dw;
 	ring->priority = DRM_SCHED_PRIORITY_NORMAL;
 	mutex_init(&ring->priority_mutex);
+	INIT_LIST_HEAD(&ring->lru_list);
+	amdgpu_ring_lru_touch(adev, ring);
 
 	for (i = 0; i < DRM_SCHED_PRIORITY_MAX; ++i)
 		atomic_set(&ring->num_jobs[i], 0);
@@ -338,7 +342,7 @@ int amdgpu_ring_init(struct amdgpu_device *adev, struct amdgpu_ring *ring,
  */
 void amdgpu_ring_fini(struct amdgpu_ring *ring)
 {
-	ring->sched.ready = false;
+	ring->ready = false;
 
 	/* Not to finish a ring which is not initialized */
 	if (!(ring->adev) || !(ring->adev->rings[ring->idx]))
@@ -356,56 +360,100 @@ void amdgpu_ring_fini(struct amdgpu_ring *ring)
 
 	amdgpu_debugfs_ring_fini(ring);
 
-	dma_fence_put(ring->vmid_wait);
-	ring->vmid_wait = NULL;
-	ring->me = 0;
-
 	ring->adev->rings[ring->idx] = NULL;
 }
 
-/**
- * amdgpu_ring_emit_reg_write_reg_wait_helper - ring helper
- *
- * @adev: amdgpu_device pointer
- * @reg0: register to write
- * @reg1: register to wait on
- * @ref: reference value to write/wait on
- * @mask: mask to wait on
- *
- * Helper for rings that don't support write and wait in a
- * single oneshot packet.
- */
-void amdgpu_ring_emit_reg_write_reg_wait_helper(struct amdgpu_ring *ring,
-						uint32_t reg0, uint32_t reg1,
-						uint32_t ref, uint32_t mask)
+static void amdgpu_ring_lru_touch_locked(struct amdgpu_device *adev,
+					 struct amdgpu_ring *ring)
 {
-	amdgpu_ring_emit_wreg(ring, reg0, ref);
-	amdgpu_ring_emit_reg_wait(ring, reg1, mask, mask);
+	/* list_move_tail handles the case where ring isn't part of the list */
+	list_move_tail(&ring->lru_list, &adev->ring_lru_list);
+}
+
+static bool amdgpu_ring_is_blacklisted(struct amdgpu_ring *ring,
+				       int *blacklist, int num_blacklist)
+{
+	int i;
+
+	for (i = 0; i < num_blacklist; i++) {
+		if (ring->idx == blacklist[i])
+			return true;
+	}
+
+	return false;
 }
 
 /**
- * amdgpu_ring_soft_recovery - try to soft recover a ring lockup
+ * amdgpu_ring_lru_get - get the least recently used ring for a HW IP block
  *
- * @ring: ring to try the recovery on
- * @vmid: VMID we try to get going again
- * @fence: timedout fence
+ * @adev: amdgpu_device pointer
+ * @type: amdgpu_ring_type enum
+ * @blacklist: blacklisted ring ids array
+ * @num_blacklist: number of entries in @blacklist
+ * @lru_pipe_order: find a ring from the least recently used pipe
+ * @ring: output ring
  *
- * Tries to get a ring proceeding again when it is stuck.
+ * Retrieve the amdgpu_ring structure for the least recently used ring of
+ * a specific IP block (all asics).
+ * Returns 0 on success, error on failure.
  */
-bool amdgpu_ring_soft_recovery(struct amdgpu_ring *ring, unsigned int vmid,
-			       struct dma_fence *fence)
+int amdgpu_ring_lru_get(struct amdgpu_device *adev, int type,
+			int *blacklist,	int num_blacklist,
+			bool lru_pipe_order, struct amdgpu_ring **ring)
 {
-	ktime_t deadline = ktime_add_us(ktime_get(), 10000);
+	struct amdgpu_ring *entry;
 
-	if (!ring->funcs->soft_recovery || !fence)
-		return false;
+	/* List is sorted in LRU order, find first entry corresponding
+	 * to the desired HW IP */
+	*ring = NULL;
+	spin_lock(&adev->ring_lru_list_lock);
+	list_for_each_entry(entry, &adev->ring_lru_list, lru_list) {
+		if (entry->funcs->type != type)
+			continue;
 
-	atomic_inc(&ring->adev->gpu_reset_counter);
-	while (!dma_fence_is_signaled(fence) &&
-	       ktime_to_ns(ktime_sub(deadline, ktime_get())) > 0)
-		ring->funcs->soft_recovery(ring, vmid);
+		if (amdgpu_ring_is_blacklisted(entry, blacklist, num_blacklist))
+			continue;
 
-	return dma_fence_is_signaled(fence);
+		if (!*ring) {
+			*ring = entry;
+
+			/* We are done for ring LRU */
+			if (!lru_pipe_order)
+				break;
+		}
+
+		/* Move all rings on the same pipe to the end of the list */
+		if (entry->pipe == (*ring)->pipe)
+			amdgpu_ring_lru_touch_locked(adev, entry);
+	}
+
+	/* Move the ring we found to the end of the list */
+	if (*ring)
+		amdgpu_ring_lru_touch_locked(adev, *ring);
+
+	spin_unlock(&adev->ring_lru_list_lock);
+
+	if (!*ring) {
+		DRM_ERROR("Ring LRU contains no entries for ring type:%d\n", type);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/**
+ * amdgpu_ring_lru_touch - mark a ring as recently being used
+ *
+ * @adev: amdgpu_device pointer
+ * @ring: ring to touch
+ *
+ * Move @ring to the tail of the lru list
+ */
+void amdgpu_ring_lru_touch(struct amdgpu_device *adev, struct amdgpu_ring *ring)
+{
+	spin_lock(&adev->ring_lru_list_lock);
+	amdgpu_ring_lru_touch_locked(adev, ring);
+	spin_unlock(&adev->ring_lru_list_lock);
 }
 
 /*
@@ -499,30 +547,4 @@ static void amdgpu_debugfs_ring_fini(struct amdgpu_ring *ring)
 #if defined(CONFIG_DEBUG_FS)
 	debugfs_remove(ring->ent);
 #endif
-}
-
-/**
- * amdgpu_ring_test_helper - tests ring and set sched readiness status
- *
- * @ring: ring to try the recovery on
- *
- * Tests ring and set sched readiness status
- *
- * Returns 0 on success, error on failure.
- */
-int amdgpu_ring_test_helper(struct amdgpu_ring *ring)
-{
-	struct amdgpu_device *adev = ring->adev;
-	int r;
-
-	r = amdgpu_ring_test_ring(ring);
-	if (r)
-		DRM_DEV_ERROR(adev->dev, "ring %s test failed (%d)\n",
-			      ring->name, r);
-	else
-		DRM_DEV_DEBUG(adev->dev, "ring test on %s succeeded\n",
-			      ring->name);
-
-	ring->sched.ready = !r;
-	return r;
 }

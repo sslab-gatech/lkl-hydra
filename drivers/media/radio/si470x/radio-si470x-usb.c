@@ -250,7 +250,7 @@ static int si470x_set_report(struct si470x_device *radio, void *buf, int size)
 /*
  * si470x_get_register - read register
  */
-static int si470x_get_register(struct si470x_device *radio, int regnr)
+int si470x_get_register(struct si470x_device *radio, int regnr)
 {
 	int retval;
 
@@ -268,7 +268,7 @@ static int si470x_get_register(struct si470x_device *radio, int regnr)
 /*
  * si470x_set_register - write register
  */
-static int si470x_set_register(struct si470x_device *radio, int regnr)
+int si470x_set_register(struct si470x_device *radio, int regnr)
 {
 	int retval;
 
@@ -482,12 +482,12 @@ resubmit:
 }
 
 
-static int si470x_fops_open(struct file *file)
+int si470x_fops_open(struct file *file)
 {
 	return v4l2_fh_open(file);
 }
 
-static int si470x_fops_release(struct file *file)
+int si470x_fops_release(struct file *file)
 {
 	return v4l2_fh_release(file);
 }
@@ -514,13 +514,13 @@ static void si470x_usb_release(struct v4l2_device *v4l2_dev)
 /*
  * si470x_vidioc_querycap - query device capabilities
  */
-static int si470x_vidioc_querycap(struct file *file, void *priv,
-				  struct v4l2_capability *capability)
+int si470x_vidioc_querycap(struct file *file, void *priv,
+		struct v4l2_capability *capability)
 {
 	struct si470x_device *radio = video_drvdata(file);
 
-	strscpy(capability->driver, DRIVER_NAME, sizeof(capability->driver));
-	strscpy(capability->card, DRIVER_CARD, sizeof(capability->card));
+	strlcpy(capability->driver, DRIVER_NAME, sizeof(capability->driver));
+	strlcpy(capability->card, DRIVER_CARD, sizeof(capability->card));
 	usb_make_path(radio->usbdev, capability->bus_info,
 			sizeof(capability->bus_info));
 	capability->device_caps = V4L2_CAP_HW_FREQ_SEEK | V4L2_CAP_READWRITE |
@@ -578,7 +578,7 @@ static int si470x_usb_driver_probe(struct usb_interface *intf,
 	struct si470x_device *radio;
 	struct usb_host_interface *iface_desc;
 	struct usb_endpoint_descriptor *endpoint;
-	int i, int_end_size, retval;
+	int i, int_end_size, retval = 0;
 	unsigned char version_warning = 0;
 
 	/* private data allocation and initialization */
@@ -597,12 +597,6 @@ static int si470x_usb_driver_probe(struct usb_interface *intf,
 	radio->band = 1; /* Default to 76 - 108 MHz */
 	mutex_init(&radio->lock);
 	init_completion(&radio->completion);
-
-	radio->get_register = si470x_get_register;
-	radio->set_register = si470x_set_register;
-	radio->fops_open = si470x_fops_open;
-	radio->fops_release = si470x_fops_release;
-	radio->vidioc_querycap = si470x_vidioc_querycap;
 
 	iface_desc = intf->cur_altsetting;
 

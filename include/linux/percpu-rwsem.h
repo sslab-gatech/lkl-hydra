@@ -41,7 +41,7 @@ static inline void percpu_down_read_preempt_disable(struct percpu_rw_semaphore *
 	 * cannot both change sem->state from readers_fast and start checking
 	 * counters while we are here. So if we see !sem->state, we know that
 	 * the writer won't be checking until we're past the preempt_enable()
-	 * and that once the synchronize_rcu() is done, the writer will see
+	 * and that one the synchronize_sched() is done, the writer will see
 	 * anything we did within this RCU-sched read-size critical section.
 	 */
 	__this_cpu_inc(*sem->read_count);
@@ -133,7 +133,7 @@ static inline void percpu_rwsem_release(struct percpu_rw_semaphore *sem,
 	lock_release(&sem->rw_sem.dep_map, 1, ip);
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 	if (!read)
-		sem->rw_sem.owner = RWSEM_OWNER_UNKNOWN;
+		sem->rw_sem.owner = NULL;
 #endif
 }
 
@@ -141,10 +141,6 @@ static inline void percpu_rwsem_acquire(struct percpu_rw_semaphore *sem,
 					bool read, unsigned long ip)
 {
 	lock_acquire(&sem->rw_sem.dep_map, 0, 1, read, 1, NULL, ip);
-#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-	if (!read)
-		sem->rw_sem.owner = current;
-#endif
 }
 
 #endif

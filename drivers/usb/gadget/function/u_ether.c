@@ -401,12 +401,12 @@ done:
 static void rx_fill(struct eth_dev *dev, gfp_t gfp_flags)
 {
 	struct usb_request	*req;
+	struct usb_request	*tmp;
 	unsigned long		flags;
 
 	/* fill unused rxq slots with some skb */
 	spin_lock_irqsave(&dev->req_lock, flags);
-	while (!list_empty(&dev->rx_reqs)) {
-		req = list_first_entry(&dev->rx_reqs, struct usb_request, list);
+	list_for_each_entry_safe(req, tmp, &dev->rx_reqs, list) {
 		list_del_init(&req->list);
 		spin_unlock_irqrestore(&dev->req_lock, flags);
 
@@ -844,10 +844,6 @@ struct net_device *gether_setup_name_default(const char *netname)
 	net->ethtool_ops = &ops;
 	SET_NETDEV_DEVTYPE(net, &gadget_type);
 
-	/* MTU range: 14 - 15412 */
-	net->min_mtu = ETH_HLEN;
-	net->max_mtu = GETHER_MAX_ETH_FRAME_LEN;
-
 	return net;
 }
 EXPORT_SYMBOL_GPL(gether_setup_name_default);
@@ -879,7 +875,7 @@ int gether_register_netdev(struct net_device *net)
 	sa.sa_family = net->type;
 	memcpy(sa.sa_data, dev->dev_mac, ETH_ALEN);
 	rtnl_lock();
-	status = dev_set_mac_address(net, &sa, NULL);
+	status = dev_set_mac_address(net, &sa);
 	rtnl_unlock();
 	if (status)
 		pr_warn("cannot set self ethernet address: %d\n", status);
@@ -1125,6 +1121,7 @@ void gether_disconnect(struct gether *link)
 {
 	struct eth_dev		*dev = link->ioport;
 	struct usb_request	*req;
+	struct usb_request	*tmp;
 
 	WARN_ON(!dev);
 	if (!dev)
@@ -1141,8 +1138,7 @@ void gether_disconnect(struct gether *link)
 	 */
 	usb_ep_disable(link->in_ep);
 	spin_lock(&dev->req_lock);
-	while (!list_empty(&dev->tx_reqs)) {
-		req = list_first_entry(&dev->tx_reqs, struct usb_request, list);
+	list_for_each_entry_safe(req, tmp, &dev->tx_reqs, list) {
 		list_del(&req->list);
 
 		spin_unlock(&dev->req_lock);
@@ -1154,8 +1150,7 @@ void gether_disconnect(struct gether *link)
 
 	usb_ep_disable(link->out_ep);
 	spin_lock(&dev->req_lock);
-	while (!list_empty(&dev->rx_reqs)) {
-		req = list_first_entry(&dev->rx_reqs, struct usb_request, list);
+	list_for_each_entry_safe(req, tmp, &dev->rx_reqs, list) {
 		list_del(&req->list);
 
 		spin_unlock(&dev->req_lock);

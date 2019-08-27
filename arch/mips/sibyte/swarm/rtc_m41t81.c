@@ -141,13 +141,13 @@ static int m41t81_write(uint8_t addr, int b)
 	return 0;
 }
 
-int m41t81_set_time(time64_t t)
+int m41t81_set_time(unsigned long t)
 {
 	struct rtc_time tm;
 	unsigned long flags;
 
 	/* Note we don't care about the century */
-	rtc_time64_to_tm(t, &tm);
+	rtc_time_to_tm(t, &tm);
 
 	/*
 	 * Note the write order matters as it ensures the correctness.
@@ -188,7 +188,7 @@ int m41t81_set_time(time64_t t)
 	return 0;
 }
 
-time64_t m41t81_get_time(void)
+unsigned long m41t81_get_time(void)
 {
 	unsigned int year, mon, day, hour, min, sec;
 	unsigned long flags;
@@ -218,7 +218,7 @@ time64_t m41t81_get_time(void)
 
 	year += 2000;
 
-	return mktime64(year, mon, day, hour, min, sec);
+	return mktime(year, mon, day, hour, min, sec);
 }
 
 int m41t81_probe(void)

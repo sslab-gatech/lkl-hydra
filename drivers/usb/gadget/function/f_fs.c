@@ -18,15 +18,11 @@
 #include <linux/pagemap.h>
 #include <linux/export.h>
 #include <linux/hid.h>
-#include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/scatterlist.h>
 #include <linux/sched/signal.h>
 #include <linux/uio.h>
-#include <linux/vmalloc.h>
 #include <asm/unaligned.h>
 
-#include <linux/usb/ccid.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/functionfs.h>
 
@@ -222,8 +218,6 @@ struct ffs_io_data {
 
 	struct usb_ep *ep;
 	struct usb_request *req;
-	struct sg_table sgt;
-	bool use_sg;
 
 	struct ffs_data *ffs;
 };
@@ -755,65 +749,6 @@ static ssize_t ffs_copy_to_iter(void *data, int data_len, struct iov_iter *iter)
 	return ret;
 }
 
-/*
- * allocate a virtually contiguous buffer and create a scatterlist describing it
- * @sg_table	- pointer to a place to be filled with sg_table contents
- * @size	- required buffer size
- */
-static void *ffs_build_sg_list(struct sg_table *sgt, size_t sz)
-{
-	struct page **pages;
-	void *vaddr, *ptr;
-	unsigned int n_pages;
-	int i;
-
-	vaddr = vmalloc(sz);
-	if (!vaddr)
-		return NULL;
-
-	n_pages = PAGE_ALIGN(sz) >> PAGE_SHIFT;
-	pages = kvmalloc_array(n_pages, sizeof(struct page *), GFP_KERNEL);
-	if (!pages) {
-		vfree(vaddr);
-
-		return NULL;
-	}
-	for (i = 0, ptr = vaddr; i < n_pages; ++i, ptr += PAGE_SIZE)
-		pages[i] = vmalloc_to_page(ptr);
-
-	if (sg_alloc_table_from_pages(sgt, pages, n_pages, 0, sz, GFP_KERNEL)) {
-		kvfree(pages);
-		vfree(vaddr);
-
-		return NULL;
-	}
-	kvfree(pages);
-
-	return vaddr;
-}
-
-static inline void *ffs_alloc_buffer(struct ffs_io_data *io_data,
-	size_t data_len)
-{
-	if (io_data->use_sg)
-		return ffs_build_sg_list(&io_data->sgt, data_len);
-
-	return kmalloc(data_len, GFP_KERNEL);
-}
-
-static inline void ffs_free_buffer(struct ffs_io_data *io_data)
-{
-	if (!io_data->buf)
-		return;
-
-	if (io_data->use_sg) {
-		sg_free_table(&io_data->sgt);
-		vfree(io_data->buf);
-	} else {
-		kfree(io_data->buf);
-	}
-}
-
 static void ffs_user_copy_worker(struct work_struct *work)
 {
 	struct ffs_io_data *io_data = container_of(work, struct ffs_io_data,
@@ -823,13 +758,9 @@ static void ffs_user_copy_worker(struct work_struct *work)
 	bool kiocb_has_eventfd = io_data->kiocb->ki_flags & IOCB_EVENTFD;
 
 	if (io_data->read && ret > 0) {
-		mm_segment_t oldfs = get_fs();
-
-		set_fs(USER_DS);
 		use_mm(io_data->mm);
 		ret = ffs_copy_to_iter(io_data->buf, ret, &io_data->data);
 		unuse_mm(io_data->mm);
-		set_fs(oldfs);
 	}
 
 	io_data->kiocb->ki_complete(io_data->kiocb, ret, ret);
@@ -841,7 +772,7 @@ static void ffs_user_copy_worker(struct work_struct *work)
 
 	if (io_data->read)
 		kfree(io_data->to_free);
-	ffs_free_buffer(io_data);
+	kfree(io_data->buf);
 	kfree(io_data);
 }
 
@@ -997,7 +928,6 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 		 * earlier
 		 */
 		gadget = epfile->ffs->gadget;
-		io_data->use_sg = gadget->sg_supported && data_len > PAGE_SIZE;
 
 		spin_lock_irq(&epfile->ffs->eps_lock);
 		/* In the meantime, endpoint got disabled or changed. */
@@ -1014,7 +944,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			data_len = usb_ep_align_maybe(gadget, ep->ep, data_len);
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 
-		data = ffs_alloc_buffer(io_data, data_len);
+		data = kmalloc(data_len, GFP_KERNEL);
 		if (unlikely(!data)) {
 			ret = -ENOMEM;
 			goto error_mutex;
@@ -1054,16 +984,8 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 		bool interrupted = false;
 
 		req = ep->req;
-		if (io_data->use_sg) {
-			req->buf = NULL;
-			req->sg	= io_data->sgt.sgl;
-			req->num_sgs = io_data->sgt.nents;
-		} else {
-			req->buf = data;
-		}
-		req->length = data_len;
-
-		io_data->buf = data;
+		req->buf      = data;
+		req->length   = data_len;
 
 		req->context  = &done;
 		req->complete = ffs_epfile_io_complete;
@@ -1096,14 +1018,8 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 	} else if (!(req = usb_ep_alloc_request(ep->ep, GFP_ATOMIC))) {
 		ret = -ENOMEM;
 	} else {
-		if (io_data->use_sg) {
-			req->buf = NULL;
-			req->sg	= io_data->sgt.sgl;
-			req->num_sgs = io_data->sgt.nents;
-		} else {
-			req->buf = data;
-		}
-		req->length = data_len;
+		req->buf      = data;
+		req->length   = data_len;
 
 		io_data->buf = data;
 		io_data->ep = ep->ep;
@@ -1132,7 +1048,7 @@ error_lock:
 error_mutex:
 	mutex_unlock(&epfile->mutex);
 error:
-	ffs_free_buffer(io_data);
+	kfree(data);
 	return ret;
 }
 
@@ -1346,14 +1262,6 @@ static long ffs_epfile_ioctl(struct file *file, unsigned code,
 	return ret;
 }
 
-#ifdef CONFIG_COMPAT
-static long ffs_epfile_compat_ioctl(struct file *file, unsigned code,
-		unsigned long value)
-{
-	return ffs_epfile_ioctl(file, code, value);
-}
-#endif
-
 static const struct file_operations ffs_epfile_operations = {
 	.llseek =	no_llseek,
 
@@ -1362,9 +1270,6 @@ static const struct file_operations ffs_epfile_operations = {
 	.read_iter =	ffs_epfile_read_iter,
 	.release =	ffs_epfile_release,
 	.unlocked_ioctl =	ffs_epfile_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = ffs_epfile_compat_ioctl,
-#endif
 };
 
 
@@ -1388,7 +1293,7 @@ ffs_sb_make_inode(struct super_block *sb, void *data,
 	inode = new_inode(sb);
 
 	if (likely(inode)) {
-		struct timespec64 ts = current_time(inode);
+		struct timespec ts = current_time(inode);
 
 		inode->i_ino	 = get_next_ino();
 		inode->i_mode    = perms->mode;
@@ -2006,7 +1911,7 @@ typedef int (*ffs_os_desc_callback)(enum ffs_os_desc_type entity,
 
 static int __must_check ffs_do_single_desc(char *data, unsigned len,
 					   ffs_entity_callback entity,
-					   void *priv, int *current_class)
+					   void *priv)
 {
 	struct usb_descriptor_header *_ds = (void *)data;
 	u8 length;
@@ -2064,7 +1969,6 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 		__entity(INTERFACE, ds->bInterfaceNumber);
 		if (ds->iInterface)
 			__entity(STRING, ds->iInterface);
-		*current_class = ds->bInterfaceClass;
 	}
 		break;
 
@@ -2078,22 +1982,11 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 	}
 		break;
 
-	case USB_TYPE_CLASS | 0x01:
-                if (*current_class == USB_INTERFACE_CLASS_HID) {
-			pr_vdebug("hid descriptor\n");
-			if (length != sizeof(struct hid_descriptor))
-				goto inv_length;
-			break;
-		} else if (*current_class == USB_INTERFACE_CLASS_CCID) {
-			pr_vdebug("ccid descriptor\n");
-			if (length != sizeof(struct ccid_descriptor))
-				goto inv_length;
-			break;
-		} else {
-			pr_vdebug("unknown descriptor: %d for class %d\n",
-			      _ds->bDescriptorType, *current_class);
-			return -EINVAL;
-		}
+	case HID_DT_HID:
+		pr_vdebug("hid descriptor\n");
+		if (length != sizeof(struct hid_descriptor))
+			goto inv_length;
+		break;
 
 	case USB_DT_OTG:
 		if (length != sizeof(struct usb_otg_descriptor))
@@ -2150,7 +2043,6 @@ static int __must_check ffs_do_descs(unsigned count, char *data, unsigned len,
 {
 	const unsigned _len = len;
 	unsigned long num = 0;
-	int current_class = -1;
 
 	ENTER();
 
@@ -2171,8 +2063,7 @@ static int __must_check ffs_do_descs(unsigned count, char *data, unsigned len,
 		if (!data)
 			return _len - len;
 
-		ret = ffs_do_single_desc(data, len, entity, priv,
-			&current_class);
+		ret = ffs_do_single_desc(data, len, entity, priv);
 		if (unlikely(ret < 0)) {
 			pr_debug("%s returns %d\n", __func__, ret);
 			return ret;
@@ -3347,7 +3238,7 @@ static int ffs_func_setup(struct usb_function *f,
 	__ffs_event_add(ffs, FUNCTIONFS_SETUP);
 	spin_unlock_irqrestore(&ffs->ev.waitq.lock, flags);
 
-	return creq->wLength == 0 ? USB_GADGET_DELAYED_STATUS : 0;
+	return 0;
 }
 
 static bool ffs_func_req_match(struct usb_function *f,

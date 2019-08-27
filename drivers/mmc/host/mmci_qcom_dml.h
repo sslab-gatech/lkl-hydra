@@ -16,11 +16,12 @@
 #define __MMC_QCOM_DML_H__
 
 #ifdef CONFIG_MMC_QCOM_DML
-void qcom_variant_init(struct mmci_host *host);
+int dml_hw_init(struct mmci_host *host, struct device_node *np);
 void dml_start_xfer(struct mmci_host *host, struct mmc_data *data);
 #else
-static inline void qcom_variant_init(struct mmci_host *host)
+static inline int dml_hw_init(struct mmci_host *host, struct device_node *np)
 {
+	return -ENOSYS;
 }
 static inline void dml_start_xfer(struct mmci_host *host, struct mmc_data *data)
 {

@@ -116,21 +116,6 @@ static struct test generic_tests[] = {
 		.is_supported = test__bp_signal_is_supported,
 	},
 	{
-		.desc = "Breakpoint accounting",
-		.func = test__bp_accounting,
-		.is_supported = test__bp_signal_is_supported,
-	},
-	{
-		.desc = "Watchpoint",
-		.func = test__wp,
-		.is_supported = test__wp_is_supported,
-		.subtest = {
-			.skip_if_fail	= false,
-			.get_nr		= test__wp_subtest_get_nr,
-			.get_desc	= test__wp_subtest_get_desc,
-		},
-	},
-	{
 		.desc = "Number of exit events of a simple workload",
 		.func = test__task_exit,
 	},
@@ -286,10 +271,6 @@ static struct test generic_tests[] = {
 		.func = test__unit_number__scnprint,
 	},
 	{
-		.desc = "mem2node",
-		.func = test__mem2node,
-	},
-	{
 		.func = NULL,
 	},
 };
@@ -395,7 +376,7 @@ static int test_and_print(struct test *t, bool force_skip, int subtest)
 	if (!t->subtest.get_nr)
 		pr_debug("%s:", t->desc);
 	else
-		pr_debug("%s subtest %d:", t->desc, subtest + 1);
+		pr_debug("%s subtest %d:", t->desc, subtest);
 
 	switch (err) {
 	case TEST_OK:
@@ -424,9 +405,6 @@ static const char *shell_test__description(char *description, size_t size,
 	if (!fp)
 		return NULL;
 
-	/* Skip shebang */
-	while (fgetc(fp) != '\n');
-
 	description = fgets(description, size, fp);
 	fclose(fp);
 
@@ -435,7 +413,7 @@ static const char *shell_test__description(char *description, size_t size,
 
 #define for_each_shell_test(dir, base, ent)	\
 	while ((ent = readdir(dir)) != NULL)	\
-		if (!is_directory(base, ent) && ent->d_name[0] != '.')
+		if (!is_directory(base, ent))
 
 static const char *shell_tests__dir(char *path, size_t size)
 {
@@ -667,15 +645,6 @@ static int perf_test__list(int argc, const char **argv)
 			continue;
 
 		pr_info("%2d: %s\n", i, t->desc);
-
-		if (t->subtest.get_nr) {
-			int subn = t->subtest.get_nr();
-			int subi;
-
-			for (subi = 0; subi < subn; subi++)
-				pr_info("%2d:%1d: %s\n", i, subi + 1,
-					t->subtest.get_desc(subi));
-		}
 	}
 
 	perf_test__list_shell(argc, argv, i);

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 /*
  * Palmchip BK3710 PATA controller driver
  *
@@ -10,6 +8,10 @@
  *
  * Copyright (C) 2006 Texas Instruments.
  * Copyright (C) 2007 MontaVista Software, Inc., <source@mvista.com>
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #include <linux/ata.h>
@@ -377,4 +379,4 @@ static int __init pata_bk3710_init(void)
 }
 
 module_init(pata_bk3710_init);
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

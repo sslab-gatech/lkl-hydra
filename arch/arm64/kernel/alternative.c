@@ -47,11 +47,11 @@ static bool branch_insn_requires_update(struct alt_instr *alt, unsigned long pc)
 	unsigned long replptr;
 
 	if (kernel_text_address(pc))
-		return true;
+		return 1;
 
 	replptr = (unsigned long)ALT_REPL_PTR(alt);
 	if (pc >= replptr && pc <= (replptr + alt->alt_len))
-		return false;
+		return 0;
 
 	/*
 	 * Branching into *another* alternate sequence is doomed, and
@@ -107,91 +107,35 @@ static u32 get_alt_insn(struct alt_instr *alt, __le32 *insnptr, __le32 *altinsnp
 	return insn;
 }
 
-static void patch_alternative(struct alt_instr *alt,
-			      __le32 *origptr, __le32 *updptr, int nr_inst)
-{
-	__le32 *replptr;
-	int i;
-
-	replptr = ALT_REPL_PTR(alt);
-	for (i = 0; i < nr_inst; i++) {
-		u32 insn;
-
-		insn = get_alt_insn(alt, origptr + i, replptr + i);
-		updptr[i] = cpu_to_le32(insn);
-	}
-}
-
-/*
- * We provide our own, private D-cache cleaning function so that we don't
- * accidentally call into the cache.S code, which is patched by us at
- * runtime.
- */
-static void clean_dcache_range_nopatch(u64 start, u64 end)
-{
-	u64 cur, d_size, ctr_el0;
-
-	ctr_el0 = read_sanitised_ftr_reg(SYS_CTR_EL0);
-	d_size = 4 << cpuid_feature_extract_unsigned_field(ctr_el0,
-							   CTR_DMINLINE_SHIFT);
-	cur = start & ~(d_size - 1);
-	do {
-		/*
-		 * We must clean+invalidate to the PoC in order to avoid
-		 * Cortex-A53 errata 826319, 827319, 824069 and 819472
-		 * (this corresponds to ARM64_WORKAROUND_CLEAN_CACHE)
-		 */
-		asm volatile("dc civac, %0" : : "r" (cur) : "memory");
-	} while (cur += d_size, cur < end);
-}
-
-static void __apply_alternatives(void *alt_region, bool is_module)
+static void __apply_alternatives(void *alt_region, bool use_linear_alias)
 {
 	struct alt_instr *alt;
 	struct alt_region *region = alt_region;
-	__le32 *origptr, *updptr;
-	alternative_cb_t alt_cb;
+	__le32 *origptr, *replptr, *updptr;
 
 	for (alt = region->begin; alt < region->end; alt++) {
-		int nr_inst;
+		u32 insn;
+		int i, nr_inst;
 
-		/* Use ARM64_CB_PATCH as an unconditional patch */
-		if (alt->cpufeature < ARM64_CB_PATCH &&
-		    !cpus_have_cap(alt->cpufeature))
+		if (!cpus_have_cap(alt->cpufeature))
 			continue;
 
-		if (alt->cpufeature == ARM64_CB_PATCH)
-			BUG_ON(alt->alt_len != 0);
-		else
-			BUG_ON(alt->alt_len != alt->orig_len);
+		BUG_ON(alt->alt_len != alt->orig_len);
 
 		pr_info_once("patching kernel code\n");
 
 		origptr = ALT_ORIG_PTR(alt);
-		updptr = is_module ? origptr : lm_alias(origptr);
-		nr_inst = alt->orig_len / AARCH64_INSN_SIZE;
+		replptr = ALT_REPL_PTR(alt);
+		updptr = use_linear_alias ? lm_alias(origptr) : origptr;
+		nr_inst = alt->alt_len / sizeof(insn);
 
-		if (alt->cpufeature < ARM64_CB_PATCH)
-			alt_cb = patch_alternative;
-		else
-			alt_cb  = ALT_REPL_PTR(alt);
-
-		alt_cb(alt, origptr, updptr, nr_inst);
-
-		if (!is_module) {
-			clean_dcache_range_nopatch((u64)origptr,
-						   (u64)(origptr + nr_inst));
+		for (i = 0; i < nr_inst; i++) {
+			insn = get_alt_insn(alt, origptr + i, replptr + i);
+			updptr[i] = cpu_to_le32(insn);
 		}
-	}
 
-	/*
-	 * The core module code takes care of cache maintenance in
-	 * flush_module_icache().
-	 */
-	if (!is_module) {
-		dsb(ish);
-		__flush_icache_all();
-		isb();
+		flush_icache_range((uintptr_t)origptr,
+				   (uintptr_t)(origptr + nr_inst));
 	}
 }
 
@@ -213,7 +157,7 @@ static int __apply_alternatives_multi_stop(void *unused)
 		isb();
 	} else {
 		BUG_ON(alternatives_applied);
-		__apply_alternatives(&region, false);
+		__apply_alternatives(&region, true);
 		/* Barriers provided by the cache flushing */
 		WRITE_ONCE(alternatives_applied, 1);
 	}
@@ -227,14 +171,12 @@ void __init apply_alternatives_all(void)
 	stop_machine(__apply_alternatives_multi_stop, NULL, cpu_online_mask);
 }
 
-#ifdef CONFIG_MODULES
-void apply_alternatives_module(void *start, size_t length)
+void apply_alternatives(void *start, size_t length)
 {
 	struct alt_region region = {
 		.begin	= start,
 		.end	= start + length,
 	};
 
-	__apply_alternatives(&region, true);
+	__apply_alternatives(&region, false);
 }
-#endif

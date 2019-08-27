@@ -482,6 +482,7 @@ static void lowcomms_error_report(struct sock *sk)
 {
 	struct connection *con;
 	struct sockaddr_storage saddr;
+	int buflen;
 	void (*orig_report)(struct sock *) = NULL;
 
 	read_lock_bh(&sk->sk_callback_lock);
@@ -491,7 +492,7 @@ static void lowcomms_error_report(struct sock *sk)
 
 	orig_report = listen_sock.sk_error_report;
 	if (con->sock == NULL ||
-	    kernel_getpeername(con->sock, (struct sockaddr *)&saddr) < 0) {
+	    kernel_getpeername(con->sock, (struct sockaddr *)&saddr, &buflen)) {
 		printk_ratelimited(KERN_ERR "dlm: node %d: socket error "
 				   "sending to node %d, port %d, "
 				   "sk_err=%d/%d\n", dlm_our_nodeid(),
@@ -674,7 +675,7 @@ static int receive_from_sock(struct connection *con)
 		nvec = 2;
 	}
 	len = iov[0].iov_len + iov[1].iov_len;
-	iov_iter_kvec(&msg.msg_iter, READ, iov, nvec, len);
+	iov_iter_kvec(&msg.msg_iter, READ | ITER_KVEC, iov, nvec, len);
 
 	r = ret = sock_recvmsg(con->sock, &msg, MSG_DONTWAIT | MSG_NOSIGNAL);
 	if (ret <= 0)
@@ -756,8 +757,8 @@ static int tcp_accept_from_sock(struct connection *con)
 
 	/* Get the connected socket's peer */
 	memset(&peeraddr, 0, sizeof(peeraddr));
-	len = newsock->ops->getname(newsock, (struct sockaddr *)&peeraddr, 2);
-	if (len < 0) {
+	if (newsock->ops->getname(newsock, (struct sockaddr *)&peeraddr,
+				  &len, 2)) {
 		result = -ECONNABORTED;
 		goto accept_err;
 	}
@@ -1037,7 +1038,6 @@ static void sctp_connect_to_sock(struct connection *con)
 	int result;
 	int addr_len;
 	struct socket *sock;
-	struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
 
 	if (con->nodeid == 0) {
 		log_print("attempt to connect sock 0 foiled");
@@ -1081,22 +1081,11 @@ static void sctp_connect_to_sock(struct connection *con)
 	log_print("connecting to %d", con->nodeid);
 
 	/* Turn off Nagle's algorithm */
-	kernel_setsockopt(sock, SOL_SCTP, SCTP_NODELAY, (char *)&one,
+	kernel_setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&one,
 			  sizeof(one));
 
-	/*
-	 * Make sock->ops->connect() function return in specified time,
-	 * since O_NONBLOCK argument in connect() function does not work here,
-	 * then, we should restore the default value of this attribute.
-	 */
-	kernel_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,
-			  sizeof(tv));
 	result = sock->ops->connect(sock, (struct sockaddr *)&daddr, addr_len,
-				   0);
-	memset(&tv, 0, sizeof(tv));
-	kernel_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,
-			  sizeof(tv));
-
+				   O_NONBLOCK);
 	if (result == -EINPROGRESS)
 		result = 0;
 	if (result == 0)

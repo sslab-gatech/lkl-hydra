@@ -1,7 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2016  Realtek Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -215,6 +226,8 @@ odm_config_fw_with_header_file(struct phy_dm_struct *dm,
 			       u8 *p_firmware, u32 *size);
 
 u32 odm_get_hw_img_version(struct phy_dm_struct *dm);
+
+s32 odm_signal_scale_mapping(struct phy_dm_struct *dm, s32 curr_sig);
 
 /*For 8822B only!! need to move to FW finally */
 /*==============================================*/
@@ -483,5 +496,15 @@ struct phy_status_rpt_jaguar2_type2 {
 	u8 syn_count : 5;
 #endif
 };
+
+u32 query_phydm_trx_capability(struct phy_dm_struct *dm);
+
+u32 query_phydm_stbc_capability(struct phy_dm_struct *dm);
+
+u32 query_phydm_ldpc_capability(struct phy_dm_struct *dm);
+
+u32 query_phydm_txbf_parameters(struct phy_dm_struct *dm);
+
+u32 query_phydm_txbf_capability(struct phy_dm_struct *dm);
 
 #endif /*#ifndef	__HALHWOUTSRC_H__*/

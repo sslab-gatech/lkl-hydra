@@ -95,7 +95,6 @@ extern struct sclp_info sclp;
 struct zpci_report_error_header {
 	u8 version;	/* Interface version byte */
 	u8 action;	/* Action qualifier byte
-			 * 0: Adapter Reset Request
 			 * 1: Deconfigure and repair action requested
 			 *	(OpenCrypto Problem Call Home)
 			 * 2: Informational Report
@@ -105,17 +104,12 @@ struct zpci_report_error_header {
 	u8 data[0];	/* Subsequent Data passed verbatim to SCLP ET 24 */
 } __packed;
 
-int sclp_early_read_info(void);
-int sclp_early_read_storage_info(void);
 int sclp_early_get_core_info(struct sclp_core_info *info);
 void sclp_early_get_ipl_info(struct sclp_ipl_info *info);
 void sclp_early_detect(void);
 void sclp_early_printk(const char *s);
-void sclp_early_printk_force(const char *s);
-void __sclp_early_printk(const char *s, unsigned int len, unsigned int force);
+void __sclp_early_printk(const char *s, unsigned int len);
 
-int sclp_early_get_memsize(unsigned long *mem);
-int sclp_early_get_hsa_size(unsigned long *hsa_size);
 int _sclp_get_core_info(struct sclp_core_info *info);
 int sclp_core_configure(u8 core);
 int sclp_core_deconfigure(u8 core);

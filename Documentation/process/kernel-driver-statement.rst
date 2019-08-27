@@ -1,5 +1,3 @@
-.. _process_statement_driver:
-
 Kernel Driver Statement
 -----------------------
 
@@ -105,7 +103,6 @@ today, have in the past, or will in the future.
  - Auke Kok
  - Peter Korsgaard
  - Jiri Kosina
- - Aaro Koskinen
  - Mariusz Kozlowski
  - Greg Kroah-Hartman
  - Michael Krufky

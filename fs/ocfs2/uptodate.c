@@ -633,5 +633,6 @@ int __init init_ocfs2_uptodate_cache(void)
 
 void exit_ocfs2_uptodate_cache(void)
 {
-	kmem_cache_destroy(ocfs2_uptodate_cachep);
+	if (ocfs2_uptodate_cachep)
+		kmem_cache_destroy(ocfs2_uptodate_cachep);
 }

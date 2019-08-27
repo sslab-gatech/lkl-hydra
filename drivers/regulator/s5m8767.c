@@ -1,11 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Copyright (c) 2011 Samsung Electronics Co., Ltd
-//              http://www.samsung.com
+/*
+ * s5m8767.c
+ *
+ * Copyright (c) 2011 Samsung Electronics Co., Ltd
+ *              http://www.samsung.com
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ *
+ */
 
 #include <linux/err.h>
 #include <linux/of_gpio.h>
-#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
@@ -447,19 +454,20 @@ static void s5m8767_regulator_config_ext_control(struct s5m8767_info *s5m8767,
 	}
 	if (mode != S5M8767_ENCTRL_USE_GPIO) {
 		dev_warn(s5m8767->dev,
-				"ext-control for %pOFn: mismatched op_mode (%x), ignoring\n",
-				rdata->reg_node, mode);
+				"ext-control for %s: mismatched op_mode (%x), ignoring\n",
+				rdata->reg_node->name, mode);
 		return;
 	}
 
-	if (!rdata->ext_control_gpiod) {
+	if (!gpio_is_valid(rdata->ext_control_gpio)) {
 		dev_warn(s5m8767->dev,
-				"ext-control for %pOFn: GPIO not valid, ignoring\n",
-			 rdata->reg_node);
+				"ext-control for %s: GPIO not valid, ignoring\n",
+				rdata->reg_node->name);
 		return;
 	}
 
-	config->ena_gpiod = rdata->ext_control_gpiod;
+	config->ena_gpio = rdata->ext_control_gpio;
+	config->ena_gpio_flags = GPIOF_OUT_INIT_HIGH;
 }
 
 /*
@@ -545,15 +553,13 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 	/* count the number of regulators to be supported in pmic */
 	pdata->num_regulators = of_get_child_count(regulators_np);
 
-	rdata = devm_kcalloc(&pdev->dev,
-			     pdata->num_regulators, sizeof(*rdata),
-			     GFP_KERNEL);
+	rdata = devm_kzalloc(&pdev->dev, sizeof(*rdata) *
+				pdata->num_regulators, GFP_KERNEL);
 	if (!rdata)
 		return -ENOMEM;
 
-	rmode = devm_kcalloc(&pdev->dev,
-			     pdata->num_regulators, sizeof(*rmode),
-			     GFP_KERNEL);
+	rmode = devm_kzalloc(&pdev->dev, sizeof(*rmode) *
+				pdata->num_regulators, GFP_KERNEL);
 	if (!rmode)
 		return -ENOMEM;
 
@@ -561,25 +567,18 @@ static int s5m8767_pmic_dt_parse_pdata(struct platform_device *pdev,
 	pdata->opmode = rmode;
 	for_each_child_of_node(regulators_np, reg_np) {
 		for (i = 0; i < ARRAY_SIZE(regulators); i++)
-			if (of_node_name_eq(reg_np, regulators[i].name))
+			if (!of_node_cmp(reg_np->name, regulators[i].name))
 				break;
 
 		if (i == ARRAY_SIZE(regulators)) {
 			dev_warn(iodev->dev,
-			"don't know how to configure regulator %pOFn\n",
-			reg_np);
+			"don't know how to configure regulator %s\n",
+			reg_np->name);
 			continue;
 		}
 
-		rdata->ext_control_gpiod = devm_gpiod_get_from_of_node(
-			&pdev->dev,
-			reg_np,
-			"s5m8767,pmic-ext-control-gpios",
-			0,
-			GPIOD_OUT_HIGH | GPIOD_FLAGS_BIT_NONEXCLUSIVE,
-			"s5m8767");
-		if (IS_ERR(rdata->ext_control_gpiod))
-			return PTR_ERR(rdata->ext_control_gpiod);
+		rdata->ext_control_gpio = of_get_named_gpio(reg_np,
+			"s5m8767,pmic-ext-control-gpios", 0);
 
 		rdata->id = i;
 		rdata->initdata = of_get_regulator_init_data(
@@ -955,18 +954,13 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 		config.driver_data = s5m8767;
 		config.regmap = iodev->regmap_pmic;
 		config.of_node = pdata->regulators[i].reg_node;
-		config.ena_gpiod = NULL;
-		if (pdata->regulators[i].ext_control_gpiod) {
-			/* Assigns config.ena_gpiod */
+		config.ena_gpio = -EINVAL;
+		config.ena_gpio_flags = 0;
+		config.ena_gpio_initialized = true;
+		if (gpio_is_valid(pdata->regulators[i].ext_control_gpio))
 			s5m8767_regulator_config_ext_control(s5m8767,
 					&pdata->regulators[i], &config);
 
-			/*
-			 * Hand the GPIO descriptor management over to the
-			 * regulator core, remove it from devres management.
-			 */
-			devm_gpiod_unhinge(s5m8767->dev, config.ena_gpiod);
-		}
 		rdev = devm_regulator_register(&pdev->dev, &regulators[id],
 						  &config);
 		if (IS_ERR(rdev)) {
@@ -976,7 +970,7 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 			return ret;
 		}
 
-		if (pdata->regulators[i].ext_control_gpiod) {
+		if (gpio_is_valid(pdata->regulators[i].ext_control_gpio)) {
 			ret = s5m8767_enable_ext_control(s5m8767, rdev);
 			if (ret < 0) {
 				dev_err(s5m8767->dev,

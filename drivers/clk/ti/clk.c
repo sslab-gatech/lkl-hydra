@@ -23,7 +23,7 @@
 #include <linux/of_address.h>
 #include <linux/list.h>
 #include <linux/regmap.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/device.h>
 
 #include "clock.h"
@@ -34,7 +34,7 @@
 struct ti_clk_ll_ops *ti_clk_ll_ops;
 static struct device_node *clocks_node_ptr[CLK_MAX_MEMMAPS];
 
-struct ti_clk_features ti_clk_features;
+static struct ti_clk_features ti_clk_features;
 
 struct clk_iomap {
 	struct regmap *regmap;
@@ -53,29 +53,6 @@ static void clk_memmap_writel(u32 val, const struct clk_omap_reg *reg)
 		regmap_write(io->regmap, reg->offset, val);
 	else
 		writel_relaxed(val, io->mem + reg->offset);
-}
-
-static void _clk_rmw(u32 val, u32 mask, void __iomem *ptr)
-{
-	u32 v;
-
-	v = readl_relaxed(ptr);
-	v &= ~mask;
-	v |= val;
-	writel_relaxed(v, ptr);
-}
-
-static void clk_memmap_rmw(u32 val, u32 mask, const struct clk_omap_reg *reg)
-{
-	struct clk_iomap *io = clk_memmaps[reg->index];
-
-	if (reg->ptr) {
-		_clk_rmw(val, mask, reg->ptr);
-	} else if (io->regmap) {
-		regmap_update_bits(io->regmap, reg->offset, mask, val);
-	} else {
-		_clk_rmw(val, mask, io->mem + reg->offset);
-	}
 }
 
 static u32 clk_memmap_readl(const struct clk_omap_reg *reg)
@@ -112,7 +89,6 @@ int ti_clk_setup_ll_ops(struct ti_clk_ll_ops *ops)
 	ti_clk_ll_ops = ops;
 	ops->clk_readl = clk_memmap_readl;
 	ops->clk_writel = clk_memmap_writel;
-	ops->clk_rmw = clk_memmap_rmw;
 
 	return 0;
 }
@@ -129,7 +105,7 @@ int ti_clk_setup_ll_ops(struct ti_clk_ll_ops *ops)
 void __init ti_dt_clocks_register(struct ti_dt_clk oclks[])
 {
 	struct ti_dt_clk *c;
-	struct device_node *node, *parent;
+	struct device_node *node;
 	struct clk *clk;
 	struct of_phandle_args clkspec;
 	char buf[64];
@@ -140,9 +116,6 @@ void __init ti_dt_clocks_register(struct ti_dt_clk oclks[])
 	int ret;
 	static bool clkctrl_nodes_missing;
 	static bool has_clkctrl_data;
-	static bool compat_mode;
-
-	compat_mode = ti_clk_get_features()->flags & TI_CLK_CLKCTRL_COMPAT;
 
 	for (c = oclks; c->node_name != NULL; c++) {
 		strcpy(buf, c->node_name);
@@ -167,12 +140,8 @@ void __init ti_dt_clocks_register(struct ti_dt_clk oclks[])
 			continue;
 
 		node = of_find_node_by_name(NULL, buf);
-		if (num_args && compat_mode) {
-			parent = node;
-			node = of_get_child_by_name(parent, "clk");
-			of_node_put(parent);
-		}
-
+		if (num_args)
+			node = of_find_node_by_name(node, "clk");
 		clkspec.np = node;
 		clkspec.args_count = num_args;
 		for (i = 0; i < num_args; i++) {
@@ -180,12 +149,11 @@ void __init ti_dt_clocks_register(struct ti_dt_clk oclks[])
 			if (ret) {
 				pr_warn("Bad tag in %s at %d: %s\n",
 					c->node_name, i, tags[i]);
-				of_node_put(node);
 				return;
 			}
 		}
 		clk = of_clk_get_from_provider(&clkspec);
-		of_node_put(node);
+
 		if (!IS_ERR(clk)) {
 			c->lk.clk = clk;
 			clkdev_add(&c->lk);
@@ -231,7 +199,7 @@ int __init ti_clk_retry_init(struct device_node *node, void *user,
 {
 	struct clk_init_item *retry;
 
-	pr_debug("%pOFn: adding to retry list...\n", node);
+	pr_debug("%s: adding to retry list...\n", node->name);
 	retry = kzalloc(sizeof(*retry), GFP_KERNEL);
 	if (!retry)
 		return -ENOMEM;
@@ -266,14 +234,14 @@ int ti_clk_get_reg_addr(struct device_node *node, int index,
 	}
 
 	if (i == CLK_MAX_MEMMAPS) {
-		pr_err("clk-provider not found for %pOFn!\n", node);
+		pr_err("clk-provider not found for %s!\n", node->name);
 		return -ENOENT;
 	}
 
 	reg->index = i;
 
 	if (of_property_read_u32_index(node, "reg", index, &val)) {
-		pr_err("%pOFn must have reg[%d]!\n", node, index);
+		pr_err("%s must have reg[%d]!\n", node->name, index);
 		return -EINVAL;
 	}
 
@@ -281,20 +249,6 @@ int ti_clk_get_reg_addr(struct device_node *node, int index,
 	reg->ptr = NULL;
 
 	return 0;
-}
-
-void ti_clk_latch(struct clk_omap_reg *reg, s8 shift)
-{
-	u32 latch;
-
-	if (shift < 0)
-		return;
-
-	latch = 1 << shift;
-
-	ti_clk_ll_ops->clk_rmw(latch, latch, reg);
-	ti_clk_ll_ops->clk_rmw(0, latch, reg);
-	ti_clk_ll_ops->clk_readl(reg); /* OCP barrier */
 }
 
 /**
@@ -320,7 +274,7 @@ int __init omap2_clk_provider_init(struct device_node *parent, int index,
 	/* get clocks for this parent */
 	clocks = of_get_child_by_name(parent, "clocks");
 	if (!clocks) {
-		pr_err("%pOFn missing 'clocks' child node.\n", parent);
+		pr_err("%s missing 'clocks' child node.\n", parent->name);
 		return -EINVAL;
 	}
 
@@ -350,7 +304,7 @@ void __init omap2_clk_legacy_provider_init(int index, void __iomem *mem)
 {
 	struct clk_iomap *io;
 
-	io = memblock_alloc(sizeof(*io), SMP_CACHE_BYTES);
+	io = memblock_virt_alloc(sizeof(*io), 0);
 
 	io->mem = mem;
 
@@ -373,7 +327,7 @@ void ti_dt_clk_init_retry_clks(void)
 
 	while (!list_empty(&retry_list) && retries) {
 		list_for_each_entry_safe(retry, tmp, &retry_list, link) {
-			pr_debug("retry-init: %pOFn\n", retry->node);
+			pr_debug("retry-init: %s\n", retry->node->name);
 			retry->func(retry->user, retry->node);
 			list_del(&retry->link);
 			kfree(retry);

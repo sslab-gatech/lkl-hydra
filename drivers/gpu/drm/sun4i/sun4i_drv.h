@@ -19,7 +19,6 @@
 
 struct sun4i_drv {
 	struct list_head	engine_list;
-	struct list_head	frontend_list;
 	struct list_head	tcon_list;
 };
 

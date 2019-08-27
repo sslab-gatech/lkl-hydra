@@ -13,9 +13,11 @@
 #include <linux/bpf.h>
 #include <sys/resource.h>
 
-#include <bpf/bpf.h>
+#include "libbpf.h"
 #include "bpf_load.h"
 #include "bpf_util.h"
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
 
 #define SLOTS 100
 

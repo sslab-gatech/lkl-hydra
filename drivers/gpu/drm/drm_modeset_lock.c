@@ -56,10 +56,6 @@
  *     drm_modeset_drop_locks(ctx);
  *     drm_modeset_acquire_fini(ctx);
  *
- * For convenience this control flow is implemented in
- * DRM_MODESET_LOCK_ALL_BEGIN() and DRM_MODESET_LOCK_ALL_END() for the case
- * where all modeset locks need to be taken through drm_modeset_lock_all_ctx().
- *
  * If all that is needed is a single modeset lock, then the &struct
  * drm_modeset_acquire_ctx is not needed and the locking can be simplified
  * by passing a NULL instead of ctx in the drm_modeset_lock() call or
@@ -117,7 +113,6 @@ retry:
 		kfree(ctx);
 		return;
 	}
-	ww_acquire_done(&ctx->ww_ctx);
 
 	WARN_ON(config->acquire_ctx);
 
@@ -386,8 +381,6 @@ EXPORT_SYMBOL(drm_modeset_unlock);
  *
  * Locks acquired with this function should be released by calling the
  * drm_modeset_drop_locks() function on @ctx.
- *
- * See also: DRM_MODESET_LOCK_ALL_BEGIN() and DRM_MODESET_LOCK_ALL_END()
  *
  * Returns: 0 on success or a negative error-code on failure.
  */

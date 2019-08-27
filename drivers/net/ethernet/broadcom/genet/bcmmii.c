@@ -115,14 +115,8 @@ void bcmgenet_mii_setup(struct net_device *dev)
 static int bcmgenet_fixed_phy_link_update(struct net_device *dev,
 					  struct fixed_phy_status *status)
 {
-	struct bcmgenet_priv *priv;
-	u32 reg;
-
-	if (dev && dev->phydev && status) {
-		priv = netdev_priv(dev);
-		reg = bcmgenet_umac_readl(priv, UMAC_MODE);
-		status->link = !!(reg & MODE_LINK_STATUS);
-	}
+	if (dev && dev->phydev && status)
+		status->link = dev->phydev->link;
 
 	return 0;
 }
@@ -214,7 +208,7 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 
 	case PHY_INTERFACE_MODE_MII:
 		phy_name = "external MII";
-		phy_set_max_speed(phydev, SPEED_100);
+		phydev->supported &= PHY_BASIC_FEATURES;
 		bcmgenet_sys_writel(priv,
 				    PORT_MODE_EXT_EPHY, SYS_PORT_CTRL);
 		break;
@@ -226,11 +220,11 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 		 * capabilities, use that knowledge to also configure the
 		 * Reverse MII interface correctly.
 		 */
-		if (linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
-				      dev->phydev->supported))
-			port_ctrl = PORT_MODE_EXT_RVMII_50;
-		else
+		if ((dev->phydev->supported & PHY_BASIC_FEATURES) ==
+				PHY_BASIC_FEATURES)
 			port_ctrl = PORT_MODE_EXT_RVMII_25;
+		else
+			port_ctrl = PORT_MODE_EXT_RVMII_50;
 		bcmgenet_sys_writel(priv, port_ctrl, SYS_PORT_CTRL);
 		break;
 
@@ -318,15 +312,12 @@ int bcmgenet_mii_probe(struct net_device *dev)
 		return ret;
 	}
 
-	linkmode_copy(phydev->advertising, phydev->supported);
+	phydev->advertising = phydev->supported;
 
 	/* The internal PHY has its link interrupts routed to the
-	 * Ethernet MAC ISRs. On GENETv5 there is a hardware issue
-	 * that prevents the signaling of link UP interrupts when
-	 * the link operates at 10Mbps, so fallback to polling for
-	 * those versions of GENET.
+	 * Ethernet MAC ISRs
 	 */
-	if (priv->internal_phy && !GENET_IS_V5(priv))
+	if (priv->internal_phy)
 		dev->phydev->irq = PHY_IGNORE_INTERRUPT;
 
 	return 0;
@@ -342,7 +333,7 @@ static struct device_node *bcmgenet_mii_of_find_mdio(struct bcmgenet_priv *priv)
 	if (!compat)
 		return NULL;
 
-	priv->mdio_dn = of_get_compatible_child(dn, compat);
+	priv->mdio_dn = of_find_compatible_node(dn, NULL, compat);
 	kfree(compat);
 	if (!priv->mdio_dn) {
 		dev_err(kdev, "unable to find MDIO bus node\n");

@@ -17,6 +17,7 @@
 #include <asm/pgtable.h>
 #endif
 #include <asm/pgalloc.h>
+#include <asm/tlbflush.h>
 #ifndef __powerpc64__
 #include <asm/page.h>
 #include <asm/mmu.h>
@@ -40,7 +41,7 @@ extern void flush_hash_entry(struct mm_struct *mm, pte_t *ptep,
 static inline void __tlb_remove_tlb_entry(struct mmu_gather *tlb, pte_t *ptep,
 					  unsigned long address)
 {
-#ifdef CONFIG_PPC_BOOK3S_32
+#ifdef CONFIG_PPC_STD_MMU_32
 	if (pte_val(*ptep) & _PAGE_HASHPTE)
 		flush_hash_entry(tlb->mm, ptep, address);
 #endif
@@ -52,8 +53,7 @@ static inline void tlb_remove_check_page_size_change(struct mmu_gather *tlb,
 	if (!tlb->page_size)
 		tlb->page_size = page_size;
 	else if (tlb->page_size != page_size) {
-		if (!tlb->fullmm)
-			tlb_flush_mmu(tlb);
+		tlb_flush_mmu(tlb);
 		/*
 		 * update the page size after flush for the new
 		 * mmu_gather.
@@ -75,19 +75,6 @@ static inline int mm_is_thread_local(struct mm_struct *mm)
 	if (atomic_read(&mm->context.active_cpus) > 1)
 		return false;
 	return cpumask_test_cpu(smp_processor_id(), mm_cpumask(mm));
-}
-static inline void mm_reset_thread_local(struct mm_struct *mm)
-{
-	WARN_ON(atomic_read(&mm->context.copros) > 0);
-	/*
-	 * It's possible for mm_access to take a reference on mm_users to
-	 * access the remote mm from another thread, but it's not allowed
-	 * to set mm_cpumask, so mm_users may be > 1 here.
-	 */
-	WARN_ON(current->mm != mm);
-	atomic_set(&mm->context.active_cpus, 1);
-	cpumask_clear(mm_cpumask(mm));
-	cpumask_set_cpu(smp_processor_id(), mm_cpumask(mm));
 }
 #else /* CONFIG_PPC_BOOK3S_64 */
 static inline int mm_is_thread_local(struct mm_struct *mm)

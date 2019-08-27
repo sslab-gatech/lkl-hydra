@@ -55,21 +55,22 @@ enum {
 /* From drivers/edac/ghes_edac.c */
 
 #ifdef CONFIG_EDAC_GHES
-void ghes_edac_report_mem_error(int sev, struct cper_sec_mem_err *mem_err);
+void ghes_edac_report_mem_error(struct ghes *ghes, int sev,
+				struct cper_sec_mem_err *mem_err);
 
 int ghes_edac_register(struct ghes *ghes, struct device *dev);
 
 void ghes_edac_unregister(struct ghes *ghes);
 
 #else
-static inline void ghes_edac_report_mem_error(int sev,
+static inline void ghes_edac_report_mem_error(struct ghes *ghes, int sev,
 				       struct cper_sec_mem_err *mem_err)
 {
 }
 
 static inline int ghes_edac_register(struct ghes *ghes, struct device *dev)
 {
-	return -ENODEV;
+	return 0;
 }
 
 static inline void ghes_edac_unregister(struct ghes *ghes)
@@ -118,10 +119,6 @@ static inline void *acpi_hest_get_next(struct acpi_hest_generic_data *gdata)
 	     (void *)section - (void *)(estatus + 1) < estatus->data_length; \
 	     section = acpi_hest_get_next(section))
 
-#ifdef CONFIG_ACPI_APEI_SEA
 int ghes_notify_sea(void);
-#else
-static inline int ghes_notify_sea(void) { return -ENOENT; }
-#endif
 
 #endif /* GHES_H */

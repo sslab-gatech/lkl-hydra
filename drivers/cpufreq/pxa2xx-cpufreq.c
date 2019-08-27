@@ -292,10 +292,10 @@ static int pxa_cpufreq_init(struct cpufreq_policy *policy)
 		pr_info("using %s frequency table\n",
 			pxa255_turbo_table ? "turbo" : "run");
 
-		policy->freq_table = pxa255_freq_table;
+		cpufreq_table_validate_and_show(policy, pxa255_freq_table);
 	}
 	else if (cpu_is_pxa27x()) {
-		policy->freq_table = pxa27x_freq_table;
+		cpufreq_table_validate_and_show(policy, pxa27x_freq_table);
 	}
 
 	pr_info("frequency change support initialized\n");

@@ -48,8 +48,7 @@ gk104_top_oneinit(struct nvkm_top *top)
 		case 0x00000001: /* DATA */
 			inst        = (data & 0x3c000000) >> 26;
 			info->addr  = (data & 0x00fff000);
-			if (data & 0x00000004)
-				info->fault = (data & 0x000003f8) >> 3;
+			info->fault = (data & 0x000000f8) >> 3;
 			break;
 		case 0x00000002: /* ENUM */
 			if (data & 0x00000020)
@@ -86,7 +85,7 @@ gk104_top_oneinit(struct nvkm_top *top)
 		case 0x0000000d: A_(SEC2  ); break;
 		case 0x0000000e: B_(NVENC ); break;
 		case 0x0000000f: A_(NVENC1); break;
-		case 0x00000010: B_(NVDEC ); break;
+		case 0x00000010: A_(NVDEC ); break;
 		case 0x00000013: B_(CE    ); break;
 			break;
 		default:

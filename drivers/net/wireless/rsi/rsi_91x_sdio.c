@@ -18,16 +18,7 @@
 #include <linux/module.h>
 #include "rsi_sdio.h"
 #include "rsi_common.h"
-#include "rsi_coex.h"
 #include "rsi_hal.h"
-
-/* Default operating mode is wlan STA + BT */
-static u16 dev_oper_mode = DEV_OPMODE_STA_BT_DUAL;
-module_param(dev_oper_mode, ushort, 0444);
-MODULE_PARM_DESC(dev_oper_mode,
-		 "1[Wi-Fi], 4[BT], 8[BT LE], 5[Wi-Fi STA + BT classic]\n"
-		 "9[Wi-Fi STA + BT LE], 13[Wi-Fi STA + BT classic + BT LE]\n"
-		 "6[AP + BT classic], 14[AP + BT classic + BT LE]");
 
 /**
  * rsi_sdio_set_cmd52_arg() - This function prepares cmd 52 read/write arg.
@@ -170,6 +161,7 @@ static void rsi_reset_card(struct sdio_func *pfunction)
 	int err;
 	struct mmc_card *card = pfunction->card;
 	struct mmc_host *host = card->host;
+	s32 bit = (fls(host->ocr_avail) - 1);
 	u8 cmd52_resp;
 	u32 clock, resp, i;
 	u16 rca;
@@ -189,6 +181,7 @@ static void rsi_reset_card(struct sdio_func *pfunction)
 	msleep(20);
 
 	/* Initialize the SDIO card */
+	host->ios.vdd = bit;
 	host->ios.chip_select = MMC_CS_DONTCARE;
 	host->ios.bus_mode = MMC_BUSMODE_OPENDRAIN;
 	host->ios.power_mode = MMC_POWER_UP;
@@ -574,7 +567,7 @@ static int rsi_sdio_load_data_master_write(struct rsi_hw *adapter,
 {
 	u32 num_blocks, offset, i;
 	u16 msb_address, lsb_address;
-	u8 *temp_buf;
+	u8 temp_buf[block_size];
 	int status;
 
 	num_blocks = instructions_sz / block_size;
@@ -583,15 +576,11 @@ static int rsi_sdio_load_data_master_write(struct rsi_hw *adapter,
 	rsi_dbg(INFO_ZONE, "ins_size: %d, num_blocks: %d\n",
 		instructions_sz, num_blocks);
 
-	temp_buf = kmalloc(block_size, GFP_KERNEL);
-	if (!temp_buf)
-		return -ENOMEM;
-
 	/* Loading DM ms word in the sdio slave */
 	status = rsi_sdio_master_access_msword(adapter, msb_address);
 	if (status < 0) {
 		rsi_dbg(ERR_ZONE, "%s: Unable to set ms word reg\n", __func__);
-		goto out_free;
+		return status;
 	}
 
 	for (offset = 0, i = 0; i < num_blocks; i++, offset += block_size) {
@@ -603,7 +592,7 @@ static int rsi_sdio_load_data_master_write(struct rsi_hw *adapter,
 					 temp_buf, block_size);
 		if (status < 0) {
 			rsi_dbg(ERR_ZONE, "%s: failed to write\n", __func__);
-			goto out_free;
+			return status;
 		}
 		rsi_dbg(INFO_ZONE, "%s: loading block: %d\n", __func__, i);
 		base_address += block_size;
@@ -618,7 +607,7 @@ static int rsi_sdio_load_data_master_write(struct rsi_hw *adapter,
 				rsi_dbg(ERR_ZONE,
 					"%s: Unable to set ms word reg\n",
 					__func__);
-				goto out_free;
+				return status;
 			}
 		}
 	}
@@ -634,16 +623,12 @@ static int rsi_sdio_load_data_master_write(struct rsi_hw *adapter,
 					 temp_buf,
 					 instructions_sz % block_size);
 		if (status < 0)
-			goto out_free;
+			return status;
 		rsi_dbg(INFO_ZONE,
 			"Written Last Block in Address 0x%x Successfully\n",
 			offset | RSI_SD_REQUEST_MASTER);
 	}
-
-	status = 0;
-out_free:
-	kfree(temp_buf);
-	return status;
+	return 0;
 }
 
 #define FLASH_SIZE_ADDR                 0x04000016
@@ -651,12 +636,11 @@ static int rsi_sdio_master_reg_read(struct rsi_hw *adapter, u32 addr,
 				    u32 *read_buf, u16 size)
 {
 	u32 addr_on_bus, *data;
+	u32 align[2] = {};
 	u16 ms_addr;
 	int status;
 
-	data = kzalloc(RSI_MASTER_REG_BUF_SIZE, GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
+	data = PTR_ALIGN(&align[0], 8);
 
 	ms_addr = (addr >> 16);
 	status = rsi_sdio_master_access_msword(adapter, ms_addr);
@@ -664,7 +648,7 @@ static int rsi_sdio_master_reg_read(struct rsi_hw *adapter, u32 addr,
 		rsi_dbg(ERR_ZONE,
 			"%s: Unable to set ms word to common reg\n",
 			__func__);
-		goto err;
+		return status;
 	}
 	addr &= 0xFFFF;
 
@@ -682,7 +666,7 @@ static int rsi_sdio_master_reg_read(struct rsi_hw *adapter, u32 addr,
 					 (u8 *)data, 4);
 	if (status < 0) {
 		rsi_dbg(ERR_ZONE, "%s: AHB register read failed\n", __func__);
-		goto err;
+		return status;
 	}
 	if (size == 2) {
 		if ((addr & 0x3) == 0)
@@ -704,21 +688,17 @@ static int rsi_sdio_master_reg_read(struct rsi_hw *adapter, u32 addr,
 		*read_buf = *data;
 	}
 
-err:
-	kfree(data);
-	return status;
+	return 0;
 }
 
 static int rsi_sdio_master_reg_write(struct rsi_hw *adapter,
 				     unsigned long addr,
 				     unsigned long data, u16 size)
 {
-	unsigned long *data_aligned;
+	unsigned long data1[2], *data_aligned;
 	int status;
 
-	data_aligned = kzalloc(RSI_MASTER_REG_BUF_SIZE, GFP_KERNEL);
-	if (!data_aligned)
-		return -ENOMEM;
+	data_aligned = PTR_ALIGN(&data1[0], 8);
 
 	if (size == 2) {
 		*data_aligned = ((data << 16) | (data & 0xFFFF));
@@ -737,7 +717,6 @@ static int rsi_sdio_master_reg_write(struct rsi_hw *adapter,
 		rsi_dbg(ERR_ZONE,
 			"%s: Unable to set ms word to common reg\n",
 			__func__);
-		kfree(data_aligned);
 		return -EIO;
 	}
 	addr = addr & 0xFFFF;
@@ -747,12 +726,12 @@ static int rsi_sdio_master_reg_write(struct rsi_hw *adapter,
 					(adapter,
 					 (addr | RSI_SD_REQUEST_MASTER),
 					 (u8 *)data_aligned, size);
-	if (status < 0)
+	if (status < 0) {
 		rsi_dbg(ERR_ZONE,
 			"%s: Unable to do AHB reg write\n", __func__);
-
-	kfree(data_aligned);
-	return status;
+		return status;
+	}
+	return 0;
 }
 
 /**
@@ -775,8 +754,6 @@ static int rsi_sdio_host_intf_write_pkt(struct rsi_hw *adapter,
 	int status;
 
 	queueno = ((pkt[1] >> 4) & 0xf);
-	if (queueno == RSI_BT_MGMT_Q || queueno == RSI_BT_DATA_Q)
-		queueno = RSI_BT_Q;
 
 	num_blocks = len / block_size;
 
@@ -945,16 +922,14 @@ static int rsi_probe(struct sdio_func *pfunction,
 		     const struct sdio_device_id *id)
 {
 	struct rsi_hw *adapter;
-	struct rsi_91x_sdiodev *sdev;
-	int status;
 
 	rsi_dbg(INIT_ZONE, "%s: Init function called\n", __func__);
 
-	adapter = rsi_91x_init(dev_oper_mode);
+	adapter = rsi_91x_init();
 	if (!adapter) {
 		rsi_dbg(ERR_ZONE, "%s: Failed to init os intf ops\n",
 			__func__);
-		return -EINVAL;
+		return 1;
 	}
 	adapter->rsi_host_intf = RSI_HOST_INTF_SDIO;
 	adapter->host_intf_ops = &sdio_host_intf_ops;
@@ -962,61 +937,39 @@ static int rsi_probe(struct sdio_func *pfunction,
 	if (rsi_init_sdio_interface(adapter, pfunction)) {
 		rsi_dbg(ERR_ZONE, "%s: Failed to init sdio interface\n",
 			__func__);
-		status = -EIO;
-		goto fail_free_adapter;
+		goto fail;
 	}
-	sdev = (struct rsi_91x_sdiodev *)adapter->rsi_dev;
-	rsi_init_event(&sdev->rx_thread.event);
-	status = rsi_create_kthread(adapter->priv, &sdev->rx_thread,
-				    rsi_sdio_rx_thread, "SDIO-RX-Thread");
-	if (status) {
-		rsi_dbg(ERR_ZONE, "%s: Unable to init rx thrd\n", __func__);
-		goto fail_kill_thread;
-	}
-	skb_queue_head_init(&sdev->rx_q.head);
-	sdev->rx_q.num_rx_pkts = 0;
-
 	sdio_claim_host(pfunction);
 	if (sdio_claim_irq(pfunction, rsi_handle_interrupt)) {
 		rsi_dbg(ERR_ZONE, "%s: Failed to request IRQ\n", __func__);
 		sdio_release_host(pfunction);
-		status = -EIO;
-		goto fail_claim_irq;
+		goto fail;
 	}
 	sdio_release_host(pfunction);
 	rsi_dbg(INIT_ZONE, "%s: Registered Interrupt handler\n", __func__);
 
 	if (rsi_hal_device_init(adapter)) {
 		rsi_dbg(ERR_ZONE, "%s: Failed in device init\n", __func__);
-		status = -EINVAL;
-		goto fail_dev_init;
+		sdio_claim_host(pfunction);
+		sdio_release_irq(pfunction);
+		sdio_disable_func(pfunction);
+		sdio_release_host(pfunction);
+		goto fail;
 	}
 	rsi_dbg(INFO_ZONE, "===> RSI Device Init Done <===\n");
 
 	if (rsi_sdio_master_access_msword(adapter, MISC_CFG_BASE_ADDR)) {
 		rsi_dbg(ERR_ZONE, "%s: Unable to set ms word reg\n", __func__);
-		status = -EIO;
-		goto fail_dev_init;
+		return -EIO;
 	}
 
 	adapter->priv->hibernate_resume = false;
 	adapter->priv->reinit_hw = false;
 	return 0;
-
-fail_dev_init:
-	sdio_claim_host(pfunction);
-	sdio_release_irq(pfunction);
-	sdio_release_host(pfunction);
-fail_claim_irq:
-	rsi_kill_thread(&sdev->rx_thread);
-fail_kill_thread:
-	sdio_claim_host(pfunction);
-	sdio_disable_func(pfunction);
-	sdio_release_host(pfunction);
-fail_free_adapter:
+fail:
 	rsi_91x_deinit(adapter);
 	rsi_dbg(ERR_ZONE, "%s: Failed in probe...Exiting\n", __func__);
-	return status;
+	return 1;
 }
 
 static void ulp_read_write(struct rsi_hw *adapter, u16 addr, u32 data,
@@ -1036,21 +989,17 @@ static void ulp_read_write(struct rsi_hw *adapter, u16 addr, u32 data,
 /*This function resets and re-initializes the chip.*/
 static void rsi_reset_chip(struct rsi_hw *adapter)
 {
-	u8 *data;
+	__le32 data;
 	u8 sdio_interrupt_status = 0;
 	u8 request = 1;
 	int ret;
-
-	data = kzalloc(sizeof(u32), GFP_KERNEL);
-	if (!data)
-		return;
 
 	rsi_dbg(INFO_ZONE, "Writing disable to wakeup register\n");
 	ret =  rsi_sdio_write_register(adapter, 0, SDIO_WAKEUP_REG, &request);
 	if (ret < 0) {
 		rsi_dbg(ERR_ZONE,
 			"%s: Failed to write SDIO wakeup register\n", __func__);
-		goto err;
+		return;
 	}
 	msleep(20);
 	ret =  rsi_sdio_read_register(adapter, RSI_FN1_INT_REGISTER,
@@ -1058,7 +1007,7 @@ static void rsi_reset_chip(struct rsi_hw *adapter)
 	if (ret < 0) {
 		rsi_dbg(ERR_ZONE, "%s: Failed to Read Intr Status Register\n",
 			__func__);
-		goto err;
+		return;
 	}
 	rsi_dbg(INFO_ZONE, "%s: Intr Status Register value = %d\n",
 		__func__, sdio_interrupt_status);
@@ -1068,17 +1017,17 @@ static void rsi_reset_chip(struct rsi_hw *adapter)
 		rsi_dbg(ERR_ZONE,
 			"%s: Unable to set ms word to common reg\n",
 			__func__);
-		goto err;
+		return;
 	}
 
-	put_unaligned_le32(TA_HOLD_THREAD_VALUE, data);
+	data = TA_HOLD_THREAD_VALUE;
 	if (rsi_sdio_write_register_multiple(adapter, TA_HOLD_THREAD_REG |
 					     RSI_SD_REQUEST_MASTER,
-					     data, 4)) {
+					     (u8 *)&data, 4)) {
 		rsi_dbg(ERR_ZONE,
 			"%s: Unable to hold Thread-Arch processor threads\n",
 			__func__);
-		goto err;
+		return;
 	}
 
 	/* This msleep will ensure Thread-Arch processor to go to hold
@@ -1099,9 +1048,6 @@ static void rsi_reset_chip(struct rsi_hw *adapter)
 	 * read write operations to complete for chip reset.
 	 */
 	msleep(500);
-err:
-	kfree(data);
-	return;
 }
 
 /**
@@ -1119,8 +1065,6 @@ static void rsi_disconnect(struct sdio_func *pfunction)
 		return;
 
 	dev = (struct rsi_91x_sdiodev *)adapter->rsi_dev;
-
-	rsi_kill_thread(&dev->rx_thread);
 	sdio_claim_host(pfunction);
 	sdio_release_irq(pfunction);
 	sdio_release_host(pfunction);
@@ -1394,7 +1338,10 @@ static const struct dev_pm_ops rsi_pm_ops = {
 #endif
 
 static const struct sdio_device_id rsi_dev_table[] =  {
-	{ SDIO_DEVICE(RSI_SDIO_VID_9113, RSI_SDIO_PID_9113) },
+	{ SDIO_DEVICE(0x303, 0x100) },
+	{ SDIO_DEVICE(0x041B, 0x0301) },
+	{ SDIO_DEVICE(0x041B, 0x0201) },
+	{ SDIO_DEVICE(0x041B, 0x9330) },
 	{ /* Blank */},
 };
 

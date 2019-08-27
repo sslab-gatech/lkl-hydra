@@ -69,12 +69,6 @@ static int qcaspi_pluggable = QCASPI_PLUGGABLE_MIN;
 module_param(qcaspi_pluggable, int, 0);
 MODULE_PARM_DESC(qcaspi_pluggable, "Pluggable SPI connection (yes/no).");
 
-#define QCASPI_WRITE_VERIFY_MIN 0
-#define QCASPI_WRITE_VERIFY_MAX 3
-static int wr_verify = QCASPI_WRITE_VERIFY_MIN;
-module_param(wr_verify, int, 0);
-MODULE_PARM_DESC(wr_verify, "SPI register write verify trails. Use 0-3.");
-
 #define QCASPI_TX_TIMEOUT (1 * HZ)
 #define QCASPI_QCA7K_REBOOT_TIME_MS 1000
 
@@ -83,7 +77,7 @@ start_spi_intr_handling(struct qcaspi *qca, u16 *intr_cause)
 {
 	*intr_cause = 0;
 
-	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, 0, wr_verify);
+	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, 0);
 	qcaspi_read_register(qca, SPI_REG_INTR_CAUSE, intr_cause);
 	netdev_dbg(qca->net_dev, "interrupts: 0x%04x\n", *intr_cause);
 }
@@ -96,8 +90,8 @@ end_spi_intr_handling(struct qcaspi *qca, u16 intr_cause)
 			   SPI_INT_RDBUF_ERR |
 			   SPI_INT_WRBUF_ERR);
 
-	qcaspi_write_register(qca, SPI_REG_INTR_CAUSE, intr_cause, 0);
-	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, intr_enable, wr_verify);
+	qcaspi_write_register(qca, SPI_REG_INTR_CAUSE, intr_cause);
+	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, intr_enable);
 	netdev_dbg(qca->net_dev, "acking int: 0x%04x\n", intr_cause);
 }
 
@@ -105,24 +99,22 @@ static u32
 qcaspi_write_burst(struct qcaspi *qca, u8 *src, u32 len)
 {
 	__be16 cmd;
-	struct spi_message msg;
-	struct spi_transfer transfer[2];
+	struct spi_message *msg = &qca->spi_msg2;
+	struct spi_transfer *transfer = &qca->spi_xfer2[0];
 	int ret;
 
-	memset(&transfer, 0, sizeof(transfer));
-	spi_message_init(&msg);
-
 	cmd = cpu_to_be16(QCA7K_SPI_WRITE | QCA7K_SPI_EXTERNAL);
-	transfer[0].tx_buf = &cmd;
-	transfer[0].len = QCASPI_CMD_LEN;
-	transfer[1].tx_buf = src;
-	transfer[1].len = len;
+	transfer->tx_buf = &cmd;
+	transfer->rx_buf = NULL;
+	transfer->len = QCASPI_CMD_LEN;
+	transfer = &qca->spi_xfer2[1];
+	transfer->tx_buf = src;
+	transfer->rx_buf = NULL;
+	transfer->len = len;
 
-	spi_message_add_tail(&transfer[0], &msg);
-	spi_message_add_tail(&transfer[1], &msg);
-	ret = spi_sync(qca->spi_dev, &msg);
+	ret = spi_sync(qca->spi_dev, msg);
 
-	if (ret || (msg.actual_length != QCASPI_CMD_LEN + len)) {
+	if (ret || (msg->actual_length != QCASPI_CMD_LEN + len)) {
 		qcaspi_spi_error(qca);
 		return 0;
 	}
@@ -133,20 +125,17 @@ qcaspi_write_burst(struct qcaspi *qca, u8 *src, u32 len)
 static u32
 qcaspi_write_legacy(struct qcaspi *qca, u8 *src, u32 len)
 {
-	struct spi_message msg;
-	struct spi_transfer transfer;
+	struct spi_message *msg = &qca->spi_msg1;
+	struct spi_transfer *transfer = &qca->spi_xfer1;
 	int ret;
 
-	memset(&transfer, 0, sizeof(transfer));
-	spi_message_init(&msg);
+	transfer->tx_buf = src;
+	transfer->rx_buf = NULL;
+	transfer->len = len;
 
-	transfer.tx_buf = src;
-	transfer.len = len;
+	ret = spi_sync(qca->spi_dev, msg);
 
-	spi_message_add_tail(&transfer, &msg);
-	ret = spi_sync(qca->spi_dev, &msg);
-
-	if (ret || (msg.actual_length != len)) {
+	if (ret || (msg->actual_length != len)) {
 		qcaspi_spi_error(qca);
 		return 0;
 	}
@@ -157,25 +146,23 @@ qcaspi_write_legacy(struct qcaspi *qca, u8 *src, u32 len)
 static u32
 qcaspi_read_burst(struct qcaspi *qca, u8 *dst, u32 len)
 {
-	struct spi_message msg;
+	struct spi_message *msg = &qca->spi_msg2;
 	__be16 cmd;
-	struct spi_transfer transfer[2];
+	struct spi_transfer *transfer = &qca->spi_xfer2[0];
 	int ret;
 
-	memset(&transfer, 0, sizeof(transfer));
-	spi_message_init(&msg);
-
 	cmd = cpu_to_be16(QCA7K_SPI_READ | QCA7K_SPI_EXTERNAL);
-	transfer[0].tx_buf = &cmd;
-	transfer[0].len = QCASPI_CMD_LEN;
-	transfer[1].rx_buf = dst;
-	transfer[1].len = len;
+	transfer->tx_buf = &cmd;
+	transfer->rx_buf = NULL;
+	transfer->len = QCASPI_CMD_LEN;
+	transfer = &qca->spi_xfer2[1];
+	transfer->tx_buf = NULL;
+	transfer->rx_buf = dst;
+	transfer->len = len;
 
-	spi_message_add_tail(&transfer[0], &msg);
-	spi_message_add_tail(&transfer[1], &msg);
-	ret = spi_sync(qca->spi_dev, &msg);
+	ret = spi_sync(qca->spi_dev, msg);
 
-	if (ret || (msg.actual_length != QCASPI_CMD_LEN + len)) {
+	if (ret || (msg->actual_length != QCASPI_CMD_LEN + len)) {
 		qcaspi_spi_error(qca);
 		return 0;
 	}
@@ -186,20 +173,17 @@ qcaspi_read_burst(struct qcaspi *qca, u8 *dst, u32 len)
 static u32
 qcaspi_read_legacy(struct qcaspi *qca, u8 *dst, u32 len)
 {
-	struct spi_message msg;
-	struct spi_transfer transfer;
+	struct spi_message *msg = &qca->spi_msg1;
+	struct spi_transfer *transfer = &qca->spi_xfer1;
 	int ret;
 
-	memset(&transfer, 0, sizeof(transfer));
-	spi_message_init(&msg);
+	transfer->tx_buf = NULL;
+	transfer->rx_buf = dst;
+	transfer->len = len;
 
-	transfer.rx_buf = dst;
-	transfer.len = len;
+	ret = spi_sync(qca->spi_dev, msg);
 
-	spi_message_add_tail(&transfer, &msg);
-	ret = spi_sync(qca->spi_dev, &msg);
-
-	if (ret || (msg.actual_length != len)) {
+	if (ret || (msg->actual_length != len)) {
 		qcaspi_spi_error(qca);
 		return 0;
 	}
@@ -211,23 +195,19 @@ static int
 qcaspi_tx_cmd(struct qcaspi *qca, u16 cmd)
 {
 	__be16 tx_data;
-	struct spi_message msg;
-	struct spi_transfer transfer;
+	struct spi_message *msg = &qca->spi_msg1;
+	struct spi_transfer *transfer = &qca->spi_xfer1;
 	int ret;
 
-	memset(&transfer, 0, sizeof(transfer));
-
-	spi_message_init(&msg);
-
 	tx_data = cpu_to_be16(cmd);
-	transfer.len = sizeof(cmd);
-	transfer.tx_buf = &tx_data;
-	spi_message_add_tail(&transfer, &msg);
+	transfer->len = sizeof(tx_data);
+	transfer->tx_buf = &tx_data;
+	transfer->rx_buf = NULL;
 
-	ret = spi_sync(qca->spi_dev, &msg);
+	ret = spi_sync(qca->spi_dev, msg);
 
 	if (!ret)
-		ret = msg.status;
+		ret = msg->status;
 
 	if (ret)
 		qcaspi_spi_error(qca);
@@ -245,7 +225,7 @@ qcaspi_tx_frame(struct qcaspi *qca, struct sk_buff *skb)
 
 	len = skb->len;
 
-	qcaspi_write_register(qca, SPI_REG_BFR_SIZE, len, wr_verify);
+	qcaspi_write_register(qca, SPI_REG_BFR_SIZE, len);
 	if (qca->legacy_mode)
 		qcaspi_tx_cmd(qca, QCA7K_SPI_WRITE | QCA7K_SPI_EXTERNAL);
 
@@ -288,14 +268,6 @@ qcaspi_transmit(struct qcaspi *qca)
 		return 0;
 
 	qcaspi_read_register(qca, SPI_REG_WRBUF_SPC_AVA, &available);
-
-	if (available > QCASPI_HW_BUF_LEN) {
-		/* This could only happen by interferences on the SPI line.
-		 * So retry later ...
-		 */
-		qca->stats.buf_avail_err++;
-		return -1;
-	}
 
 	while (qca->txr.skb[qca->txr.head]) {
 		pkt_len = qca->txr.skb[qca->txr.head]->len + QCASPI_HW_PKT_LEN;
@@ -359,22 +331,15 @@ qcaspi_receive(struct qcaspi *qca)
 
 	/* Read the packet size. */
 	qcaspi_read_register(qca, SPI_REG_RDBUF_BYTE_AVA, &available);
-
 	netdev_dbg(net_dev, "qcaspi_receive: SPI_REG_RDBUF_BYTE_AVA: Value: %08x\n",
 		   available);
 
-	if (available > QCASPI_HW_BUF_LEN) {
-		/* This could only happen by interferences on the SPI line.
-		 * So retry later ...
-		 */
-		qca->stats.buf_avail_err++;
-		return -1;
-	} else if (available == 0) {
+	if (available == 0) {
 		netdev_dbg(net_dev, "qcaspi_receive called without any data being available!\n");
 		return -1;
 	}
 
-	qcaspi_write_register(qca, SPI_REG_BFR_SIZE, available, wr_verify);
+	qcaspi_write_register(qca, SPI_REG_BFR_SIZE, available);
 
 	if (qca->legacy_mode)
 		qcaspi_tx_cmd(qca, QCA7K_SPI_READ | QCA7K_SPI_EXTERNAL);
@@ -545,7 +510,7 @@ qcaspi_qca7k_sync(struct qcaspi *qca, int event)
 		netdev_dbg(qca->net_dev, "sync: resetting device.\n");
 		qcaspi_read_register(qca, SPI_REG_SPI_CONFIG, &spi_config);
 		spi_config |= QCASPI_SLAVE_RESET_BIT;
-		qcaspi_write_register(qca, SPI_REG_SPI_CONFIG, spi_config, 0);
+		qcaspi_write_register(qca, SPI_REG_SPI_CONFIG, spi_config);
 
 		qca->sync = QCASPI_SYNC_RESET;
 		qca->stats.trig_reset++;
@@ -693,7 +658,7 @@ qcaspi_netdev_open(struct net_device *dev)
 		return ret;
 	}
 
-	/* SPI thread takes care of TX queue */
+	netif_start_queue(qca->net_dev);
 
 	return 0;
 }
@@ -705,7 +670,7 @@ qcaspi_netdev_close(struct net_device *dev)
 
 	netif_stop_queue(dev);
 
-	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, 0, wr_verify);
+	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, 0);
 	free_irq(qca->spi_dev->irq, qca);
 
 	kthread_stop(qca->spi_thread);
@@ -740,6 +705,7 @@ qcaspi_netdev_xmit(struct sk_buff *skb, struct net_device *dev)
 		tskb = skb_copy_expand(skb, QCAFRM_HEADER_LEN,
 				       QCAFRM_FOOTER_LEN + pad_len, GFP_ATOMIC);
 		if (!tskb) {
+			netdev_dbg(qca->net_dev, "could not allocate tx_buff\n");
 			qca->stats.out_of_mem++;
 			return NETDEV_TX_BUSY;
 		}
@@ -795,9 +761,6 @@ qcaspi_netdev_tx_timeout(struct net_device *dev)
 	qca->net_dev->stats.tx_errors++;
 	/* Trigger tx queue flush and QCA7000 reset */
 	qca->sync = QCASPI_SYNC_UNKNOWN;
-
-	if (qca->spi_thread)
-		wake_up_process(qca->spi_thread);
 }
 
 static int
@@ -870,6 +833,16 @@ qcaspi_netdev_setup(struct net_device *dev)
 	qca = netdev_priv(dev);
 	memset(qca, 0, sizeof(struct qcaspi));
 
+	memset(&qca->spi_xfer1, 0, sizeof(struct spi_transfer));
+	memset(&qca->spi_xfer2, 0, sizeof(struct spi_transfer) * 2);
+
+	spi_message_init(&qca->spi_msg1);
+	spi_message_add_tail(&qca->spi_xfer1, &qca->spi_msg1);
+
+	spi_message_init(&qca->spi_msg2);
+	spi_message_add_tail(&qca->spi_xfer2[0], &qca->spi_msg2);
+	spi_message_add_tail(&qca->spi_xfer2[1], &qca->spi_msg2);
+
 	memset(&qca->txr, 0, sizeof(qca->txr));
 	qca->txr.count = TX_RING_MAX_LEN;
 }
@@ -906,29 +879,22 @@ qca_spi_probe(struct spi_device *spi)
 
 	if ((qcaspi_clkspeed < QCASPI_CLK_SPEED_MIN) ||
 	    (qcaspi_clkspeed > QCASPI_CLK_SPEED_MAX)) {
-		dev_err(&spi->dev, "Invalid clkspeed: %d\n",
-			qcaspi_clkspeed);
+		dev_info(&spi->dev, "Invalid clkspeed: %d\n",
+			 qcaspi_clkspeed);
 		return -EINVAL;
 	}
 
 	if ((qcaspi_burst_len < QCASPI_BURST_LEN_MIN) ||
 	    (qcaspi_burst_len > QCASPI_BURST_LEN_MAX)) {
-		dev_err(&spi->dev, "Invalid burst len: %d\n",
-			qcaspi_burst_len);
+		dev_info(&spi->dev, "Invalid burst len: %d\n",
+			 qcaspi_burst_len);
 		return -EINVAL;
 	}
 
 	if ((qcaspi_pluggable < QCASPI_PLUGGABLE_MIN) ||
 	    (qcaspi_pluggable > QCASPI_PLUGGABLE_MAX)) {
-		dev_err(&spi->dev, "Invalid pluggable: %d\n",
-			qcaspi_pluggable);
-		return -EINVAL;
-	}
-
-	if (wr_verify < QCASPI_WRITE_VERIFY_MIN ||
-	    wr_verify > QCASPI_WRITE_VERIFY_MAX) {
-		dev_err(&spi->dev, "Invalid write verify: %d\n",
-			wr_verify);
+		dev_info(&spi->dev, "Invalid pluggable: %d\n",
+			 qcaspi_pluggable);
 		return -EINVAL;
 	}
 
@@ -990,8 +956,8 @@ qca_spi_probe(struct spi_device *spi)
 	}
 
 	if (register_netdev(qcaspi_devs)) {
-		dev_err(&spi->dev, "Unable to register net device %s\n",
-			qcaspi_devs->name);
+		dev_info(&spi->dev, "Unable to register net device %s\n",
+			 qcaspi_devs->name);
 		free_netdev(qcaspi_devs);
 		return -EFAULT;
 	}

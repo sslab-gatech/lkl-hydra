@@ -80,11 +80,12 @@ acr_ls_msgqueue_post_run(struct nvkm_msgqueue *queue,
 			 struct nvkm_falcon *falcon, u32 addr_args)
 {
 	struct nvkm_device *device = falcon->owner->device;
-	u8 buf[NVKM_MSGQUEUE_CMDLINE_SIZE];
+	u32 cmdline_size = NVKM_MSGQUEUE_CMDLINE_SIZE;
+	u8 buf[cmdline_size];
 
-	memset(buf, 0, sizeof(buf));
+	memset(buf, 0, cmdline_size);
 	nvkm_msgqueue_write_cmdline(queue, buf);
-	nvkm_falcon_load_dmem(falcon, buf, addr_args, sizeof(buf), 0);
+	nvkm_falcon_load_dmem(falcon, buf, addr_args, cmdline_size, 0);
 	/* rearm the queue so it will wait for the init message */
 	nvkm_msgqueue_reinit(queue);
 

@@ -33,12 +33,6 @@
 #include <linux/console.h>
 #include <linux/timer.h>
 
-#ifdef CONFIG_X86
-#include <asm/olpc.h>
-#else
-#define machine_is_olpc(x) 0
-#endif
-
 #include "debug.h"
 
 #include "viafbdev.h"

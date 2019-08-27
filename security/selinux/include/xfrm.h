@@ -47,10 +47,10 @@ static inline void selinux_xfrm_notify_policyload(void)
 {
 	struct net *net;
 
-	down_read(&net_rwsem);
+	rtnl_lock();
 	for_each_net(net)
 		rt_genid_bump_all(net);
-	up_read(&net_rwsem);
+	rtnl_unlock();
 }
 #else
 static inline int selinux_xfrm_enabled(void)

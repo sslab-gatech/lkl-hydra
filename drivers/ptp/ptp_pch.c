@@ -452,6 +452,7 @@ static int ptp_pch_adjtime(struct ptp_clock_info *ptp, s64 delta)
 static int ptp_pch_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	u64 ns;
+	u32 remainder;
 	unsigned long flags;
 	struct pch_dev *pch_dev = container_of(ptp, struct pch_dev, caps);
 	struct pch_ts_regs __iomem *regs = pch_dev->regs;
@@ -460,7 +461,8 @@ static int ptp_pch_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 	ns = pch_systime_read(regs);
 	spin_unlock_irqrestore(&pch_dev->register_lock, flags);
 
-	*ts = ns_to_timespec64(ns);
+	ts->tv_sec = div_u64_rem(ns, 1000000000, &remainder);
+	ts->tv_nsec = remainder;
 	return 0;
 }
 
@@ -472,7 +474,8 @@ static int ptp_pch_settime(struct ptp_clock_info *ptp,
 	struct pch_dev *pch_dev = container_of(ptp, struct pch_dev, caps);
 	struct pch_ts_regs __iomem *regs = pch_dev->regs;
 
-	ns = timespec64_to_ns(ts);
+	ns = ts->tv_sec * 1000000000ULL;
+	ns += ts->tv_nsec;
 
 	spin_lock_irqsave(&pch_dev->register_lock, flags);
 	pch_systime_write(regs, ns);

@@ -131,7 +131,8 @@ struct sock *__raw_v4_lookup(struct net *net, struct sock *sk,
 		if (net_eq(sock_net(sk), net) && inet->inet_num == num	&&
 		    !(inet->inet_daddr && inet->inet_daddr != raddr) 	&&
 		    !(inet->inet_rcv_saddr && inet->inet_rcv_saddr != laddr) &&
-		    raw_sk_bound_dev_eq(net, sk->sk_bound_dev_if, dif, sdif))
+		    !(sk->sk_bound_dev_if && sk->sk_bound_dev_if != dif &&
+		      sk->sk_bound_dev_if != sdif))
 			goto found; /* gotcha */
 	}
 	sk = NULL;
@@ -380,7 +381,6 @@ static int raw_send_hdrinc(struct sock *sk, struct flowi4 *fl4,
 
 	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
-	skb->tstamp = sockc->transmit_time;
 	skb_dst_set(skb, &rt->dst);
 	*rtp = NULL;
 
@@ -390,7 +390,7 @@ static int raw_send_hdrinc(struct sock *sk, struct flowi4 *fl4,
 
 	skb->ip_summed = CHECKSUM_NONE;
 
-	skb_setup_tx_timestamp(skb, sockc->tsflags);
+	sock_tx_timestamp(sk, sockc->tsflags, &skb_shinfo(skb)->tx_flags);
 
 	if (flags & MSG_CONFIRM)
 		skb_set_dst_pending_confirm(skb, 1);
@@ -561,7 +561,13 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		daddr = inet->inet_daddr;
 	}
 
-	ipcm_init_sk(&ipc, inet);
+	ipc.sockc.tsflags = sk->sk_tsflags;
+	ipc.addr = inet->inet_saddr;
+	ipc.opt = NULL;
+	ipc.tx_flags = 0;
+	ipc.ttl = 0;
+	ipc.tos = -1;
+	ipc.oif = sk->sk_bound_dev_if;
 
 	if (msg->msg_controllen) {
 		err = ip_cmsg_send(sk, msg, &ipc, false);
@@ -607,7 +613,7 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		tos |= RTO_ONLINK;
 
 	if (ipv4_is_multicast(daddr)) {
-		if (!ipc.oif || netif_index_is_l3_master(sock_net(sk), ipc.oif))
+		if (!ipc.oif)
 			ipc.oif = inet->mc_index;
 		if (!saddr)
 			saddr = inet->mc_addr;
@@ -664,6 +670,8 @@ back_from_confirm:
 				      &rt, msg->msg_flags, &ipc.sockc);
 
 	 else {
+		sock_tx_timestamp(sk, ipc.sockc.tsflags, &ipc.tx_flags);
+
 		if (!ipc.addr)
 			ipc.addr = fl4.daddr;
 		lock_sock(sk);
@@ -703,7 +711,9 @@ static void raw_close(struct sock *sk, long timeout)
 	/*
 	 * Raw sockets may have direct kernel references. Kill them.
 	 */
+	rtnl_lock();
 	ip_ra_control(sk, 0, NULL);
+	rtnl_unlock();
 
 	sk_common_release(sk);
 }
@@ -804,7 +814,7 @@ out:
 	return copied;
 }
 
-static int raw_sk_init(struct sock *sk)
+static int raw_init(struct sock *sk)
 {
 	struct raw_sock *rp = raw_sk(sk);
 
@@ -969,7 +979,7 @@ struct proto raw_prot = {
 	.connect	   = ip4_datagram_connect,
 	.disconnect	   = __udp_disconnect,
 	.ioctl		   = raw_ioctl,
-	.init		   = raw_sk_init,
+	.init		   = raw_init,
 	.setsockopt	   = raw_setsockopt,
 	.getsockopt	   = raw_getsockopt,
 	.sendmsg	   = raw_sendmsg,
@@ -995,12 +1005,11 @@ struct proto raw_prot = {
 static struct sock *raw_get_first(struct seq_file *seq)
 {
 	struct sock *sk;
-	struct raw_hashinfo *h = PDE_DATA(file_inode(seq->file));
 	struct raw_iter_state *state = raw_seq_private(seq);
 
 	for (state->bucket = 0; state->bucket < RAW_HTABLE_SIZE;
 			++state->bucket) {
-		sk_for_each(sk, &h->ht[state->bucket])
+		sk_for_each(sk, &state->h->ht[state->bucket])
 			if (sock_net(sk) == seq_file_net(seq))
 				goto found;
 	}
@@ -1011,7 +1020,6 @@ found:
 
 static struct sock *raw_get_next(struct seq_file *seq, struct sock *sk)
 {
-	struct raw_hashinfo *h = PDE_DATA(file_inode(seq->file));
 	struct raw_iter_state *state = raw_seq_private(seq);
 
 	do {
@@ -1021,7 +1029,7 @@ try_again:
 	} while (sk && sock_net(sk) != seq_file_net(seq));
 
 	if (!sk && ++state->bucket < RAW_HTABLE_SIZE) {
-		sk = sk_head(&h->ht[state->bucket]);
+		sk = sk_head(&state->h->ht[state->bucket]);
 		goto try_again;
 	}
 	return sk;
@@ -1039,9 +1047,9 @@ static struct sock *raw_get_idx(struct seq_file *seq, loff_t pos)
 
 void *raw_seq_start(struct seq_file *seq, loff_t *pos)
 {
-	struct raw_hashinfo *h = PDE_DATA(file_inode(seq->file));
+	struct raw_iter_state *state = raw_seq_private(seq);
 
-	read_lock(&h->lock);
+	read_lock(&state->h->lock);
 	return *pos ? raw_get_idx(seq, *pos - 1) : SEQ_START_TOKEN;
 }
 EXPORT_SYMBOL_GPL(raw_seq_start);
@@ -1061,9 +1069,9 @@ EXPORT_SYMBOL_GPL(raw_seq_next);
 
 void raw_seq_stop(struct seq_file *seq, void *v)
 {
-	struct raw_hashinfo *h = PDE_DATA(file_inode(seq->file));
+	struct raw_iter_state *state = raw_seq_private(seq);
 
-	read_unlock(&h->lock);
+	read_unlock(&state->h->lock);
 }
 EXPORT_SYMBOL_GPL(raw_seq_stop);
 
@@ -1104,10 +1112,37 @@ static const struct seq_operations raw_seq_ops = {
 	.show  = raw_seq_show,
 };
 
+int raw_seq_open(struct inode *ino, struct file *file,
+		 struct raw_hashinfo *h, const struct seq_operations *ops)
+{
+	int err;
+	struct raw_iter_state *i;
+
+	err = seq_open_net(ino, file, ops, sizeof(struct raw_iter_state));
+	if (err < 0)
+		return err;
+
+	i = raw_seq_private((struct seq_file *)file->private_data);
+	i->h = h;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(raw_seq_open);
+
+static int raw_v4_seq_open(struct inode *inode, struct file *file)
+{
+	return raw_seq_open(inode, file, &raw_v4_hashinfo, &raw_seq_ops);
+}
+
+static const struct file_operations raw_seq_fops = {
+	.open	 = raw_v4_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = seq_release_net,
+};
+
 static __net_init int raw_init_net(struct net *net)
 {
-	if (!proc_create_net_data("raw", 0444, net->proc_net, &raw_seq_ops,
-			sizeof(struct raw_iter_state), &raw_v4_hashinfo))
+	if (!proc_create("raw", S_IRUGO, net->proc_net, &raw_seq_fops))
 		return -ENOMEM;
 
 	return 0;
@@ -1133,27 +1168,3 @@ void __init raw_proc_exit(void)
 	unregister_pernet_subsys(&raw_net_ops);
 }
 #endif /* CONFIG_PROC_FS */
-
-static void raw_sysctl_init_net(struct net *net)
-{
-#ifdef CONFIG_NET_L3_MASTER_DEV
-	net->ipv4.sysctl_raw_l3mdev_accept = 1;
-#endif
-}
-
-static int __net_init raw_sysctl_init(struct net *net)
-{
-	raw_sysctl_init_net(net);
-	return 0;
-}
-
-static struct pernet_operations __net_initdata raw_sysctl_ops = {
-	.init	= raw_sysctl_init,
-};
-
-void __init raw_init(void)
-{
-	raw_sysctl_init_net(&init_net);
-	if (register_pernet_subsys(&raw_sysctl_ops))
-		panic("RAW: failed to init sysctl parameters.\n");
-}

@@ -256,7 +256,7 @@ static int da9063_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	else
 		rtc->rtc_sync = false;
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int da9063_rtc_set_time(struct device *dev, struct rtc_time *tm)

@@ -140,14 +140,14 @@ struct dso {
 	struct list_head node;
 	struct rb_node	 rb_node;	/* rbtree node sorted by long name */
 	struct rb_root	 *root;		/* root of rbtree that rb_node is in */
-	struct rb_root	 symbols;
-	struct rb_root	 symbol_names;
+	struct rb_root	 symbols[MAP__NR_TYPES];
+	struct rb_root	 symbol_names[MAP__NR_TYPES];
 	struct rb_root	 inlined_nodes;
 	struct rb_root	 srclines;
 	struct {
 		u64		addr;
 		struct symbol	*symbol;
-	} last_find_result;
+	} last_find_result[MAP__NR_TYPES];
 	void		 *a2l;
 	char		 *symsrc_filename;
 	unsigned int	 a2l_fails;
@@ -164,8 +164,8 @@ struct dso {
 	u8		 short_name_allocated:1;
 	u8		 long_name_allocated:1;
 	u8		 is_64_bit:1;
-	bool		 sorted_by_name;
-	bool		 loaded;
+	u8		 sorted_by_name;
+	u8		 loaded;
 	u8		 rel;
 	u8		 build_id[BUILD_ID_SIZE];
 	u64		 text_offset;
@@ -175,7 +175,6 @@ struct dso {
 	u16		 short_name_len;
 	void		*dwfl;			/* DWARF debug info */
 	struct auxtrace_cache *auxtrace_cache;
-	int		 comp;
 
 	/* dso data file */
 	struct {
@@ -203,13 +202,14 @@ struct dso {
  * @dso: the 'struct dso *' in which symbols itereated
  * @pos: the 'struct symbol *' to use as a loop cursor
  * @n: the 'struct rb_node *' to use as a temporary storage
+ * @type: the 'enum map_type' type of symbols
  */
-#define dso__for_each_symbol(dso, pos, n)	\
-	symbols__for_each_entry(&(dso)->symbols, pos, n)
+#define dso__for_each_symbol(dso, pos, n, type)	\
+	symbols__for_each_entry(&(dso)->symbols[(type)], pos, n)
 
-static inline void dso__set_loaded(struct dso *dso)
+static inline void dso__set_loaded(struct dso *dso, enum map_type type)
 {
-	dso->loaded = true;
+	dso->loaded |= (1 << type);
 }
 
 struct dso *dso__new(const char *name);
@@ -231,16 +231,11 @@ static inline void __dso__zput(struct dso **dso)
 
 #define dso__zput(dso) __dso__zput(&dso)
 
-bool dso__loaded(const struct dso *dso);
+bool dso__loaded(const struct dso *dso, enum map_type type);
 
-static inline bool dso__has_symbols(const struct dso *dso)
-{
-	return !RB_EMPTY_ROOT(&dso->symbols);
-}
-
-bool dso__sorted_by_name(const struct dso *dso);
-void dso__set_sorted_by_name(struct dso *dso);
-void dso__sort_by_name(struct dso *dso);
+bool dso__sorted_by_name(const struct dso *dso, enum map_type type);
+void dso__set_sorted_by_name(struct dso *dso, enum map_type type);
+void dso__sort_by_name(struct dso *dso, enum map_type type);
 
 void dso__set_build_id(struct dso *dso, void *build_id);
 bool dso__build_id_equal(const struct dso *dso, u8 *build_id);
@@ -251,7 +246,9 @@ int dso__kernel_module_get_build_id(struct dso *dso, const char *root_dir);
 char dso__symtab_origin(const struct dso *dso);
 int dso__read_binary_type_filename(const struct dso *dso, enum dso_binary_type type,
 				   char *root_dir, char *filename, size_t size);
+bool is_supported_compression(const char *ext);
 bool is_kernel_module(const char *pathname, int cpumode);
+bool decompress_to_file(const char *ext, const char *filename, int output_fd);
 bool dso__needs_decompress(struct dso *dso);
 int dso__decompress_kmodule_fd(struct dso *dso, const char *name);
 int dso__decompress_kmodule_path(struct dso *dso, const char *name,
@@ -262,15 +259,17 @@ int dso__decompress_kmodule_path(struct dso *dso, const char *name,
 
 struct kmod_path {
 	char *name;
-	int   comp;
+	char *ext;
+	bool  comp;
 	bool  kmod;
 };
 
 int __kmod_path__parse(struct kmod_path *m, const char *path,
-		     bool alloc_name);
+		     bool alloc_name, bool alloc_ext);
 
-#define kmod_path__parse(__m, __p)      __kmod_path__parse(__m, __p, false)
-#define kmod_path__parse_name(__m, __p) __kmod_path__parse(__m, __p, true)
+#define kmod_path__parse(__m, __p)      __kmod_path__parse(__m, __p, false, false)
+#define kmod_path__parse_name(__m, __p) __kmod_path__parse(__m, __p, true , false)
+#define kmod_path__parse_ext(__m, __p)  __kmod_path__parse(__m, __p, false, true)
 
 void dso__set_module_info(struct dso *dso, struct kmod_path *m,
 			  struct machine *machine);
@@ -322,7 +321,6 @@ int dso__data_get_fd(struct dso *dso, struct machine *machine);
 void dso__data_put_fd(struct dso *dso);
 void dso__data_close(struct dso *dso);
 
-int dso__data_file_size(struct dso *dso, struct machine *machine);
 off_t dso__data_size(struct dso *dso, struct machine *machine);
 ssize_t dso__data_read_offset(struct dso *dso, struct machine *machine,
 			      u64 offset, u8 *data, ssize_t size);
@@ -351,8 +349,9 @@ size_t __dsos__fprintf_buildid(struct list_head *head, FILE *fp,
 size_t __dsos__fprintf(struct list_head *head, FILE *fp);
 
 size_t dso__fprintf_buildid(struct dso *dso, FILE *fp);
-size_t dso__fprintf_symbols_by_name(struct dso *dso, FILE *fp);
-size_t dso__fprintf(struct dso *dso, FILE *fp);
+size_t dso__fprintf_symbols_by_name(struct dso *dso,
+				    enum map_type type, FILE *fp);
+size_t dso__fprintf(struct dso *dso, enum map_type type, FILE *fp);
 
 static inline bool dso__is_vmlinux(struct dso *dso)
 {

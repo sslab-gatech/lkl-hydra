@@ -13,7 +13,7 @@
     (c) 2005-2006 Nickolay V. Shmyrev <nshmyrev@yandex.ru>
 
     Fixes to be fully V4L2 compliant by
-    (c) 2006 Mauro Carvalho Chehab <mchehab@kernel.org>
+    (c) 2006 Mauro Carvalho Chehab <mchehab@infradead.org>
 
     Cropping and overscan support
     Copyright (C) 2005, 2006 Michael H. Schimek <mschimek@gmx.at>
@@ -2040,6 +2040,7 @@ limit_scaled_size_lock       (struct bttv_fh *               fh,
 	max_width = max_width & width_mask;
 
 	/* Max. scale factor is 16:1 for frames, 8:1 for fields. */
+	min_height = min_height;
 	/* Min. scale factor is 1:1. */
 	max_height >>= !V4L2_FIELD_HAS_BOTH(field);
 
@@ -2472,8 +2473,8 @@ static int bttv_querycap(struct file *file, void  *priv,
 	if (0 == v4l2)
 		return -EINVAL;
 
-	strscpy(cap->driver, "bttv", sizeof(cap->driver));
-	strscpy(cap->card, btv->video_dev.name, sizeof(cap->card));
+	strlcpy(cap->driver, "bttv", sizeof(cap->driver));
+	strlcpy(cap->card, btv->video_dev.name, sizeof(cap->card));
 	snprintf(cap->bus_info, sizeof(cap->bus_info),
 		 "PCI:%s", pci_name(btv->c.pci));
 	cap->capabilities =
@@ -2534,7 +2535,7 @@ static int bttv_enum_fmt_cap_ovr(struct v4l2_fmtdesc *f)
 		return -EINVAL;
 
 	f->pixelformat = formats[i].fourcc;
-	strscpy(f->description, formats[i].name, sizeof(f->description));
+	strlcpy(f->description, formats[i].name, sizeof(f->description));
 
 	return i;
 }
@@ -2781,7 +2782,7 @@ static int bttv_g_tuner(struct file *file, void *priv,
 	t->rxsubchans = V4L2_TUNER_SUB_MONO;
 	t->capability = V4L2_TUNER_CAP_NORM;
 	bttv_call_all(btv, tuner, g_tuner, t);
-	strscpy(t->name, "Television", sizeof(t->name));
+	strcpy(t->name, "Television");
 	t->type       = V4L2_TUNER_ANALOG_TV;
 	if (btread(BT848_DSTATUS)&BT848_DSTATUS_HLOC)
 		t->signal = 0xffff;
@@ -2792,17 +2793,19 @@ static int bttv_g_tuner(struct file *file, void *priv,
 	return 0;
 }
 
-static int bttv_g_pixelaspect(struct file *file, void *priv,
-			      int type, struct v4l2_fract *f)
+static int bttv_cropcap(struct file *file, void *priv,
+				struct v4l2_cropcap *cap)
 {
 	struct bttv_fh *fh = priv;
 	struct bttv *btv = fh->btv;
 
-	if (type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+	if (cap->type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
+	    cap->type != V4L2_BUF_TYPE_VIDEO_OVERLAY)
 		return -EINVAL;
 
 	/* defrect and bounds are set via g_selection */
-	*f = bttv_tvnorms[btv->tvnorm].cropcap.pixelaspect;
+	cap->pixelaspect = bttv_tvnorms[btv->tvnorm].cropcap.pixelaspect;
+
 	return 0;
 }
 
@@ -3160,7 +3163,7 @@ static const struct v4l2_ioctl_ops bttv_ioctl_ops = {
 	.vidioc_g_fmt_vbi_cap           = bttv_g_fmt_vbi_cap,
 	.vidioc_try_fmt_vbi_cap         = bttv_try_fmt_vbi_cap,
 	.vidioc_s_fmt_vbi_cap           = bttv_s_fmt_vbi_cap,
-	.vidioc_g_pixelaspect           = bttv_g_pixelaspect,
+	.vidioc_cropcap                 = bttv_cropcap,
 	.vidioc_reqbufs                 = bttv_reqbufs,
 	.vidioc_querybuf                = bttv_querybuf,
 	.vidioc_qbuf                    = bttv_qbuf,
@@ -3254,7 +3257,7 @@ static int radio_g_tuner(struct file *file, void *priv, struct v4l2_tuner *t)
 
 	if (0 != t->index)
 		return -EINVAL;
-	strscpy(t->name, "Radio", sizeof(t->name));
+	strcpy(t->name, "Radio");
 	t->type = V4L2_TUNER_RADIO;
 	radio_enable(btv);
 
@@ -3341,10 +3344,10 @@ static __poll_t radio_poll(struct file *file, poll_table *wait)
 	radio_enable(btv);
 	cmd.instance = file;
 	cmd.event_list = wait;
-	cmd.poll_mask = res;
+	cmd.result = res;
 	bttv_call_all(btv, core, ioctl, SAA6588_CMD_POLL, &cmd);
 
-	return cmd.poll_mask;
+	return cmd.result;
 }
 
 static const struct v4l2_file_operations radio_fops =
@@ -3508,7 +3511,7 @@ static void bttv_irq_debug_low_latency(struct bttv *btv, u32 rc)
 	}
 	pr_notice("%d: Uhm. Looks like we have unusual high IRQ latencies\n",
 		  btv->c.nr);
-	pr_notice("%d: Lets try to catch the culprit red-handed ...\n",
+	pr_notice("%d: Lets try to catch the culpit red-handed ...\n",
 		  btv->c.nr);
 	dump_stack();
 }
@@ -4208,7 +4211,7 @@ static int bttv_probe(struct pci_dev *dev, const struct pci_device_id *pci_id)
 	/* register video4linux + input */
 	if (!bttv_tvcards[btv->c.type].no_video) {
 		v4l2_ctrl_add_handler(&btv->radio_ctrl_handler, hdl,
-				v4l2_ctrl_radio_filter, false);
+				v4l2_ctrl_radio_filter);
 		if (btv->radio_ctrl_handler.error) {
 			result = btv->radio_ctrl_handler.error;
 			goto fail2;

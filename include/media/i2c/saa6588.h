@@ -32,7 +32,6 @@ struct saa6588_command {
 	unsigned char __user *buffer;
 	struct file   *instance;
 	poll_table    *event_list;
-	__poll_t      poll_mask;
 };
 
 /* These ioctls are internal to the kernel */

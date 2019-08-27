@@ -257,7 +257,6 @@ struct stripe_head {
 		sector_t	sector;			/* sector of this page */
 		unsigned long	flags;
 		u32		log_checksum;
-		unsigned short	write_hint;
 	} dev[1]; /* allocated with extra space depending of RAID geometry */
 };
 
@@ -670,7 +669,7 @@ struct r5conf {
 	int			pool_size; /* number of disks in stripeheads in pool */
 	spinlock_t		device_lock;
 	struct disk_info	*disks;
-	struct bio_set		bio_split;
+	struct bio_set		*bio_split;
 
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.

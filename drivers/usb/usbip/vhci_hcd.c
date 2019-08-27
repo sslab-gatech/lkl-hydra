@@ -318,9 +318,8 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 	struct vhci_hcd	*vhci_hcd;
 	struct vhci	*vhci;
 	int             retval = 0;
-	int		rhport = -1;
+	int		rhport;
 	unsigned long	flags;
-	bool invalid_rhport = false;
 
 	u32 prev_port_status[VHCI_HC_PORTS];
 
@@ -335,19 +334,9 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 	usbip_dbg_vhci_rh("typeReq %x wValue %x wIndex %x\n", typeReq, wValue,
 			  wIndex);
 
-	/*
-	 * wIndex can be 0 for some request types (typeReq). rhport is
-	 * in valid range when wIndex >= 1 and < VHCI_HC_PORTS.
-	 *
-	 * Reference port_status[] only with valid rhport when
-	 * invalid_rhport is false.
-	 */
-	if (wIndex < 1 || wIndex > VHCI_HC_PORTS) {
-		invalid_rhport = true;
-		if (wIndex > VHCI_HC_PORTS)
-			pr_err("invalid port number %d\n", wIndex);
-	} else
-		rhport = wIndex - 1;
+	if (wIndex > VHCI_HC_PORTS)
+		pr_err("invalid port number %d\n", wIndex);
+	rhport = wIndex - 1;
 
 	vhci_hcd = hcd_to_vhci_hcd(hcd);
 	vhci = vhci_hcd->vhci;
@@ -356,9 +345,8 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 
 	/* store old status and compare now and old later */
 	if (usbip_dbg_flag_vhci_rh) {
-		if (!invalid_rhport)
-			memcpy(prev_port_status, vhci_hcd->port_status,
-				sizeof(prev_port_status));
+		memcpy(prev_port_status, vhci_hcd->port_status,
+			sizeof(prev_port_status));
 	}
 
 	switch (typeReq) {
@@ -366,10 +354,6 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		usbip_dbg_vhci_rh(" ClearHubFeature\n");
 		break;
 	case ClearPortFeature:
-		if (invalid_rhport) {
-			pr_err("invalid port number %d\n", wIndex);
-			goto error;
-		}
 		switch (wValue) {
 		case USB_PORT_FEAT_SUSPEND:
 			if (hcd->speed == HCD_USB3) {
@@ -429,10 +413,9 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		break;
 	case GetPortStatus:
 		usbip_dbg_vhci_rh(" GetPortStatus port %x\n", wIndex);
-		if (invalid_rhport) {
+		if (wIndex < 1) {
 			pr_err("invalid port number %d\n", wIndex);
 			retval = -EPIPE;
-			goto error;
 		}
 
 		/* we do not care about resume. */
@@ -528,20 +511,11 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				goto error;
 			}
 
-			if (invalid_rhport) {
-				pr_err("invalid port number %d\n", wIndex);
-				goto error;
-			}
-
 			vhci_hcd->port_status[rhport] |= USB_PORT_STAT_SUSPEND;
 			break;
 		case USB_PORT_FEAT_POWER:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_POWER\n");
-			if (invalid_rhport) {
-				pr_err("invalid port number %d\n", wIndex);
-				goto error;
-			}
 			if (hcd->speed == HCD_USB3)
 				vhci_hcd->port_status[rhport] |= USB_SS_PORT_STAT_POWER;
 			else
@@ -550,10 +524,6 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		case USB_PORT_FEAT_BH_PORT_RESET:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_BH_PORT_RESET\n");
-			if (invalid_rhport) {
-				pr_err("invalid port number %d\n", wIndex);
-				goto error;
-			}
 			/* Applicable only for USB3.0 hub */
 			if (hcd->speed != HCD_USB3) {
 				pr_err("USB_PORT_FEAT_BH_PORT_RESET req not "
@@ -564,10 +534,6 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		case USB_PORT_FEAT_RESET:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_RESET\n");
-			if (invalid_rhport) {
-				pr_err("invalid port number %d\n", wIndex);
-				goto error;
-			}
 			/* if it's already enabled, disable */
 			if (hcd->speed == HCD_USB3) {
 				vhci_hcd->port_status[rhport] = 0;
@@ -588,10 +554,6 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		default:
 			usbip_dbg_vhci_rh(" SetPortFeature: default %d\n",
 					  wValue);
-			if (invalid_rhport) {
-				pr_err("invalid port number %d\n", wIndex);
-				goto error;
-			}
 			if (hcd->speed == HCD_USB3) {
 				if ((vhci_hcd->port_status[rhport] &
 				     USB_SS_PORT_STAT_POWER) != 0) {
@@ -633,7 +595,7 @@ error:
 	if (usbip_dbg_flag_vhci_rh) {
 		pr_debug("port %d\n", rhport);
 		/* Only dump valid port status */
-		if (!invalid_rhport) {
+		if (rhport >= 0) {
 			dump_port_status_diff(prev_port_status[rhport],
 					      vhci_hcd->port_status[rhport],
 					      hcd->speed == HCD_USB3);
@@ -643,10 +605,8 @@ error:
 
 	spin_unlock_irqrestore(&vhci->lock, flags);
 
-	if (!invalid_rhport &&
-	    (vhci_hcd->port_status[rhport] & PORT_C_MASK) != 0) {
+	if ((vhci_hcd->port_status[rhport] & PORT_C_MASK) != 0)
 		usb_hcd_poll_rh_status(hcd);
-	}
 
 	return retval;
 }

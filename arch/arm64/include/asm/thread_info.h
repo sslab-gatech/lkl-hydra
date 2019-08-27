@@ -42,19 +42,14 @@ struct thread_info {
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 	u64			ttbr0;		/* saved TTBR0_EL1 */
 #endif
-	union {
-		u64		preempt_count;	/* 0 => preemptible, <0 => bug */
-		struct {
-#ifdef CONFIG_CPU_BIG_ENDIAN
-			u32	need_resched;
-			u32	count;
-#else
-			u32	count;
-			u32	need_resched;
-#endif
-		} preempt;
-	};
+	int			preempt_count;	/* 0 => preemptable, <0 => bug */
 };
+
+#define INIT_THREAD_INFO(tsk)						\
+{									\
+	.preempt_count	= INIT_PREEMPT_COUNT,				\
+	.addr_limit	= KERNEL_DS,					\
+}
 
 #define thread_saved_pc(tsk)	\
 	((unsigned long)(tsk->thread.cpu_context.pc))
@@ -99,7 +94,6 @@ void arch_release_task_struct(struct task_struct *tsk);
 #define TIF_32BIT		22	/* 32bit process */
 #define TIF_SVE			23	/* Scalable Vector Extension in use */
 #define TIF_SVE_VL_INHERIT	24	/* Inherit sve_vl_onexec across exec */
-#define TIF_SSBD		25	/* Wants SSB mitigation */
 
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
@@ -122,13 +116,6 @@ void arch_release_task_struct(struct task_struct *tsk);
 #define _TIF_SYSCALL_WORK	(_TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT | \
 				 _TIF_SYSCALL_TRACEPOINT | _TIF_SECCOMP | \
 				 _TIF_NOHZ)
-
-#define INIT_THREAD_INFO(tsk)						\
-{									\
-	.flags		= _TIF_FOREIGN_FPSTATE,				\
-	.preempt_count	= INIT_PREEMPT_COUNT,				\
-	.addr_limit	= KERNEL_DS,					\
-}
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_THREAD_INFO_H */

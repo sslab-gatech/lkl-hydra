@@ -171,8 +171,7 @@ static int snd_compr_free(struct inode *inode, struct file *f)
 	}
 
 	data->stream.ops->free(&data->stream);
-	if (!data->stream.runtime->dma_buffer_p)
-		kfree(data->stream.runtime->buffer);
+	kfree(data->stream.runtime->buffer);
 	kfree(data->stream.runtime);
 	kfree(data);
 	return 0;
@@ -506,7 +505,7 @@ static int snd_compr_allocate_buffer(struct snd_compr_stream *stream,
 		struct snd_compr_params *params)
 {
 	unsigned int buffer_size;
-	void *buffer = NULL;
+	void *buffer;
 
 	buffer_size = params->buffer.fragment_size * params->buffer.fragments;
 	if (stream->ops->copy) {
@@ -515,18 +514,7 @@ static int snd_compr_allocate_buffer(struct snd_compr_stream *stream,
 		 * the data from core
 		 */
 	} else {
-		if (stream->runtime->dma_buffer_p) {
-
-			if (buffer_size > stream->runtime->dma_buffer_p->bytes)
-				dev_err(&stream->device->dev,
-						"Not enough DMA buffer");
-			else
-				buffer = stream->runtime->dma_buffer_p->area;
-
-		} else {
-			buffer = kmalloc(buffer_size, GFP_KERNEL);
-		}
-
+		buffer = kmalloc(buffer_size, GFP_KERNEL);
 		if (!buffer)
 			return -ENOMEM;
 	}
@@ -541,8 +529,7 @@ static int snd_compress_check_input(struct snd_compr_params *params)
 {
 	/* first let's check the buffer parameter's */
 	if (params->buffer.fragment_size == 0 ||
-	    params->buffer.fragments > INT_MAX / params->buffer.fragment_size ||
-	    params->buffer.fragments == 0)
+	    params->buffer.fragments > INT_MAX / params->buffer.fragment_size)
 		return -EINVAL;
 
 	/* now codec parameters */
@@ -1014,7 +1001,7 @@ static int snd_compress_proc_init(struct snd_compr *compr)
 					   compr->card->proc_root);
 	if (!entry)
 		return -ENOMEM;
-	entry->mode = S_IFDIR | 0555;
+	entry->mode = S_IFDIR | S_IRUGO | S_IXUGO;
 	if (snd_info_register(entry) < 0) {
 		snd_info_free_entry(entry);
 		return -ENOMEM;
@@ -1172,6 +1159,18 @@ int snd_compress_deregister(struct snd_compr *device)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_compress_deregister);
+
+static int __init snd_compress_init(void)
+{
+	return 0;
+}
+
+static void __exit snd_compress_exit(void)
+{
+}
+
+module_init(snd_compress_init);
+module_exit(snd_compress_exit);
 
 MODULE_DESCRIPTION("ALSA Compressed offload framework");
 MODULE_AUTHOR("Vinod Koul <vinod.koul@linux.intel.com>");

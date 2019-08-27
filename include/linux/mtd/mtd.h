@@ -25,15 +25,18 @@
 #include <linux/notifier.h>
 #include <linux/device.h>
 #include <linux/of.h>
-#include <linux/nvmem-provider.h>
 
 #include <mtd/mtd-abi.h>
 
 #include <asm/div64.h>
 
-#define MTD_FAIL_ADDR_UNKNOWN -1LL
+#define MTD_ERASE_PENDING	0x01
+#define MTD_ERASING		0x02
+#define MTD_ERASE_SUSPEND	0x04
+#define MTD_ERASE_DONE		0x08
+#define MTD_ERASE_FAILED	0x10
 
-struct mtd_info;
+#define MTD_FAIL_ADDR_UNKNOWN -1LL
 
 /*
  * If the erase fails, fail_addr might indicate exactly which block failed. If
@@ -41,9 +44,18 @@ struct mtd_info;
  * or was not specific to any particular block.
  */
 struct erase_info {
+	struct mtd_info *mtd;
 	uint64_t addr;
 	uint64_t len;
 	uint64_t fail_addr;
+	u_long time;
+	u_long retries;
+	unsigned dev;
+	unsigned cell;
+	void (*callback) (struct erase_info *self);
+	u_long priv;
+	u_char state;
+	struct erase_info *next;
 };
 
 struct mtd_erase_region_info {
@@ -68,11 +80,9 @@ struct mtd_erase_region_info {
  * @datbuf:	data buffer - if NULL only oob data are read/written
  * @oobbuf:	oob data buffer
  *
- * Note, some MTD drivers do not allow you to write more than one OOB area at
- * one go. If you try to do that on such an MTD device, -EINVAL will be
- * returned. If you want to make your implementation portable on all kind of MTD
- * devices you should split the write request into several sub-requests when the
- * request crosses a page boundary.
+ * Note, it is allowed to read more than one OOB area at one go, but not write.
+ * The interface assumes that the OOB write requests program only one page's
+ * OOB area.
  */
 struct mtd_oob_ops {
 	unsigned int	mode;
@@ -208,7 +218,6 @@ struct mtd_debug_info {
 struct mtd_info {
 	u_char type;
 	uint32_t flags;
-	uint32_t orig_flags; /* Flags as before running mtd checks */
 	uint64_t size;	 // Total size of the MTD
 
 	/* "Major" erase size for the device. Naïve users may take this
@@ -343,7 +352,6 @@ struct mtd_info {
 	struct device dev;
 	int usecount;
 	struct mtd_debug_info dbg;
-	struct nvmem_device *nvmem;
 };
 
 int mtd_ooblayout_ecc(struct mtd_info *mtd, int section,
@@ -389,7 +397,7 @@ static inline struct device_node *mtd_get_of_node(struct mtd_info *mtd)
 	return dev_of_node(&mtd->dev);
 }
 
-static inline u32 mtd_oobavail(struct mtd_info *mtd, struct mtd_oob_ops *ops)
+static inline int mtd_oobavail(struct mtd_info *mtd, struct mtd_oob_ops *ops)
 {
 	return ops->mode == MTD_OPS_AUTO_OOB ? mtd->oobavail : mtd->oobsize;
 }
@@ -586,6 +594,8 @@ struct mtd_notifier {
 extern void register_mtd_user (struct mtd_notifier *new);
 extern int unregister_mtd_user (struct mtd_notifier *old);
 void *mtd_kmalloc_up_to(const struct mtd_info *mtd, size_t *size);
+
+void mtd_erase_callback(struct erase_info *instr);
 
 static inline int mtd_is_bitflip(int err) {
 	return err == -EUCLEAN;

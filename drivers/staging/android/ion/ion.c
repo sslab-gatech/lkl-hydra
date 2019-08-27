@@ -23,6 +23,7 @@
 #include <linux/mm_types.h>
 #include <linux/rbtree.h>
 #include <linux/sched/task.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
@@ -31,6 +32,11 @@
 
 static struct ion_device *internal_dev;
 static int heap_id;
+
+bool ion_buffer_cached(struct ion_buffer *buffer)
+{
+	return !!(buffer->flags & ION_FLAG_CACHED);
+}
 
 /* this function should only be called while dev->lock is held */
 static void ion_buffer_add(struct ion_device *dev,
@@ -73,8 +79,6 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 
 	buffer->heap = heap;
 	buffer->flags = flags;
-	buffer->dev = dev;
-	buffer->size = len;
 
 	ret = heap->ops->allocate(heap, buffer, len, flags);
 
@@ -94,13 +98,11 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 		goto err1;
 	}
 
-	spin_lock(&heap->stat_lock);
-	heap->num_of_buffers++;
-	heap->num_of_alloc_bytes += len;
-	if (heap->num_of_alloc_bytes > heap->alloc_bytes_wm)
-		heap->alloc_bytes_wm = heap->num_of_alloc_bytes;
-	spin_unlock(&heap->stat_lock);
+	buffer->dev = dev;
+	buffer->size = len;
 
+	buffer->dev = dev;
+	buffer->size = len;
 	INIT_LIST_HEAD(&buffer->attachments);
 	mutex_init(&buffer->lock);
 	mutex_lock(&dev->buffer_lock);
@@ -117,17 +119,9 @@ err2:
 
 void ion_buffer_destroy(struct ion_buffer *buffer)
 {
-	if (buffer->kmap_cnt > 0) {
-		pr_warn_once("%s: buffer still mapped in the kernel\n",
-			     __func__);
+	if (WARN_ON(buffer->kmap_cnt > 0))
 		buffer->heap->ops->unmap_kernel(buffer->heap, buffer);
-	}
 	buffer->heap->ops->free(buffer);
-	spin_lock(&buffer->heap->stat_lock);
-	buffer->heap->num_of_buffers--;
-	buffer->heap->num_of_alloc_bytes -= buffer->size;
-	spin_unlock(&buffer->heap->stat_lock);
-
 	kfree(buffer);
 }
 
@@ -193,7 +187,7 @@ static struct sg_table *dup_sg_table(struct sg_table *table)
 	new_sg = new_table->sgl;
 	for_each_sg(table->sgl, sg, table->nents, i) {
 		memcpy(new_sg, sg, sizeof(*sg));
-		new_sg->dma_address = 0;
+		sg->dma_address = 0;
 		new_sg = sg_next(new_sg);
 	}
 
@@ -212,7 +206,7 @@ struct ion_dma_buf_attachment {
 	struct list_head list;
 };
 
-static int ion_dma_buf_attach(struct dma_buf *dmabuf,
+static int ion_dma_buf_attach(struct dma_buf *dmabuf, struct device *dev,
 			      struct dma_buf_attachment *attachment)
 {
 	struct ion_dma_buf_attachment *a;
@@ -230,7 +224,7 @@ static int ion_dma_buf_attach(struct dma_buf *dmabuf,
 	}
 
 	a->table = table;
-	a->dev = attachment->dev;
+	a->dev = dev;
 	INIT_LIST_HEAD(&a->list);
 
 	attachment->priv = a;
@@ -248,10 +242,10 @@ static void ion_dma_buf_detatch(struct dma_buf *dmabuf,
 	struct ion_dma_buf_attachment *a = attachment->priv;
 	struct ion_buffer *buffer = dmabuf->priv;
 
+	free_duped_table(a->table);
 	mutex_lock(&buffer->lock);
 	list_del(&a->list);
 	mutex_unlock(&buffer->lock);
-	free_duped_table(a->table);
 
 	kfree(a);
 }
@@ -329,7 +323,6 @@ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 	struct ion_buffer *buffer = dmabuf->priv;
 	void *vaddr;
 	struct ion_dma_buf_attachment *a;
-	int ret = 0;
 
 	/*
 	 * TODO: Move this elsewhere because we don't always need a vaddr
@@ -337,10 +330,6 @@ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 	if (buffer->heap->ops->map_kernel) {
 		mutex_lock(&buffer->lock);
 		vaddr = ion_buffer_kmap_get(buffer);
-		if (IS_ERR(vaddr)) {
-			ret = PTR_ERR(vaddr);
-			goto unlock;
-		}
 		mutex_unlock(&buffer->lock);
 	}
 
@@ -349,10 +338,9 @@ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 		dma_sync_sg_for_cpu(a->dev, a->table->sgl, a->table->nents,
 				    direction);
 	}
-
-unlock:
 	mutex_unlock(&buffer->lock);
-	return ret;
+
+	return 0;
 }
 
 static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
@@ -386,6 +374,8 @@ static const struct dma_buf_ops dma_buf_ops = {
 	.detach = ion_dma_buf_detatch,
 	.begin_cpu_access = ion_dma_buf_begin_cpu_access,
 	.end_cpu_access = ion_dma_buf_end_cpu_access,
+	.map_atomic = ion_dma_buf_kmap,
+	.unmap_atomic = ion_dma_buf_kunmap,
 	.map = ion_dma_buf_kmap,
 	.unmap = ion_dma_buf_kunmap,
 };
@@ -537,17 +527,15 @@ DEFINE_SIMPLE_ATTRIBUTE(debug_shrink_fops, debug_shrink_get,
 
 void ion_device_add_heap(struct ion_heap *heap)
 {
+	struct dentry *debug_file;
 	struct ion_device *dev = internal_dev;
 	int ret;
-	struct dentry *heap_root;
-	char debug_name[64];
 
 	if (!heap->ops->allocate || !heap->ops->free)
 		pr_err("%s: can not add heap with invalid ops struct.\n",
 		       __func__);
 
 	spin_lock_init(&heap->free_lock);
-	spin_lock_init(&heap->stat_lock);
 	heap->free_list_size = 0;
 
 	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
@@ -560,33 +548,6 @@ void ion_device_add_heap(struct ion_heap *heap)
 	}
 
 	heap->dev = dev;
-	heap->num_of_buffers = 0;
-	heap->num_of_alloc_bytes = 0;
-	heap->alloc_bytes_wm = 0;
-
-	heap_root = debugfs_create_dir(heap->name, dev->debug_root);
-	debugfs_create_u64("num_of_buffers",
-			   0444, heap_root,
-			   &heap->num_of_buffers);
-	debugfs_create_u64("num_of_alloc_bytes",
-			   0444,
-			   heap_root,
-			   &heap->num_of_alloc_bytes);
-	debugfs_create_u64("alloc_bytes_wm",
-			   0444,
-			   heap_root,
-			   &heap->alloc_bytes_wm);
-
-	if (heap->shrinker.count_objects &&
-	    heap->shrinker.scan_objects) {
-		snprintf(debug_name, 64, "%s_shrink", heap->name);
-		debugfs_create_file(debug_name,
-				    0644,
-				    heap_root,
-				    heap,
-				    &debug_shrink_fops);
-	}
-
 	down_write(&dev->lock);
 	heap->id = heap_id++;
 	/*
@@ -595,6 +556,22 @@ void ion_device_add_heap(struct ion_heap *heap)
 	 */
 	plist_node_init(&heap->node, -heap->id);
 	plist_add(&heap->node, &dev->heaps);
+
+	if (heap->shrinker.count_objects && heap->shrinker.scan_objects) {
+		char debug_name[64];
+
+		snprintf(debug_name, 64, "%s_shrink", heap->name);
+		debug_file = debugfs_create_file(debug_name,
+						 0644, dev->debug_root, heap,
+						 &debug_shrink_fops);
+		if (!debug_file) {
+			char buf[256], *path;
+
+			path = dentry_path(dev->debug_root, buf, 256);
+			pr_err("Failed to create heap shrinker debugfs at %s/%s\n",
+			       path, debug_name);
+		}
+	}
 
 	dev->heap_cnt++;
 	up_write(&dev->lock);
@@ -622,6 +599,12 @@ static int ion_device_create(void)
 	}
 
 	idev->debug_root = debugfs_create_dir("ion", NULL);
+	if (!idev->debug_root) {
+		pr_err("ion: failed to create debugfs root directory.\n");
+		goto debugfs_done;
+	}
+
+debugfs_done:
 	idev->buffers = RB_ROOT;
 	mutex_init(&idev->buffer_lock);
 	init_rwsem(&idev->lock);

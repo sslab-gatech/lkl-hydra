@@ -23,7 +23,7 @@ static bool moving_pred(struct keybuf *buf, struct bkey *k)
 {
 	struct cache_set *c = container_of(buf, struct cache_set,
 					   moving_gc_keys);
-	unsigned int i;
+	unsigned i;
 
 	for (i = 0; i < KEY_PTRS(k); i++)
 		if (ptr_available(c, k, i) &&
@@ -38,7 +38,6 @@ static bool moving_pred(struct keybuf *buf, struct bkey *k)
 static void moving_io_destructor(struct closure *cl)
 {
 	struct moving_io *io = container_of(cl, struct moving_io, cl);
-
 	kfree(io);
 }
 
@@ -187,10 +186,9 @@ static bool bucket_cmp(struct bucket *l, struct bucket *r)
 	return GC_SECTORS_USED(l) < GC_SECTORS_USED(r);
 }
 
-static unsigned int bucket_heap_top(struct cache *ca)
+static unsigned bucket_heap_top(struct cache *ca)
 {
 	struct bucket *b;
-
 	return (b = heap_peek(&ca->heap)) ? GC_SECTORS_USED(b) : 0;
 }
 
@@ -198,7 +196,7 @@ void bch_moving_gc(struct cache_set *c)
 {
 	struct cache *ca;
 	struct bucket *b;
-	unsigned int i;
+	unsigned i;
 
 	if (!c->copy_gc_enabled)
 		return;
@@ -206,9 +204,9 @@ void bch_moving_gc(struct cache_set *c)
 	mutex_lock(&c->bucket_lock);
 
 	for_each_cache(ca, c, i) {
-		unsigned int sectors_to_move = 0;
-		unsigned int reserve_sectors = ca->sb.bucket_size *
-			     fifo_used(&ca->free[RESERVE_MOVINGGC]);
+		unsigned sectors_to_move = 0;
+		unsigned reserve_sectors = ca->sb.bucket_size *
+			fifo_used(&ca->free[RESERVE_MOVINGGC]);
 
 		ca->heap.used = 0;
 

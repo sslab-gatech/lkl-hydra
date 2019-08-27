@@ -60,33 +60,14 @@ enum nvdimm_family_cmds {
 	NVDIMM_INTEL_QUERY_FWUPDATE = 16,
 	NVDIMM_INTEL_SET_THRESHOLD = 17,
 	NVDIMM_INTEL_INJECT_ERROR = 18,
-	NVDIMM_INTEL_GET_SECURITY_STATE = 19,
-	NVDIMM_INTEL_SET_PASSPHRASE = 20,
-	NVDIMM_INTEL_DISABLE_PASSPHRASE = 21,
-	NVDIMM_INTEL_UNLOCK_UNIT = 22,
-	NVDIMM_INTEL_FREEZE_LOCK = 23,
-	NVDIMM_INTEL_SECURE_ERASE = 24,
-	NVDIMM_INTEL_OVERWRITE = 25,
-	NVDIMM_INTEL_QUERY_OVERWRITE = 26,
-	NVDIMM_INTEL_SET_MASTER_PASSPHRASE = 27,
-	NVDIMM_INTEL_MASTER_SECURE_ERASE = 28,
 };
-
-#define NVDIMM_INTEL_SECURITY_CMDMASK \
-(1 << NVDIMM_INTEL_GET_SECURITY_STATE | 1 << NVDIMM_INTEL_SET_PASSPHRASE \
-| 1 << NVDIMM_INTEL_DISABLE_PASSPHRASE | 1 << NVDIMM_INTEL_UNLOCK_UNIT \
-| 1 << NVDIMM_INTEL_FREEZE_LOCK | 1 << NVDIMM_INTEL_SECURE_ERASE \
-| 1 << NVDIMM_INTEL_OVERWRITE | 1 << NVDIMM_INTEL_QUERY_OVERWRITE \
-| 1 << NVDIMM_INTEL_SET_MASTER_PASSPHRASE \
-| 1 << NVDIMM_INTEL_MASTER_SECURE_ERASE)
 
 #define NVDIMM_INTEL_CMDMASK \
 (NVDIMM_STANDARD_CMDMASK | 1 << NVDIMM_INTEL_GET_MODES \
  | 1 << NVDIMM_INTEL_GET_FWINFO | 1 << NVDIMM_INTEL_START_FWUPDATE \
  | 1 << NVDIMM_INTEL_SEND_FWUPDATE | 1 << NVDIMM_INTEL_FINISH_FWUPDATE \
  | 1 << NVDIMM_INTEL_QUERY_FWUPDATE | 1 << NVDIMM_INTEL_SET_THRESHOLD \
- | 1 << NVDIMM_INTEL_INJECT_ERROR | 1 << NVDIMM_INTEL_LATCH_SHUTDOWN \
- | NVDIMM_INTEL_SECURITY_CMDMASK)
+ | 1 << NVDIMM_INTEL_INJECT_ERROR | 1 << NVDIMM_INTEL_LATCH_SHUTDOWN)
 
 enum nfit_uuids {
 	/* for simplicity alias the uuid index with the family id */
@@ -136,16 +117,10 @@ enum nfit_dimm_notifiers {
 	NFIT_NOTIFY_DIMM_HEALTH = 0x81,
 };
 
-enum nfit_ars_state {
-	ARS_REQ_SHORT,
-	ARS_REQ_LONG,
-	ARS_FAILED,
-};
-
 struct nfit_spa {
 	struct list_head list;
 	struct nd_region *nd_region;
-	unsigned long ars_state;
+	unsigned int ars_required:1;
 	u32 clear_err_unit;
 	u32 max_ars;
 	struct acpi_nfit_system_address spa[0];
@@ -176,15 +151,6 @@ struct nfit_memdev {
 	struct acpi_nfit_memory_map memdev[0];
 };
 
-enum nfit_mem_flags {
-	NFIT_MEM_LSR,
-	NFIT_MEM_LSW,
-	NFIT_MEM_DIRTY,
-	NFIT_MEM_DIRTY_COUNT,
-};
-
-#define NFIT_DIMM_ID_LEN	22
-
 /* assembled tables for a given dimm/memory-device */
 struct nfit_mem {
 	struct nvdimm *nvdimm;
@@ -202,12 +168,12 @@ struct nfit_mem {
 	struct list_head list;
 	struct acpi_device *adev;
 	struct acpi_nfit_desc *acpi_desc;
-	char id[NFIT_DIMM_ID_LEN+1];
 	struct resource *flush_wpq;
 	unsigned long dsm_mask;
-	unsigned long flags;
-	u32 dirty_shutdown;
 	int family;
+	u32 has_lsi:1;
+	u32 has_lsr:1;
+	u32 has_lsw:1;
 };
 
 struct acpi_nfit_desc {
@@ -225,20 +191,18 @@ struct acpi_nfit_desc {
 	struct device *dev;
 	u8 ars_start_flags;
 	struct nd_cmd_ars_status *ars_status;
-	struct nfit_spa *scrub_spa;
-	struct delayed_work dwork;
+	size_t ars_status_size;
+	struct work_struct work;
 	struct list_head list;
 	struct kernfs_node *scrub_count_state;
-	unsigned int max_ars;
 	unsigned int scrub_count;
 	unsigned int scrub_mode;
-	unsigned int scrub_busy:1;
 	unsigned int cancel:1;
+	unsigned int init_complete:1;
 	unsigned long dimm_cmd_force_en;
 	unsigned long bus_cmd_force_en;
 	unsigned long bus_nfit_cmd_force_en;
 	unsigned int platform_cap;
-	unsigned int scrub_tmo;
 	int (*blk_do_io)(struct nd_blk_region *ndbr, resource_size_t dpa,
 			void *iobuf, u64 len, int rw);
 };
@@ -280,8 +244,7 @@ struct nfit_blk {
 
 extern struct list_head acpi_descs;
 extern struct mutex acpi_desc_lock;
-int acpi_nfit_ars_rescan(struct acpi_nfit_desc *acpi_desc,
-		enum nfit_ars_state req_type);
+int acpi_nfit_ars_rescan(struct acpi_nfit_desc *acpi_desc, u8 flags);
 
 #ifdef CONFIG_X86_MCE
 void nfit_mce_register(void);

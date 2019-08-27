@@ -88,7 +88,6 @@ static int input_leds_connect(struct input_handler *handler,
 			      const struct input_device_id *id)
 {
 	struct input_leds *leds;
-	struct input_led *led;
 	unsigned int num_leds;
 	unsigned int led_code;
 	int led_no;
@@ -98,7 +97,8 @@ static int input_leds_connect(struct input_handler *handler,
 	if (!num_leds)
 		return -ENXIO;
 
-	leds = kzalloc(struct_size(leds, leds, num_leds), GFP_KERNEL);
+	leds = kzalloc(sizeof(*leds) + num_leds * sizeof(*leds->leds),
+		       GFP_KERNEL);
 	if (!leds)
 		return -ENOMEM;
 
@@ -119,12 +119,13 @@ static int input_leds_connect(struct input_handler *handler,
 
 	led_no = 0;
 	for_each_set_bit(led_code, dev->ledbit, LED_CNT) {
-		if (!input_led_info[led_code].name)
-			continue;
+		struct input_led *led = &leds->leds[led_no];
 
-		led = &leds->leds[led_no];
 		led->handle = &leds->handle;
 		led->code = led_code;
+
+		if (!input_led_info[led_code].name)
+			continue;
 
 		led->cdev.name = kasprintf(GFP_KERNEL, "%s::%s",
 					   dev_name(&dev->dev),

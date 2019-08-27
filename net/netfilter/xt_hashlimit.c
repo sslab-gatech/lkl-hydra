@@ -57,9 +57,9 @@ static inline struct hashlimit_net *hashlimit_pernet(struct net *net)
 }
 
 /* need to declare this at the top */
-static const struct seq_operations dl_seq_ops_v2;
-static const struct seq_operations dl_seq_ops_v1;
-static const struct seq_operations dl_seq_ops;
+static const struct file_operations dl_file_ops_v2;
+static const struct file_operations dl_file_ops_v1;
+static const struct file_operations dl_file_ops;
 
 /* hash table crap */
 struct dsthash_dst {
@@ -260,7 +260,7 @@ static inline void
 dsthash_free(struct xt_hashlimit_htable *ht, struct dsthash_ent *ent)
 {
 	hlist_del_rcu(&ent->node);
-	call_rcu(&ent->rcu, dsthash_free_rcu);
+	call_rcu_bh(&ent->rcu, dsthash_free_rcu);
 	ht->count--;
 }
 static void htable_gc(struct work_struct *work);
@@ -272,17 +272,16 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 {
 	struct hashlimit_net *hashlimit_net = hashlimit_pernet(net);
 	struct xt_hashlimit_htable *hinfo;
-	const struct seq_operations *ops;
+	const struct file_operations *fops;
 	unsigned int size, i;
-	unsigned long nr_pages = totalram_pages();
 	int ret;
 
 	if (cfg->size) {
 		size = cfg->size;
 	} else {
-		size = (nr_pages << PAGE_SHIFT) / 16384 /
+		size = (totalram_pages << PAGE_SHIFT) / 16384 /
 		       sizeof(struct hlist_head);
-		if (nr_pages > 1024 * 1024 * 1024 / PAGE_SIZE)
+		if (totalram_pages > 1024 * 1024 * 1024 / PAGE_SIZE)
 			size = 8192;
 		if (size < 16)
 			size = 16;
@@ -296,10 +295,9 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 
 	/* copy match config into hashtable config */
 	ret = cfg_copy(&hinfo->cfg, (void *)cfg, 3);
-	if (ret) {
-		vfree(hinfo);
+
+	if (ret)
 		return ret;
-	}
 
 	hinfo->cfg.size = size;
 	if (hinfo->cfg.max == 0)
@@ -323,19 +321,19 @@ static int htable_create(struct net *net, struct hashlimit_cfg3 *cfg,
 
 	switch (revision) {
 	case 1:
-		ops = &dl_seq_ops_v1;
+		fops = &dl_file_ops_v1;
 		break;
 	case 2:
-		ops = &dl_seq_ops_v2;
+		fops = &dl_file_ops_v2;
 		break;
 	default:
-		ops = &dl_seq_ops;
+		fops = &dl_file_ops;
 	}
 
-	hinfo->pde = proc_create_seq_data(name, 0,
+	hinfo->pde = proc_create_data(name, 0,
 		(family == NFPROTO_IPV4) ?
 		hashlimit_net->ipt_hashlimit : hashlimit_net->ip6t_hashlimit,
-		ops, hinfo);
+		fops, hinfo);
 	if (hinfo->pde == NULL) {
 		kfree(hinfo->name);
 		vfree(hinfo);
@@ -536,7 +534,8 @@ static u64 user2rate_bytes(u32 user)
 	u64 r;
 
 	r = user ? U32_MAX / user : U32_MAX;
-	return (r - 1) << XT_HASHLIMIT_BYTE_SHIFT;
+	r = (r - 1) << XT_HASHLIMIT_BYTE_SHIFT;
+	return r;
 }
 
 static void rateinfo_recalc(struct dsthash_ent *dh, unsigned long now,
@@ -816,6 +815,7 @@ hashlimit_mt_v1(const struct sk_buff *skb, struct xt_action_param *par)
 	int ret;
 
 	ret = cfg_copy(&cfg, (void *)&info->cfg, 1);
+
 	if (ret)
 		return ret;
 
@@ -831,6 +831,7 @@ hashlimit_mt_v2(const struct sk_buff *skb, struct xt_action_param *par)
 	int ret;
 
 	ret = cfg_copy(&cfg, (void *)&info->cfg, 2);
+
 	if (ret)
 		return ret;
 
@@ -921,6 +922,7 @@ static int hashlimit_mt_check_v1(const struct xt_mtchk_param *par)
 		return ret;
 
 	ret = cfg_copy(&cfg, (void *)&info->cfg, 1);
+
 	if (ret)
 		return ret;
 
@@ -939,6 +941,7 @@ static int hashlimit_mt_check_v2(const struct xt_mtchk_param *par)
 		return ret;
 
 	ret = cfg_copy(&cfg, (void *)&info->cfg, 2);
+
 	if (ret)
 		return ret;
 
@@ -1055,7 +1058,7 @@ static struct xt_match hashlimit_mt_reg[] __read_mostly = {
 static void *dl_seq_start(struct seq_file *s, loff_t *pos)
 	__acquires(htable->lock)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket;
 
 	spin_lock_bh(&htable->lock);
@@ -1072,7 +1075,7 @@ static void *dl_seq_start(struct seq_file *s, loff_t *pos)
 
 static void *dl_seq_next(struct seq_file *s, void *v, loff_t *pos)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket = v;
 
 	*pos = ++(*bucket);
@@ -1086,7 +1089,7 @@ static void *dl_seq_next(struct seq_file *s, void *v, loff_t *pos)
 static void dl_seq_stop(struct seq_file *s, void *v)
 	__releases(htable->lock)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket = v;
 
 	if (!IS_ERR(bucket))
@@ -1128,7 +1131,7 @@ static void dl_seq_print(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show_v2(struct dsthash_ent *ent, u_int8_t family,
 			       struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	const struct xt_hashlimit_htable *ht = s->private;
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1143,7 +1146,7 @@ static int dl_seq_real_show_v2(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show_v1(struct dsthash_ent *ent, u_int8_t family,
 			       struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	const struct xt_hashlimit_htable *ht = s->private;
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1158,7 +1161,7 @@ static int dl_seq_real_show_v1(struct dsthash_ent *ent, u_int8_t family,
 static int dl_seq_real_show(struct dsthash_ent *ent, u_int8_t family,
 			    struct seq_file *s)
 {
-	struct xt_hashlimit_htable *ht = PDE_DATA(file_inode(s->file));
+	const struct xt_hashlimit_htable *ht = s->private;
 
 	spin_lock(&ent->lock);
 	/* recalculate to show accurate numbers */
@@ -1172,7 +1175,7 @@ static int dl_seq_real_show(struct dsthash_ent *ent, u_int8_t family,
 
 static int dl_seq_show_v2(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket = (unsigned int *)v;
 	struct dsthash_ent *ent;
 
@@ -1186,7 +1189,7 @@ static int dl_seq_show_v2(struct seq_file *s, void *v)
 
 static int dl_seq_show_v1(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket = v;
 	struct dsthash_ent *ent;
 
@@ -1200,7 +1203,7 @@ static int dl_seq_show_v1(struct seq_file *s, void *v)
 
 static int dl_seq_show(struct seq_file *s, void *v)
 {
-	struct xt_hashlimit_htable *htable = PDE_DATA(file_inode(s->file));
+	struct xt_hashlimit_htable *htable = s->private;
 	unsigned int *bucket = v;
 	struct dsthash_ent *ent;
 
@@ -1231,6 +1234,62 @@ static const struct seq_operations dl_seq_ops = {
 	.next  = dl_seq_next,
 	.stop  = dl_seq_stop,
 	.show  = dl_seq_show
+};
+
+static int dl_proc_open_v2(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &dl_seq_ops_v2);
+
+	if (!ret) {
+		struct seq_file *sf = file->private_data;
+
+		sf->private = PDE_DATA(inode);
+	}
+	return ret;
+}
+
+static int dl_proc_open_v1(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &dl_seq_ops_v1);
+
+	if (!ret) {
+		struct seq_file *sf = file->private_data;
+		sf->private = PDE_DATA(inode);
+	}
+	return ret;
+}
+
+static int dl_proc_open(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &dl_seq_ops);
+
+	if (!ret) {
+		struct seq_file *sf = file->private_data;
+
+		sf->private = PDE_DATA(inode);
+	}
+	return ret;
+}
+
+static const struct file_operations dl_file_ops_v2 = {
+	.open    = dl_proc_open_v2,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release
+};
+
+static const struct file_operations dl_file_ops_v1 = {
+	.open    = dl_proc_open_v1,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release
+};
+
+static const struct file_operations dl_file_ops = {
+	.open    = dl_proc_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release
 };
 
 static int __net_init hashlimit_proc_net_init(struct net *net)
@@ -1327,7 +1386,7 @@ static void __exit hashlimit_mt_exit(void)
 	xt_unregister_matches(hashlimit_mt_reg, ARRAY_SIZE(hashlimit_mt_reg));
 	unregister_pernet_subsys(&hashlimit_net_ops);
 
-	rcu_barrier();
+	rcu_barrier_bh();
 	kmem_cache_destroy(hashlimit_cachep);
 }
 

@@ -7,9 +7,6 @@
  */
 #include <linux/unistd.h>
 #include <linux/syscalls.h>
-#include <linux/security.h>
-#include <linux/ipc_namespace.h>
-#include "util.h"
 
 #ifdef __ARCH_WANT_SYS_IPC
 #include <linux/errno.h>
@@ -27,31 +24,26 @@ SYSCALL_DEFINE6(ipc, unsigned int, call, int, first, unsigned long, second,
 
 	switch (call) {
 	case SEMOP:
-		return ksys_semtimedop(first, (struct sembuf __user *)ptr,
-				       second, NULL);
+		return sys_semtimedop(first, (struct sembuf __user *)ptr,
+				      second, NULL);
 	case SEMTIMEDOP:
-		if (IS_ENABLED(CONFIG_64BIT) || !IS_ENABLED(CONFIG_64BIT_TIME))
-			return ksys_semtimedop(first, ptr, second,
-			        (const struct __kernel_timespec __user *)fifth);
-		else if (IS_ENABLED(CONFIG_COMPAT_32BIT_TIME))
-			return compat_ksys_semtimedop(first, ptr, second,
-			        (const struct old_timespec32 __user *)fifth);
-		else
-			return -ENOSYS;
+		return sys_semtimedop(first, (struct sembuf __user *)ptr,
+				      second,
+				      (const struct timespec __user *)fifth);
 
 	case SEMGET:
-		return ksys_semget(first, second, third);
+		return sys_semget(first, second, third);
 	case SEMCTL: {
 		unsigned long arg;
 		if (!ptr)
 			return -EINVAL;
 		if (get_user(arg, (unsigned long __user *) ptr))
 			return -EFAULT;
-		return ksys_semctl(first, second, third, arg);
+		return sys_semctl(first, second, third, arg);
 	}
 
 	case MSGSND:
-		return ksys_msgsnd(first, (struct msgbuf __user *) ptr,
+		return sys_msgsnd(first, (struct msgbuf __user *) ptr,
 				  second, third);
 	case MSGRCV:
 		switch (version) {
@@ -64,19 +56,18 @@ SYSCALL_DEFINE6(ipc, unsigned int, call, int, first, unsigned long, second,
 					   (struct ipc_kludge __user *) ptr,
 					   sizeof(tmp)))
 				return -EFAULT;
-			return ksys_msgrcv(first, tmp.msgp, second,
+			return sys_msgrcv(first, tmp.msgp, second,
 					   tmp.msgtyp, third);
 		}
 		default:
-			return ksys_msgrcv(first,
+			return sys_msgrcv(first,
 					   (struct msgbuf __user *) ptr,
 					   second, fifth, third);
 		}
 	case MSGGET:
-		return ksys_msgget((key_t) first, second);
+		return sys_msgget((key_t) first, second);
 	case MSGCTL:
-		return ksys_msgctl(first, second,
-				   (struct msqid_ds __user *)ptr);
+		return sys_msgctl(first, second, (struct msqid_ds __user *)ptr);
 
 	case SHMAT:
 		switch (version) {
@@ -96,11 +87,11 @@ SYSCALL_DEFINE6(ipc, unsigned int, call, int, first, unsigned long, second,
 			return -EINVAL;
 		}
 	case SHMDT:
-		return ksys_shmdt((char __user *)ptr);
+		return sys_shmdt((char __user *)ptr);
 	case SHMGET:
-		return ksys_shmget(first, second, third);
+		return sys_shmget(first, second, third);
 	case SHMCTL:
-		return ksys_shmctl(first, second,
+		return sys_shmctl(first, second,
 				   (struct shmid_ds __user *) ptr);
 	default:
 		return -ENOSYS;
@@ -133,23 +124,21 @@ COMPAT_SYSCALL_DEFINE6(ipc, u32, call, int, first, int, second,
 	switch (call) {
 	case SEMOP:
 		/* struct sembuf is the same on 32 and 64bit :)) */
-		return ksys_semtimedop(first, compat_ptr(ptr), second, NULL);
+		return sys_semtimedop(first, compat_ptr(ptr), second, NULL);
 	case SEMTIMEDOP:
-		if (!IS_ENABLED(CONFIG_COMPAT_32BIT_TIME))
-			return -ENOSYS;
-		return compat_ksys_semtimedop(first, compat_ptr(ptr), second,
+		return compat_sys_semtimedop(first, compat_ptr(ptr), second,
 						compat_ptr(fifth));
 	case SEMGET:
-		return ksys_semget(first, second, third);
+		return sys_semget(first, second, third);
 	case SEMCTL:
 		if (!ptr)
 			return -EINVAL;
 		if (get_user(pad, (u32 __user *) compat_ptr(ptr)))
 			return -EFAULT;
-		return compat_ksys_semctl(first, second, third, pad);
+		return compat_sys_semctl(first, second, third, pad);
 
 	case MSGSND:
-		return compat_ksys_msgsnd(first, ptr, second, third);
+		return compat_sys_msgsnd(first, ptr, second, third);
 
 	case MSGRCV: {
 		void __user *uptr = compat_ptr(ptr);
@@ -163,15 +152,15 @@ COMPAT_SYSCALL_DEFINE6(ipc, u32, call, int, first, int, second,
 				return -EINVAL;
 			if (copy_from_user(&ipck, uptr, sizeof(ipck)))
 				return -EFAULT;
-			return compat_ksys_msgrcv(first, ipck.msgp, second,
+			return compat_sys_msgrcv(first, ipck.msgp, second,
 						 ipck.msgtyp, third);
 		}
-		return compat_ksys_msgrcv(first, ptr, second, fifth, third);
+		return compat_sys_msgrcv(first, ptr, second, fifth, third);
 	}
 	case MSGGET:
-		return ksys_msgget(first, second);
+		return sys_msgget(first, second);
 	case MSGCTL:
-		return compat_ksys_msgctl(first, second, compat_ptr(ptr));
+		return compat_sys_msgctl(first, second, compat_ptr(ptr));
 
 	case SHMAT: {
 		int err;
@@ -186,11 +175,11 @@ COMPAT_SYSCALL_DEFINE6(ipc, u32, call, int, first, int, second,
 		return put_user(raddr, (compat_ulong_t __user *)compat_ptr(third));
 	}
 	case SHMDT:
-		return ksys_shmdt(compat_ptr(ptr));
+		return sys_shmdt(compat_ptr(ptr));
 	case SHMGET:
-		return ksys_shmget(first, (unsigned int)second, third);
+		return sys_shmget(first, (unsigned)second, third);
 	case SHMCTL:
-		return compat_ksys_shmctl(first, second, compat_ptr(ptr));
+		return compat_sys_shmctl(first, second, compat_ptr(ptr));
 	}
 
 	return -ENOSYS;

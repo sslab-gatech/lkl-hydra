@@ -82,7 +82,6 @@ sesInfoAlloc(void)
 		INIT_LIST_HEAD(&ret_buf->smb_ses_list);
 		INIT_LIST_HEAD(&ret_buf->tcon_list);
 		mutex_init(&ret_buf->session_mutex);
-		spin_lock_init(&ret_buf->iface_lock);
 	}
 	return ret_buf;
 }
@@ -103,7 +102,6 @@ sesInfoFree(struct cifs_ses *buf_to_free)
 	kfree(buf_to_free->user_name);
 	kfree(buf_to_free->domainName);
 	kzfree(buf_to_free->auth_key.response);
-	kfree(buf_to_free->iface_list);
 	kzfree(buf_to_free);
 }
 
@@ -111,27 +109,18 @@ struct cifs_tcon *
 tconInfoAlloc(void)
 {
 	struct cifs_tcon *ret_buf;
-
-	ret_buf = kzalloc(sizeof(*ret_buf), GFP_KERNEL);
-	if (!ret_buf)
-		return NULL;
-	ret_buf->crfid.fid = kzalloc(sizeof(*ret_buf->crfid.fid), GFP_KERNEL);
-	if (!ret_buf->crfid.fid) {
-		kfree(ret_buf);
-		return NULL;
+	ret_buf = kzalloc(sizeof(struct cifs_tcon), GFP_KERNEL);
+	if (ret_buf) {
+		atomic_inc(&tconInfoAllocCount);
+		ret_buf->tidStatus = CifsNew;
+		++ret_buf->tc_count;
+		INIT_LIST_HEAD(&ret_buf->openFileList);
+		INIT_LIST_HEAD(&ret_buf->tcon_list);
+		spin_lock_init(&ret_buf->open_file_lock);
+#ifdef CONFIG_CIFS_STATS
+		spin_lock_init(&ret_buf->stat_lock);
+#endif
 	}
-
-	atomic_inc(&tconInfoAllocCount);
-	ret_buf->tidStatus = CifsNew;
-	++ret_buf->tc_count;
-	INIT_LIST_HEAD(&ret_buf->openFileList);
-	INIT_LIST_HEAD(&ret_buf->tcon_list);
-	spin_lock_init(&ret_buf->open_file_lock);
-	mutex_init(&ret_buf->crfid.fid_mutex);
-	spin_lock_init(&ret_buf->stat_lock);
-	atomic_set(&ret_buf->num_local_opens, 0);
-	atomic_set(&ret_buf->num_remote_opens, 0);
-
 	return ret_buf;
 }
 
@@ -145,10 +134,6 @@ tconInfoFree(struct cifs_tcon *buf_to_free)
 	atomic_dec(&tconInfoAllocCount);
 	kfree(buf_to_free->nativeFileSystem);
 	kzfree(buf_to_free->password);
-	kfree(buf_to_free->crfid.fid);
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	kfree(buf_to_free->dfs_path);
-#endif
 	kfree(buf_to_free);
 }
 
@@ -160,7 +145,7 @@ cifs_buf_get(void)
 	 * SMB2 header is bigger than CIFS one - no problems to clean some
 	 * more bytes for CIFS.
 	 */
-	size_t buf_size = sizeof(struct smb2_sync_hdr);
+	size_t buf_size = sizeof(struct smb2_hdr);
 
 	/*
 	 * We could use negotiated size instead of max_msgsize -
@@ -354,7 +339,7 @@ checkSMB(char *buf, unsigned int total_read, struct TCP_Server_Info *server)
 	/* otherwise, there is enough to get to the BCC */
 	if (check_smb_hdr(smb))
 		return -EIO;
-	clc_len = smbCalcSize(smb, server);
+	clc_len = smbCalcSize(smb);
 
 	if (4 + rfclen != total_read) {
 		cifs_dbg(VFS, "Length read does not match RFC1001 length %d\n",
@@ -413,17 +398,9 @@ is_valid_oplock_break(char *buffer, struct TCP_Server_Info *srv)
 			(struct smb_com_transaction_change_notify_rsp *)buf;
 		struct file_notify_information *pnotify;
 		__u32 data_offset = 0;
-		size_t len = srv->total_read - sizeof(pSMBr->hdr.smb_buf_length);
-
 		if (get_bcc(buf) > sizeof(struct file_notify_information)) {
 			data_offset = le32_to_cpu(pSMBr->DataOffset);
 
-			if (data_offset >
-			    len - sizeof(struct file_notify_information)) {
-				cifs_dbg(FYI, "invalid data_offset %u\n",
-					 data_offset);
-				return true;
-			}
 			pnotify = (struct file_notify_information *)
 				((char *)&pSMBr->hdr.Protocol + data_offset);
 			cifs_dbg(FYI, "dnotify on %s Action: 0x%x\n",
@@ -534,17 +511,9 @@ void
 cifs_autodisable_serverino(struct cifs_sb_info *cifs_sb)
 {
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) {
-		struct cifs_tcon *tcon = NULL;
-
-		if (cifs_sb->master_tlink)
-			tcon = cifs_sb_master_tcon(cifs_sb);
-
 		cifs_sb->mnt_cifs_flags &= ~CIFS_MOUNT_SERVER_INUM;
-		cifs_dbg(VFS, "Autodisabling the use of server inode numbers on %s.\n",
-			 tcon ? tcon->treeName : "new server");
-		cifs_dbg(VFS, "The server doesn't seem to support them properly or the files might be on different servers (DFS).\n");
-		cifs_dbg(VFS, "Hardlinks will not be recognized on this mount. Consider mounting with the \"noserverino\" option to silence this message.\n");
-
+		cifs_dbg(VFS, "Autodisabling the use of server inode numbers on %s. This server doesn't seem to support them properly. Hardlinks will not be recognized on this mount. Consider mounting with the \"noserverino\" option to silence this message.\n",
+			 cifs_sb_master_tcon(cifs_sb)->treeName);
 	}
 }
 
@@ -749,8 +718,6 @@ parse_dfs_referrals(struct get_dfs_referral_rsp *rsp, u32 rsp_size,
 			goto parse_DFS_referrals_exit;
 		}
 
-		node->ttl = le32_to_cpu(ref->TimeToLive);
-
 		ref++;
 	}
 
@@ -807,7 +774,7 @@ setup_aio_ctx_iter(struct cifs_aio_ctx *ctx, struct iov_iter *iter, int rw)
 	struct page **pages = NULL;
 	struct bio_vec *bv = NULL;
 
-	if (iov_iter_is_kvec(iter)) {
+	if (iter->type & ITER_KVEC) {
 		memcpy(&ctx->iter, iter, sizeof(struct iov_iter));
 		ctx->len = count;
 		iov_iter_advance(iter, count);
@@ -819,7 +786,7 @@ setup_aio_ctx_iter(struct cifs_aio_ctx *ctx, struct iov_iter *iter, int rw)
 				   GFP_KERNEL);
 
 	if (!bv) {
-		bv = vmalloc(array_size(max_pages, sizeof(struct bio_vec)));
+		bv = vmalloc(max_pages * sizeof(struct bio_vec));
 		if (!bv)
 			return -ENOMEM;
 	}
@@ -829,7 +796,7 @@ setup_aio_ctx_iter(struct cifs_aio_ctx *ctx, struct iov_iter *iter, int rw)
 				      GFP_KERNEL);
 
 	if (!pages) {
-		pages = vmalloc(array_size(max_pages, sizeof(struct page *)));
+		pages = vmalloc(max_pages * sizeof(struct page *));
 		if (!pages) {
 			kvfree(bv);
 			return -ENOMEM;
@@ -878,94 +845,6 @@ setup_aio_ctx_iter(struct cifs_aio_ctx *ctx, struct iov_iter *iter, int rw)
 	ctx->bv = bv;
 	ctx->len = saved_len - count;
 	ctx->npages = npages;
-	iov_iter_bvec(&ctx->iter, rw, ctx->bv, npages, ctx->len);
+	iov_iter_bvec(&ctx->iter, ITER_BVEC | rw, ctx->bv, npages, ctx->len);
 	return 0;
-}
-
-/**
- * cifs_alloc_hash - allocate hash and hash context together
- *
- * The caller has to make sure @sdesc is initialized to either NULL or
- * a valid context. Both can be freed via cifs_free_hash().
- */
-int
-cifs_alloc_hash(const char *name,
-		struct crypto_shash **shash, struct sdesc **sdesc)
-{
-	int rc = 0;
-	size_t size;
-
-	if (*sdesc != NULL)
-		return 0;
-
-	*shash = crypto_alloc_shash(name, 0, 0);
-	if (IS_ERR(*shash)) {
-		cifs_dbg(VFS, "could not allocate crypto %s\n", name);
-		rc = PTR_ERR(*shash);
-		*shash = NULL;
-		*sdesc = NULL;
-		return rc;
-	}
-
-	size = sizeof(struct shash_desc) + crypto_shash_descsize(*shash);
-	*sdesc = kmalloc(size, GFP_KERNEL);
-	if (*sdesc == NULL) {
-		cifs_dbg(VFS, "no memory left to allocate crypto %s\n", name);
-		crypto_free_shash(*shash);
-		*shash = NULL;
-		return -ENOMEM;
-	}
-
-	(*sdesc)->shash.tfm = *shash;
-	(*sdesc)->shash.flags = 0x0;
-	return 0;
-}
-
-/**
- * cifs_free_hash - free hash and hash context together
- *
- * Freeing a NULL hash or context is safe.
- */
-void
-cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc)
-{
-	kfree(*sdesc);
-	*sdesc = NULL;
-	if (*shash)
-		crypto_free_shash(*shash);
-	*shash = NULL;
-}
-
-/**
- * rqst_page_get_length - obtain the length and offset for a page in smb_rqst
- * Input: rqst - a smb_rqst, page - a page index for rqst
- * Output: *len - the length for this page, *offset - the offset for this page
- */
-void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
-				unsigned int *len, unsigned int *offset)
-{
-	*len = rqst->rq_pagesz;
-	*offset = (page == 0) ? rqst->rq_offset : 0;
-
-	if (rqst->rq_npages == 1 || page == rqst->rq_npages-1)
-		*len = rqst->rq_tailsz;
-	else if (page == 0)
-		*len = rqst->rq_pagesz - rqst->rq_offset;
-}
-
-void extract_unc_hostname(const char *unc, const char **h, size_t *len)
-{
-	const char *end;
-
-	/* skip initial slashes */
-	while (*unc && (*unc == '\\' || *unc == '/'))
-		unc++;
-
-	end = unc;
-
-	while (*end && !(*end == '\\' || *end == '/'))
-		end++;
-
-	*h = unc;
-	*len = end - unc;
 }

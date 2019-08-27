@@ -11,7 +11,6 @@
 #include <asm/ppc_asm.h>
 #include <asm/asm-offsets.h>
 #include <asm/export.h>
-#include <asm/feature-fixups.h>
 
         .section        ".toc","aw"
 PPC64_CACHES:
@@ -22,9 +21,7 @@ _GLOBAL_TOC(copy_page)
 BEGIN_FTR_SECTION
 	lis	r5,PAGE_SIZE@h
 FTR_SECTION_ELSE
-#ifdef CONFIG_PPC_BOOK3S_64
 	b	copypage_power7
-#endif
 ALT_FTR_SECTION_END_IFCLR(CPU_FTR_VMX_COPY)
 	ori	r5,r5,PAGE_SIZE@l
 BEGIN_FTR_SECTION

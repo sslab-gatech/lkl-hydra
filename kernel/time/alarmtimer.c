@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Alarmtimer interface
  *
@@ -11,6 +10,10 @@
  * Copyright (C) 2010 IBM Corperation
  *
  * Author: John Stultz <john.stultz@linaro.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #include <linux/time.h>
 #include <linux/hrtimer.h>
@@ -323,17 +326,6 @@ static int alarmtimer_resume(struct device *dev)
 }
 #endif
 
-static void
-__alarm_init(struct alarm *alarm, enum alarmtimer_type type,
-	     enum alarmtimer_restart (*function)(struct alarm *, ktime_t))
-{
-	timerqueue_init(&alarm->node);
-	alarm->timer.function = alarmtimer_fired;
-	alarm->function = function;
-	alarm->type = type;
-	alarm->state = ALARMTIMER_STATE_INACTIVE;
-}
-
 /**
  * alarm_init - Initialize an alarm structure
  * @alarm: ptr to alarm to be initialized
@@ -343,9 +335,13 @@ __alarm_init(struct alarm *alarm, enum alarmtimer_type type,
 void alarm_init(struct alarm *alarm, enum alarmtimer_type type,
 		enum alarmtimer_restart (*function)(struct alarm *, ktime_t))
 {
+	timerqueue_init(&alarm->node);
 	hrtimer_init(&alarm->timer, alarm_bases[type].base_clockid,
-		     HRTIMER_MODE_ABS);
-	__alarm_init(alarm, type, function);
+			HRTIMER_MODE_ABS);
+	alarm->timer.function = alarmtimer_fired;
+	alarm->function = function;
+	alarm->type = type;
+	alarm->state = ALARMTIMER_STATE_INACTIVE;
 }
 EXPORT_SYMBOL_GPL(alarm_init);
 
@@ -578,11 +574,11 @@ static void alarm_timer_rearm(struct k_itimer *timr)
  * @timr:	Pointer to the posixtimer data struct
  * @now:	Current time to forward the timer against
  */
-static s64 alarm_timer_forward(struct k_itimer *timr, ktime_t now)
+static int alarm_timer_forward(struct k_itimer *timr, ktime_t now)
 {
 	struct alarm *alarm = &timr->it.alarm.alarmtimer;
 
-	return alarm_forward(alarm, timr->it_interval, now);
+	return (int) alarm_forward(alarm, timr->it_interval, now);
 }
 
 /**
@@ -723,8 +719,6 @@ static int alarmtimer_do_nsleep(struct alarm *alarm, ktime_t absexp,
 
 	__set_current_state(TASK_RUNNING);
 
-	destroy_hrtimer_on_stack(&alarm->timer);
-
 	if (!alarm->data)
 		return 0;
 
@@ -746,15 +740,6 @@ static int alarmtimer_do_nsleep(struct alarm *alarm, ktime_t absexp,
 	return -ERESTART_RESTARTBLOCK;
 }
 
-static void
-alarm_init_on_stack(struct alarm *alarm, enum alarmtimer_type type,
-		    enum alarmtimer_restart (*function)(struct alarm *, ktime_t))
-{
-	hrtimer_init_on_stack(&alarm->timer, alarm_bases[type].base_clockid,
-			      HRTIMER_MODE_ABS);
-	__alarm_init(alarm, type, function);
-}
-
 /**
  * alarm_timer_nsleep_restart - restartblock alarmtimer nsleep
  * @restart: ptr to restart block
@@ -767,7 +752,7 @@ static long __sched alarm_timer_nsleep_restart(struct restart_block *restart)
 	ktime_t exp = restart->nanosleep.expires;
 	struct alarm alarm;
 
-	alarm_init_on_stack(&alarm, type, alarmtimer_nsleep_wakeup);
+	alarm_init(&alarm, type, alarmtimer_nsleep_wakeup);
 
 	return alarmtimer_do_nsleep(&alarm, exp, type);
 }
@@ -799,14 +784,13 @@ static int alarm_timer_nsleep(const clockid_t which_clock, int flags,
 	if (!capable(CAP_WAKE_ALARM))
 		return -EPERM;
 
-	alarm_init_on_stack(&alarm, type, alarmtimer_nsleep_wakeup);
+	alarm_init(&alarm, type, alarmtimer_nsleep_wakeup);
 
 	exp = timespec64_to_ktime(*tsreq);
 	/* Convert (if necessary) to absolute time */
 	if (flags != TIMER_ABSTIME) {
 		ktime_t now = alarm_bases[type].gettime();
-
-		exp = ktime_add_safe(now, exp);
+		exp = ktime_add(now, exp);
 	}
 
 	ret = alarmtimer_do_nsleep(&alarm, exp, type);

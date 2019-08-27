@@ -1094,7 +1094,7 @@ static int gelic_wl_get_encode(struct net_device *netdev,
 	struct gelic_wl_info *wl = port_wl(netdev_priv(netdev));
 	struct iw_point *enc = &data->encoding;
 	unsigned long irqflag;
-	unsigned int key_index;
+	unsigned int key_index, index_specified;
 	int ret = 0;
 
 	pr_debug("%s: <-\n", __func__);
@@ -1105,10 +1105,13 @@ static int gelic_wl_get_encode(struct net_device *netdev,
 		return -EINVAL;
 
 	spin_lock_irqsave(&wl->lock, irqflag);
-	if (key_index)
+	if (key_index) {
+		index_specified = 1;
 		key_index--;
-	else
+	} else {
+		index_specified = 0;
 		key_index = wl->current_key;
+	}
 
 	if (wl->group_cipher_method == GELIC_WL_CIPHER_WEP) {
 		switch (wl->auth_method) {
@@ -2317,9 +2320,8 @@ static struct net_device *gelic_wl_alloc(struct gelic_card *card)
 	pr_debug("%s: wl=%p port=%p\n", __func__, wl, port);
 
 	/* allocate scan list */
-	wl->networks = kcalloc(GELIC_WL_BSS_MAX_ENT,
-			       sizeof(struct gelic_wl_scan_info),
-			       GFP_KERNEL);
+	wl->networks = kzalloc(sizeof(struct gelic_wl_scan_info) *
+			       GELIC_WL_BSS_MAX_ENT, GFP_KERNEL);
 
 	if (!wl->networks)
 		goto fail_bss;

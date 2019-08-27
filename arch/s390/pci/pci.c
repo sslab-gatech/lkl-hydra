@@ -420,8 +420,7 @@ int arch_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 	/* Request MSI interrupts */
 	hwirq = 0;
 	for_each_pci_msi_entry(msi, pdev) {
-		if (hwirq >= msi_vecs)
-			break;
+		rc = -EIO;
 		irq = irq_alloc_desc(0);	/* Alloc irq on node 0 */
 		if (irq < 0)
 			return -ENOMEM;
@@ -650,9 +649,6 @@ int pcibios_add_device(struct pci_dev *pdev)
 {
 	struct resource *res;
 	int i;
-
-	if (pdev->is_physfn)
-		pdev->no_vf_scan = 1;
 
 	pdev->dev.groups = zpci_attr_groups;
 	pdev->dev.dma_ops = &s390_pci_dma_ops;

@@ -1,7 +1,5 @@
 /* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
- * Author: Stepan Moskovchenko <stepanm@codeaurora.org>
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -19,7 +17,7 @@
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 #include <linux/kernel.h>
-#include <linux/init.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/errno.h>
 #include <linux/io.h>
@@ -397,15 +395,20 @@ static int msm_iommu_add_device(struct device *dev)
 	struct msm_iommu_dev *iommu;
 	struct iommu_group *group;
 	unsigned long flags;
+	int ret = 0;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
-	iommu = find_iommu_for_dev(dev);
-	spin_unlock_irqrestore(&msm_iommu_lock, flags);
 
+	iommu = find_iommu_for_dev(dev);
 	if (iommu)
 		iommu_device_link(&iommu->iommu, dev);
 	else
-		return -ENODEV;
+		ret = -ENODEV;
+
+	spin_unlock_irqrestore(&msm_iommu_lock, flags);
+
+	if (ret)
+		return ret;
 
 	group = iommu_group_get_for_dev(dev);
 	if (IS_ERR(group))
@@ -422,11 +425,12 @@ static void msm_iommu_remove_device(struct device *dev)
 	unsigned long flags;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
-	iommu = find_iommu_for_dev(dev);
-	spin_unlock_irqrestore(&msm_iommu_lock, flags);
 
+	iommu = find_iommu_for_dev(dev);
 	if (iommu)
 		iommu_device_unlink(&iommu->iommu, dev);
+
+	spin_unlock_irqrestore(&msm_iommu_lock, flags);
 
 	iommu_group_remove_device(dev);
 }
@@ -704,6 +708,7 @@ static struct iommu_ops msm_iommu_ops = {
 	.detach_dev = msm_iommu_detach_dev,
 	.map = msm_iommu_map,
 	.unmap = msm_iommu_unmap,
+	.map_sg = default_iommu_map_sg,
 	.iova_to_phys = msm_iommu_iova_to_phys,
 	.add_device = msm_iommu_add_device,
 	.remove_device = msm_iommu_remove_device,
@@ -863,5 +868,16 @@ static int __init msm_iommu_driver_init(void)
 
 	return ret;
 }
-subsys_initcall(msm_iommu_driver_init);
 
+static void __exit msm_iommu_driver_exit(void)
+{
+	platform_driver_unregister(&msm_iommu_driver);
+}
+
+subsys_initcall(msm_iommu_driver_init);
+module_exit(msm_iommu_driver_exit);
+
+IOMMU_OF_DECLARE(msm_iommu_of, "qcom,apq8064-iommu");
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Stepan Moskovchenko <stepanm@codeaurora.org>");

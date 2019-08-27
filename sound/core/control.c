@@ -105,7 +105,7 @@ static void snd_ctl_empty_read_queue(struct snd_ctl_file * ctl)
 {
 	unsigned long flags;
 	struct snd_kctl_event *cread;
-
+	
 	spin_lock_irqsave(&ctl->read_lock, flags);
 	while (!list_empty(&ctl->events)) {
 		cread = snd_kctl_event(ctl->events.next);
@@ -159,7 +159,7 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 	unsigned long flags;
 	struct snd_ctl_file *ctl;
 	struct snd_kctl_event *ev;
-
+	
 	if (snd_BUG_ON(!card || !id))
 		return;
 	if (card->shutdown)
@@ -213,7 +213,7 @@ static int snd_ctl_new(struct snd_kcontrol **kctl, unsigned int count,
 {
 	unsigned int size;
 	unsigned int idx;
-
+	
 	if (count == 0 || count > MAX_CONTROL_COUNT)
 		return -EINVAL;
 
@@ -238,7 +238,7 @@ static int snd_ctl_new(struct snd_kcontrol **kctl, unsigned int count,
  * @ncontrol: the initialization record
  * @private_data: the private data to set
  *
- * Allocates a new struct snd_kcontrol instance and initialize from the given
+ * Allocates a new struct snd_kcontrol instance and initialize from the given 
  * template.  When the access field of ncontrol is 0, it's assumed as
  * READWRITE access. When the count field is 0, it's assumes as one.
  *
@@ -251,7 +251,7 @@ struct snd_kcontrol *snd_ctl_new1(const struct snd_kcontrol_new *ncontrol,
 	unsigned int count;
 	unsigned int access;
 	int err;
-
+	
 	if (snd_BUG_ON(!ncontrol || !ncontrol->info))
 		return NULL;
 
@@ -348,82 +348,6 @@ static int snd_ctl_find_hole(struct snd_card *card, unsigned int count)
 	return 0;
 }
 
-enum snd_ctl_add_mode {
-	CTL_ADD_EXCLUSIVE, CTL_REPLACE, CTL_ADD_ON_REPLACE,
-};
-
-/* add/replace a new kcontrol object; call with card->controls_rwsem locked */
-static int __snd_ctl_add_replace(struct snd_card *card,
-				 struct snd_kcontrol *kcontrol,
-				 enum snd_ctl_add_mode mode)
-{
-	struct snd_ctl_elem_id id;
-	unsigned int idx;
-	unsigned int count;
-	struct snd_kcontrol *old;
-	int err;
-
-	id = kcontrol->id;
-	if (id.index > UINT_MAX - kcontrol->count)
-		return -EINVAL;
-
-	old = snd_ctl_find_id(card, &id);
-	if (!old) {
-		if (mode == CTL_REPLACE)
-			return -EINVAL;
-	} else {
-		if (mode == CTL_ADD_EXCLUSIVE) {
-			dev_err(card->dev,
-				"control %i:%i:%i:%s:%i is already present\n",
-				id.iface, id.device, id.subdevice, id.name,
-				id.index);
-			return -EBUSY;
-		}
-
-		err = snd_ctl_remove(card, old);
-		if (err < 0)
-			return err;
-	}
-
-	if (snd_ctl_find_hole(card, kcontrol->count) < 0)
-		return -ENOMEM;
-
-	list_add_tail(&kcontrol->list, &card->controls);
-	card->controls_count += kcontrol->count;
-	kcontrol->id.numid = card->last_numid + 1;
-	card->last_numid += kcontrol->count;
-
-	id = kcontrol->id;
-	count = kcontrol->count;
-	for (idx = 0; idx < count; idx++, id.index++, id.numid++)
-		snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_ADD, &id);
-
-	return 0;
-}
-
-static int snd_ctl_add_replace(struct snd_card *card,
-			       struct snd_kcontrol *kcontrol,
-			       enum snd_ctl_add_mode mode)
-{
-	int err = -EINVAL;
-
-	if (! kcontrol)
-		return err;
-	if (snd_BUG_ON(!card || !kcontrol->info))
-		goto error;
-
-	down_write(&card->controls_rwsem);
-	err = __snd_ctl_add_replace(card, kcontrol, mode);
-	up_write(&card->controls_rwsem);
-	if (err < 0)
-		goto error;
-	return 0;
-
- error:
-	snd_ctl_free_one(kcontrol);
-	return err;
-}
-
 /**
  * snd_ctl_add - add the control instance to the card
  * @card: the card instance
@@ -440,7 +364,50 @@ static int snd_ctl_add_replace(struct snd_card *card,
  */
 int snd_ctl_add(struct snd_card *card, struct snd_kcontrol *kcontrol)
 {
-	return snd_ctl_add_replace(card, kcontrol, CTL_ADD_EXCLUSIVE);
+	struct snd_ctl_elem_id id;
+	unsigned int idx;
+	unsigned int count;
+	int err = -EINVAL;
+
+	if (! kcontrol)
+		return err;
+	if (snd_BUG_ON(!card || !kcontrol->info))
+		goto error;
+	id = kcontrol->id;
+	if (id.index > UINT_MAX - kcontrol->count)
+		goto error;
+
+	down_write(&card->controls_rwsem);
+	if (snd_ctl_find_id(card, &id)) {
+		up_write(&card->controls_rwsem);
+		dev_err(card->dev, "control %i:%i:%i:%s:%i is already present\n",
+					id.iface,
+					id.device,
+					id.subdevice,
+					id.name,
+					id.index);
+		err = -EBUSY;
+		goto error;
+	}
+	if (snd_ctl_find_hole(card, kcontrol->count) < 0) {
+		up_write(&card->controls_rwsem);
+		err = -ENOMEM;
+		goto error;
+	}
+	list_add_tail(&kcontrol->list, &card->controls);
+	card->controls_count += kcontrol->count;
+	kcontrol->id.numid = card->last_numid + 1;
+	card->last_numid += kcontrol->count;
+	id = kcontrol->id;
+	count = kcontrol->count;
+	up_write(&card->controls_rwsem);
+	for (idx = 0; idx < count; idx++, id.index++, id.numid++)
+		snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_ADD, &id);
+	return 0;
+
+ error:
+	snd_ctl_free_one(kcontrol);
+	return err;
 }
 EXPORT_SYMBOL(snd_ctl_add);
 
@@ -461,8 +428,53 @@ EXPORT_SYMBOL(snd_ctl_add);
 int snd_ctl_replace(struct snd_card *card, struct snd_kcontrol *kcontrol,
 		    bool add_on_replace)
 {
-	return snd_ctl_add_replace(card, kcontrol,
-				   add_on_replace ? CTL_ADD_ON_REPLACE : CTL_REPLACE);
+	struct snd_ctl_elem_id id;
+	unsigned int count;
+	unsigned int idx;
+	struct snd_kcontrol *old;
+	int ret;
+
+	if (!kcontrol)
+		return -EINVAL;
+	if (snd_BUG_ON(!card || !kcontrol->info)) {
+		ret = -EINVAL;
+		goto error;
+	}
+	id = kcontrol->id;
+	down_write(&card->controls_rwsem);
+	old = snd_ctl_find_id(card, &id);
+	if (!old) {
+		if (add_on_replace)
+			goto add;
+		up_write(&card->controls_rwsem);
+		ret = -EINVAL;
+		goto error;
+	}
+	ret = snd_ctl_remove(card, old);
+	if (ret < 0) {
+		up_write(&card->controls_rwsem);
+		goto error;
+	}
+add:
+	if (snd_ctl_find_hole(card, kcontrol->count) < 0) {
+		up_write(&card->controls_rwsem);
+		ret = -ENOMEM;
+		goto error;
+	}
+	list_add_tail(&kcontrol->list, &card->controls);
+	card->controls_count += kcontrol->count;
+	kcontrol->id.numid = card->last_numid + 1;
+	card->last_numid += kcontrol->count;
+	id = kcontrol->id;
+	count = kcontrol->count;
+	up_write(&card->controls_rwsem);
+	for (idx = 0; idx < count; idx++, id.index++, id.numid++)
+		snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_ADD, &id);
+	return 0;
+
+error:
+	snd_ctl_free_one(kcontrol);
+	return ret;
 }
 EXPORT_SYMBOL(snd_ctl_replace);
 
@@ -741,7 +753,7 @@ static int snd_ctl_elem_list(struct snd_card *card,
 	struct snd_ctl_elem_id id;
 	unsigned int offset, space, jidx;
 	int err = 0;
-
+	
 	if (copy_from_user(&list, _list, sizeof(list)))
 		return -EFAULT;
 	offset = list.offset;
@@ -815,7 +827,7 @@ static int snd_ctl_elem_info(struct snd_ctl_file *ctl,
 	struct snd_kcontrol_volatile *vd;
 	unsigned int index_offset;
 	int result;
-
+	
 	down_read(&card->controls_rwsem);
 	kctl = snd_ctl_find_id(card, &info->id);
 	if (kctl == NULL) {
@@ -980,7 +992,7 @@ static int snd_ctl_elem_lock(struct snd_ctl_file *file,
 	struct snd_kcontrol *kctl;
 	struct snd_kcontrol_volatile *vd;
 	int result;
-
+	
 	if (copy_from_user(&id, _id, sizeof(id)))
 		return -EFAULT;
 	down_write(&card->controls_rwsem);
@@ -1008,7 +1020,7 @@ static int snd_ctl_elem_unlock(struct snd_ctl_file *file,
 	struct snd_kcontrol *kctl;
 	struct snd_kcontrol_volatile *vd;
 	int result;
-
+	
 	if (copy_from_user(&id, _id, sizeof(id)))
 		return -EFAULT;
 	down_write(&card->controls_rwsem);
@@ -1349,12 +1361,9 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 		kctl->tlv.c = snd_ctl_elem_user_tlv;
 
 	/* This function manage to free the instance on failure. */
-	down_write(&card->controls_rwsem);
-	err = __snd_ctl_add_replace(card, kctl, CTL_ADD_EXCLUSIVE);
-	if (err < 0) {
-		snd_ctl_free_one(kctl);
-		goto unlock;
-	}
+	err = snd_ctl_add(card, kctl);
+	if (err < 0)
+		return err;
 	offset = snd_ctl_get_ioff(kctl, &info->id);
 	snd_ctl_build_ioff(&info->id, kctl, offset);
 	/*
@@ -1365,10 +1374,10 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 	 * which locks the element.
 	 */
 
+	down_write(&card->controls_rwsem);
 	card->user_ctl_count++;
-
- unlock:
 	up_write(&card->controls_rwsem);
+
 	return 0;
 }
 
@@ -1483,7 +1492,7 @@ static int snd_ctl_tlv_ioctl(struct snd_ctl_file *file,
                              int op_flag)
 {
 	struct snd_ctl_tlv header;
-	unsigned int __user *container;
+	unsigned int *container;
 	unsigned int container_size;
 	struct snd_kcontrol *kctl;
 	struct snd_ctl_elem_id id;

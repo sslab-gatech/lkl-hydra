@@ -373,6 +373,8 @@ static int st33zp24_send(struct tpm_chip *chip, unsigned char *buf,
 	int ret;
 	u8 data;
 
+	if (!chip)
+		return -EBUSY;
 	if (len < TPM_HEADER_SIZE)
 		return -EBUSY;
 
@@ -649,7 +651,7 @@ int st33zp24_pm_resume(struct device *dev)
 	} else {
 		ret = tpm_pm_resume(dev);
 		if (!ret)
-			tpm1_do_selftest(chip);
+			tpm_do_selftest(chip);
 	}
 	return ret;
 } /* st33zp24_pm_resume() */

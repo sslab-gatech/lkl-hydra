@@ -401,7 +401,7 @@ u32 mesh_plink_deactivate(struct sta_info *sta)
 
 static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
 			       struct sta_info *sta,
-			       struct ieee802_11_elems *elems)
+			       struct ieee802_11_elems *elems, bool insert)
 {
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_supported_band *sband;
@@ -447,7 +447,7 @@ static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
 		sta->sta.bandwidth = IEEE80211_STA_RX_BW_20;
 	}
 
-	if (!test_sta_flag(sta, WLAN_STA_RATE_CONTROL))
+	if (insert)
 		rate_control_rate_init(sta);
 	else
 		rate_control_rate_update(local, sband, sta, changed);
@@ -513,8 +513,7 @@ __mesh_sta_info_alloc(struct ieee80211_sub_if_data *sdata, u8 *hw_addr)
 
 static struct sta_info *
 mesh_sta_info_alloc(struct ieee80211_sub_if_data *sdata, u8 *addr,
-		    struct ieee802_11_elems *elems,
-		    struct ieee80211_rx_status *rx_status)
+		    struct ieee802_11_elems *elems)
 {
 	struct sta_info *sta = NULL;
 
@@ -522,17 +521,11 @@ mesh_sta_info_alloc(struct ieee80211_sub_if_data *sdata, u8 *addr,
 	if (sdata->u.mesh.user_mpm ||
 	    sdata->u.mesh.security & IEEE80211_MESH_SEC_AUTHED) {
 		if (mesh_peer_accepts_plinks(elems) &&
-		    mesh_plink_availables(sdata)) {
-			int sig = 0;
-
-			if (ieee80211_hw_check(&sdata->local->hw, SIGNAL_DBM))
-				sig = rx_status->signal;
-
+		    mesh_plink_availables(sdata))
 			cfg80211_notify_new_peer_candidate(sdata->dev, addr,
 							   elems->ie_start,
 							   elems->total_len,
-							   sig, GFP_KERNEL);
-		}
+							   GFP_KERNEL);
 	} else
 		sta = __mesh_sta_info_alloc(sdata, addr);
 
@@ -545,32 +538,30 @@ mesh_sta_info_alloc(struct ieee80211_sub_if_data *sdata, u8 *addr,
  * @sdata: local meshif
  * @addr: peer's address
  * @elems: IEs from beacon or mesh peering frame.
- * @rx_status: rx status for the frame for signal reporting
  *
  * Return existing or newly allocated sta_info under RCU read lock.
  * (re)initialize with given IEs.
  */
 static struct sta_info *
 mesh_sta_info_get(struct ieee80211_sub_if_data *sdata,
-		  u8 *addr, struct ieee802_11_elems *elems,
-		  struct ieee80211_rx_status *rx_status) __acquires(RCU)
+		  u8 *addr, struct ieee802_11_elems *elems) __acquires(RCU)
 {
 	struct sta_info *sta = NULL;
 
 	rcu_read_lock();
 	sta = sta_info_get(sdata, addr);
 	if (sta) {
-		mesh_sta_info_init(sdata, sta, elems);
+		mesh_sta_info_init(sdata, sta, elems, false);
 	} else {
 		rcu_read_unlock();
 		/* can't run atomic */
-		sta = mesh_sta_info_alloc(sdata, addr, elems, rx_status);
+		sta = mesh_sta_info_alloc(sdata, addr, elems);
 		if (!sta) {
 			rcu_read_lock();
 			return NULL;
 		}
 
-		mesh_sta_info_init(sdata, sta, elems);
+		mesh_sta_info_init(sdata, sta, elems, true);
 
 		if (sta_info_insert_rcu(sta))
 			return NULL;
@@ -585,24 +576,19 @@ mesh_sta_info_get(struct ieee80211_sub_if_data *sdata,
  * @sdata: local meshif
  * @addr: peer's address
  * @elems: IEs from beacon or mesh peering frame
- * @rx_status: rx status for the frame for signal reporting
  *
  * Initiates peering if appropriate.
  */
 void mesh_neighbour_update(struct ieee80211_sub_if_data *sdata,
 			   u8 *hw_addr,
-			   struct ieee802_11_elems *elems,
-			   struct ieee80211_rx_status *rx_status)
+			   struct ieee802_11_elems *elems)
 {
 	struct sta_info *sta;
 	u32 changed = 0;
 
-	sta = mesh_sta_info_get(sdata, hw_addr, elems, rx_status);
+	sta = mesh_sta_info_get(sdata, hw_addr, elems);
 	if (!sta)
 		goto out;
-
-	sta->mesh->connected_to_gate = elems->mesh_config->meshconf_form &
-		IEEE80211_MESHCONF_FORM_CONNECTED_TO_GATE;
 
 	if (mesh_peer_accepts_plinks(elems) &&
 	    sta->mesh->plink_state == NL80211_PLINK_LISTEN &&
@@ -1083,8 +1069,7 @@ out:
 static void
 mesh_process_plink_frame(struct ieee80211_sub_if_data *sdata,
 			 struct ieee80211_mgmt *mgmt,
-			 struct ieee802_11_elems *elems,
-			 struct ieee80211_rx_status *rx_status)
+			 struct ieee802_11_elems *elems)
 {
 
 	struct sta_info *sta;
@@ -1149,7 +1134,7 @@ mesh_process_plink_frame(struct ieee80211_sub_if_data *sdata,
 	if (event == OPN_ACPT) {
 		rcu_read_unlock();
 		/* allocate sta entry if necessary and update info */
-		sta = mesh_sta_info_get(sdata, mgmt->sa, elems, rx_status);
+		sta = mesh_sta_info_get(sdata, mgmt->sa, elems);
 		if (!sta) {
 			mpl_dbg(sdata, "Mesh plink: failed to init peer!\n");
 			goto unlock_rcu;
@@ -1215,5 +1200,5 @@ void mesh_rx_plink_frame(struct ieee80211_sub_if_data *sdata,
 			return;
 	}
 	ieee802_11_parse_elems(baseaddr, len - baselen, true, &elems);
-	mesh_process_plink_frame(sdata, mgmt, &elems, rx_status);
+	mesh_process_plink_frame(sdata, mgmt, &elems);
 }

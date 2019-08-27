@@ -399,13 +399,7 @@ static int sst_media_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params,
 				struct snd_soc_dai *dai)
 {
-	int ret;
-
-	ret =
-		snd_pcm_lib_malloc_pages(substream,
-				params_buffer_bytes(params));
-	if (ret)
-		return ret;
+	snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
 	memset(substream->runtime->dma_area, 0, params_buffer_bytes(params));
 	return 0;
 }
@@ -703,21 +697,25 @@ static int sst_pcm_new(struct snd_soc_pcm_runtime *rtd)
 	return retval;
 }
 
-static int sst_soc_probe(struct snd_soc_component *component)
+static int sst_soc_probe(struct snd_soc_platform *platform)
 {
-	struct sst_data *drv = dev_get_drvdata(component->dev);
+	struct sst_data *drv = dev_get_drvdata(platform->dev);
 
-	drv->soc_card = component->card;
-	return sst_dsp_init_v2_dpcm(component);
+	drv->soc_card = platform->component.card;
+	return sst_dsp_init_v2_dpcm(platform);
 }
 
-static const struct snd_soc_component_driver sst_soc_platform_drv  = {
-	.name		= DRV_NAME,
+static const struct snd_soc_platform_driver sst_soc_platform_drv  = {
 	.probe		= sst_soc_probe,
 	.ops		= &sst_platform_ops,
 	.compr_ops	= &sst_platform_compr_ops,
 	.pcm_new	= sst_pcm_new,
 };
+
+static const struct snd_soc_component_driver sst_component = {
+	.name		= "sst",
+};
+
 
 static int sst_platform_probe(struct platform_device *pdev)
 {
@@ -742,16 +740,26 @@ static int sst_platform_probe(struct platform_device *pdev)
 	mutex_init(&drv->lock);
 	dev_set_drvdata(&pdev->dev, drv);
 
-	ret = devm_snd_soc_register_component(&pdev->dev, &sst_soc_platform_drv,
-				sst_platform_dai, ARRAY_SIZE(sst_platform_dai));
-	if (ret)
-		dev_err(&pdev->dev, "registering cpu dais failed\n");
+	ret = snd_soc_register_platform(&pdev->dev, &sst_soc_platform_drv);
+	if (ret) {
+		dev_err(&pdev->dev, "registering soc platform failed\n");
+		return ret;
+	}
 
+	ret = snd_soc_register_component(&pdev->dev, &sst_component,
+				sst_platform_dai, ARRAY_SIZE(sst_platform_dai));
+	if (ret) {
+		dev_err(&pdev->dev, "registering cpu dais failed\n");
+		snd_soc_unregister_platform(&pdev->dev);
+	}
 	return ret;
 }
 
 static int sst_platform_remove(struct platform_device *pdev)
 {
+
+	snd_soc_unregister_component(&pdev->dev);
+	snd_soc_unregister_platform(&pdev->dev);
 	dev_dbg(&pdev->dev, "sst_platform_remove success\n");
 	return 0;
 }
@@ -771,7 +779,7 @@ static int sst_soc_prepare(struct device *dev)
 	snd_soc_poweroff(drv->soc_card->dev);
 
 	/* set the SSPs to idle */
-	for_each_card_rtds(drv->soc_card, rtd) {
+	list_for_each_entry(rtd, &drv->soc_card->rtd_list, list) {
 		struct snd_soc_dai *dai = rtd->cpu_dai;
 
 		if (dai->active) {
@@ -792,7 +800,7 @@ static void sst_soc_complete(struct device *dev)
 		return;
 
 	/* restart SSPs */
-	for_each_card_rtds(drv->soc_card, rtd) {
+	list_for_each_entry(rtd, &drv->soc_card->rtd_list, list) {
 		struct snd_soc_dai *dai = rtd->cpu_dai;
 
 		if (dai->active) {

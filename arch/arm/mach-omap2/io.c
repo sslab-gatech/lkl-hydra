@@ -37,6 +37,7 @@
 #include "clock.h"
 #include "clock2xxx.h"
 #include "clock3xxx.h"
+#include "omap-pm.h"
 #include "sdrc.h"
 #include "control.h"
 #include "serial.h"
@@ -420,6 +421,13 @@ static void __init __maybe_unused omap_hwmod_init_postsetup(void)
 	postsetup_state = _HWMOD_STATE_ENABLED;
 #endif
 	omap_hwmod_for_each(_set_hwmod_postsetup_state, &postsetup_state);
+
+	omap_pm_if_early_init();
+}
+
+static void __init __maybe_unused omap_common_late_init(void)
+{
+	omap2_common_pm_late_init();
 }
 
 #ifdef CONFIG_SOC_OMAP2420
@@ -442,7 +450,9 @@ void __init omap2420_init_early(void)
 
 void __init omap2420_init_late(void)
 {
-	omap_pm_soc_init = omap2_pm_init;
+	omap_common_late_init();
+	omap2_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -466,7 +476,9 @@ void __init omap2430_init_early(void)
 
 void __init omap2430_init_late(void)
 {
-	omap_pm_soc_init = omap2_pm_init;
+	omap_common_late_init();
+	omap2_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -517,12 +529,43 @@ void __init am35xx_init_early(void)
 
 void __init omap3_init_late(void)
 {
-	omap_pm_soc_init = omap3_pm_init;
+	omap_common_late_init();
+	omap3_pm_init();
+	omap2_clk_enable_autoidle_all();
+}
+
+void __init omap3430_init_late(void)
+{
+	omap_common_late_init();
+	omap3_pm_init();
+	omap2_clk_enable_autoidle_all();
+}
+
+void __init omap35xx_init_late(void)
+{
+	omap_common_late_init();
+	omap3_pm_init();
+	omap2_clk_enable_autoidle_all();
+}
+
+void __init omap3630_init_late(void)
+{
+	omap_common_late_init();
+	omap3_pm_init();
+	omap2_clk_enable_autoidle_all();
+}
+
+void __init am35xx_init_late(void)
+{
+	omap_common_late_init();
+	omap3_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 
 void __init ti81xx_init_late(void)
 {
-	omap_pm_soc_init = omap_pm_nop_init;
+	omap_common_late_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -578,7 +621,7 @@ void __init am33xx_init_early(void)
 
 void __init am33xx_init_late(void)
 {
-	omap_pm_soc_init = amx3_common_pm_init;
+	omap_common_late_init();
 }
 #endif
 
@@ -601,7 +644,8 @@ void __init am43xx_init_early(void)
 
 void __init am43xx_init_late(void)
 {
-	omap_pm_soc_init = amx3_common_pm_init;
+	omap_common_late_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -629,7 +673,9 @@ void __init omap4430_init_early(void)
 
 void __init omap4430_init_late(void)
 {
-	omap_pm_soc_init = omap4_pm_init;
+	omap_common_late_init();
+	omap4_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -655,7 +701,9 @@ void __init omap5_init_early(void)
 
 void __init omap5_init_late(void)
 {
-	omap_pm_soc_init = omap4_pm_init;
+	omap_common_late_init();
+	omap4_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 
@@ -678,7 +726,9 @@ void __init dra7xx_init_early(void)
 
 void __init dra7xx_init_late(void)
 {
-	omap_pm_soc_init = omap4_pm_init;
+	omap_common_late_init();
+	omap4_pm_init();
+	omap2_clk_enable_autoidle_all();
 }
 #endif
 

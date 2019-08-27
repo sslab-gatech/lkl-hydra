@@ -21,7 +21,6 @@
 #include <linux/pci.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
-#include <uapi/sound/skl-tplg-interface.h>
 #include "skl-sst-dsp.h"
 #include "cnl-sst-dsp.h"
 #include "skl-sst-ipc.h"
@@ -29,11 +28,13 @@
 #include "../common/sst-dsp.h"
 #include "../common/sst-dsp-priv.h"
 #include "skl-topology.h"
+#include "skl-tplg-interface.h"
 
 static int skl_alloc_dma_buf(struct device *dev,
 		struct snd_dma_buffer *dmab, size_t size)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 
 	if (!bus)
 		return -ENODEV;
@@ -43,7 +44,8 @@ static int skl_alloc_dma_buf(struct device *dev,
 
 static int skl_free_dma_buf(struct device *dev, struct snd_dma_buffer *dmab)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 
 	if (!bus)
 		return -ENODEV;
@@ -87,7 +89,8 @@ void skl_dsp_enable_notification(struct skl_sst *ctx, bool enable)
 static int skl_dsp_setup_spib(struct device *dev, unsigned int size,
 				int stream_tag, int enable)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 	struct hdac_stream *stream = snd_hdac_get_stream(bus,
 			SNDRV_PCM_STREAM_PLAYBACK, stream_tag);
 	struct hdac_ext_stream *estream;
@@ -97,10 +100,10 @@ static int skl_dsp_setup_spib(struct device *dev, unsigned int size,
 
 	estream = stream_to_hdac_ext_stream(stream);
 	/* enable/disable SPIB for this hdac stream */
-	snd_hdac_ext_stream_spbcap_enable(bus, enable, stream->index);
+	snd_hdac_ext_stream_spbcap_enable(ebus, enable, stream->index);
 
 	/* set the spib value */
-	snd_hdac_ext_stream_set_spib(bus, estream, size);
+	snd_hdac_ext_stream_set_spib(ebus, estream, size);
 
 	return 0;
 }
@@ -108,7 +111,8 @@ static int skl_dsp_setup_spib(struct device *dev, unsigned int size,
 static int skl_dsp_prepare(struct device *dev, unsigned int format,
 			unsigned int size, struct snd_dma_buffer *dmab)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 	struct hdac_ext_stream *estream;
 	struct hdac_stream *stream;
 	struct snd_pcm_substream substream;
@@ -120,7 +124,7 @@ static int skl_dsp_prepare(struct device *dev, unsigned int format,
 	memset(&substream, 0, sizeof(substream));
 	substream.stream = SNDRV_PCM_STREAM_PLAYBACK;
 
-	estream = snd_hdac_ext_stream_assign(bus, &substream,
+	estream = snd_hdac_ext_stream_assign(ebus, &substream,
 					HDAC_EXT_STREAM_TYPE_HOST);
 	if (!estream)
 		return -ENODEV;
@@ -139,8 +143,9 @@ static int skl_dsp_prepare(struct device *dev, unsigned int format,
 
 static int skl_dsp_trigger(struct device *dev, bool start, int stream_tag)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
 	struct hdac_stream *stream;
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 
 	if (!bus)
 		return -ENODEV;
@@ -158,9 +163,10 @@ static int skl_dsp_trigger(struct device *dev, bool start, int stream_tag)
 static int skl_dsp_cleanup(struct device *dev,
 		struct snd_dma_buffer *dmab, int stream_tag)
 {
-	struct hdac_bus *bus = dev_get_drvdata(dev);
+	struct hdac_ext_bus *ebus = dev_get_drvdata(dev);
 	struct hdac_stream *stream;
 	struct hdac_ext_stream *estream;
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 
 	if (!bus)
 		return -ENODEV;
@@ -219,7 +225,7 @@ static const struct skl_dsp_ops dsp_ops[] = {
 		.id = 0x9d71,
 		.num_cores = 2,
 		.loader_ops = skl_get_loader_ops,
-		.init = skl_sst_dsp_init,
+		.init = kbl_sst_dsp_init,
 		.init_fw = skl_sst_init_fw,
 		.cleanup = skl_sst_dsp_cleanup
 	},
@@ -247,14 +253,6 @@ static const struct skl_dsp_ops dsp_ops[] = {
 		.init_fw = cnl_sst_init_fw,
 		.cleanup = cnl_sst_dsp_cleanup
 	},
-	{
-		.id = 0xa348,
-		.num_cores = 4,
-		.loader_ops = bxt_get_loader_ops,
-		.init = cnl_sst_dsp_init,
-		.init_fw = cnl_sst_init_fw,
-		.cleanup = cnl_sst_dsp_cleanup
-	},
 };
 
 const struct skl_dsp_ops *skl_get_dsp_ops(int pci_id)
@@ -272,7 +270,8 @@ const struct skl_dsp_ops *skl_get_dsp_ops(int pci_id)
 int skl_init_dsp(struct skl *skl)
 {
 	void __iomem *mmio_base;
-	struct hdac_bus *bus = skl_to_bus(skl);
+	struct hdac_ext_bus *ebus = &skl->ebus;
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 	struct skl_dsp_loader_ops loader_ops;
 	int irq = bus->irq;
 	const struct skl_dsp_ops *ops;
@@ -280,8 +279,8 @@ int skl_init_dsp(struct skl *skl)
 	int ret;
 
 	/* enable ppcap interrupt */
-	snd_hdac_ext_bus_ppcap_enable(bus, true);
-	snd_hdac_ext_bus_ppcap_int_enable(bus, true);
+	snd_hdac_ext_bus_ppcap_enable(&skl->ebus, true);
+	snd_hdac_ext_bus_ppcap_int_enable(&skl->ebus, true);
 
 	/* read the BAR of the ADSP MMIO */
 	mmio_base = pci_ioremap_bar(skl->pci, 4);
@@ -336,11 +335,12 @@ unmap_mmio:
 
 int skl_free_dsp(struct skl *skl)
 {
-	struct hdac_bus *bus = skl_to_bus(skl);
+	struct hdac_ext_bus *ebus = &skl->ebus;
+	struct hdac_bus *bus = ebus_to_hbus(ebus);
 	struct skl_sst *ctx = skl->skl_sst;
 
 	/* disable  ppcap interrupt */
-	snd_hdac_ext_bus_ppcap_int_enable(bus, false);
+	snd_hdac_ext_bus_ppcap_int_enable(&skl->ebus, false);
 
 	ctx->dsp_ops->cleanup(bus->dev, ctx);
 
@@ -383,11 +383,10 @@ int skl_suspend_late_dsp(struct skl *skl)
 int skl_suspend_dsp(struct skl *skl)
 {
 	struct skl_sst *ctx = skl->skl_sst;
-	struct hdac_bus *bus = skl_to_bus(skl);
 	int ret;
 
 	/* if ppcap is not supported return 0 */
-	if (!bus->ppcap)
+	if (!skl->ebus.bus.ppcap)
 		return 0;
 
 	ret = skl_dsp_sleep(ctx->dsp);
@@ -395,8 +394,8 @@ int skl_suspend_dsp(struct skl *skl)
 		return ret;
 
 	/* disable ppcap interrupt */
-	snd_hdac_ext_bus_ppcap_int_enable(bus, false);
-	snd_hdac_ext_bus_ppcap_enable(bus, false);
+	snd_hdac_ext_bus_ppcap_int_enable(&skl->ebus, false);
+	snd_hdac_ext_bus_ppcap_enable(&skl->ebus, false);
 
 	return 0;
 }
@@ -404,31 +403,25 @@ int skl_suspend_dsp(struct skl *skl)
 int skl_resume_dsp(struct skl *skl)
 {
 	struct skl_sst *ctx = skl->skl_sst;
-	struct hdac_bus *bus = skl_to_bus(skl);
 	int ret;
 
 	/* if ppcap is not supported return 0 */
-	if (!bus->ppcap)
+	if (!skl->ebus.bus.ppcap)
 		return 0;
 
 	/* enable ppcap interrupt */
-	snd_hdac_ext_bus_ppcap_enable(bus, true);
-	snd_hdac_ext_bus_ppcap_int_enable(bus, true);
+	snd_hdac_ext_bus_ppcap_enable(&skl->ebus, true);
+	snd_hdac_ext_bus_ppcap_int_enable(&skl->ebus, true);
 
 	/* check if DSP 1st boot is done */
 	if (skl->skl_sst->is_first_boot == true)
 		return 0;
 
-	/*
-	 * Disable dynamic clock and power gating during firmware
-	 * and library download
-	 */
+	/* disable dynamic clock gating during fw and lib download */
 	ctx->enable_miscbdcge(ctx->dev, false);
-	ctx->clock_power_gating(ctx->dev, false);
 
 	ret = skl_dsp_wake(ctx->dsp);
 	ctx->enable_miscbdcge(ctx->dev, true);
-	ctx->clock_power_gating(ctx->dev, true);
 	if (ret < 0)
 		return ret;
 
@@ -1217,7 +1210,7 @@ out:
 static int skl_set_pipe_state(struct skl_sst *ctx, struct skl_pipe *pipe,
 	enum skl_ipc_pipeline_state state)
 {
-	dev_dbg(ctx->dev, "%s: pipe_state = %d\n", __func__, state);
+	dev_dbg(ctx->dev, "%s: pipe_satate = %d\n", __func__, state);
 
 	return skl_ipc_set_pipeline_state(&ctx->ipc, pipe->ppl_id, state);
 }

@@ -9,7 +9,12 @@ struct net;
 static inline u32 net_hash_mix(const struct net *net)
 {
 #ifdef CONFIG_NET_NS
-	return (u32)(((unsigned long)net) >> ilog2(sizeof(*net)));
+	/*
+	 * shift this right to eliminate bits, that are
+	 * always zeroed
+	 */
+
+	return (u32)(((unsigned long)net) >> L1_CACHE_SHIFT);
 #else
 	return 0;
 #endif

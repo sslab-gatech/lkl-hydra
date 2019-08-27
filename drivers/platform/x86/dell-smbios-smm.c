@@ -18,13 +18,13 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
-#include "dcdbas.h"
+#include "../../firmware/dcdbas.h"
 #include "dell-smbios.h"
 
 static int da_command_address;
 static int da_command_code;
 static struct calling_interface_buffer *buffer;
-static struct platform_device *platform_device;
+struct platform_device *platform_device;
 static DEFINE_MUTEX(smm_mutex);
 
 static const struct dmi_system_id dell_device_table[] __initconst = {
@@ -82,7 +82,7 @@ static void find_cmd_address(const struct dmi_header *dm, void *dummy)
 	}
 }
 
-static int dell_smbios_smm_call(struct calling_interface_buffer *input)
+int dell_smbios_smm_call(struct calling_interface_buffer *input)
 {
 	struct smi_cmd command;
 	size_t size;

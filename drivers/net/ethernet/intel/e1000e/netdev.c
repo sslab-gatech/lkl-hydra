@@ -1,5 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 1999 - 2018 Intel Corporation. */
+/* Intel PRO/1000 Linux driver
+ * Copyright(c) 1999 - 2015 Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in
+ * the file called "COPYING".
+ *
+ * Contact Information:
+ * Linux NICS <linux.nics@intel.com>
+ * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+ * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+ */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -2305,8 +2323,8 @@ static int e1000_alloc_ring_dma(struct e1000_adapter *adapter,
 {
 	struct pci_dev *pdev = adapter->pdev;
 
-	ring->desc = dma_alloc_coherent(&pdev->dev, ring->size, &ring->dma,
-					GFP_KERNEL);
+	ring->desc = dma_zalloc_coherent(&pdev->dev, ring->size, &ring->dma,
+					 GFP_KERNEL);
 	if (!ring->desc)
 		return -ENOMEM;
 
@@ -2651,9 +2669,9 @@ err:
 /**
  * e1000e_poll - NAPI Rx polling callback
  * @napi: struct associated with this polling callback
- * @budget: number of packets driver is allowed to process this poll
+ * @weight: number of packets driver is allowed to process this poll
  **/
-static int e1000e_poll(struct napi_struct *napi, int budget)
+static int e1000e_poll(struct napi_struct *napi, int weight)
 {
 	struct e1000_adapter *adapter = container_of(napi, struct e1000_adapter,
 						     napi);
@@ -2667,17 +2685,16 @@ static int e1000e_poll(struct napi_struct *napi, int budget)
 	    (adapter->rx_ring->ims_val & adapter->tx_ring->ims_val))
 		tx_cleaned = e1000_clean_tx_irq(adapter->tx_ring);
 
-	adapter->clean_rx(adapter->rx_ring, &work_done, budget);
+	adapter->clean_rx(adapter->rx_ring, &work_done, weight);
 
-	if (!tx_cleaned || work_done == budget)
-		return budget;
+	if (!tx_cleaned)
+		work_done = weight;
 
-	/* Exit the polling mode, but don't re-enable interrupts if stack might
-	 * poll us due to busy-polling
-	 */
-	if (likely(napi_complete_done(napi, work_done))) {
+	/* If weight not fully consumed, exit the polling mode */
+	if (work_done < weight) {
 		if (adapter->itr_setting & 3)
 			e1000_set_itr(adapter);
+		napi_complete_done(napi, work_done);
 		if (!test_bit(__E1000_DOWN, &adapter->state)) {
 			if (adapter->msix_entries)
 				ew32(IMS, adapter->rx_ring->ims_val);
@@ -3313,7 +3330,7 @@ static int e1000e_write_mc_addr_list(struct net_device *netdev)
 		return 0;
 	}
 
-	mta_list = kcalloc(netdev_mc_count(netdev), ETH_ALEN, GFP_ATOMIC);
+	mta_list = kzalloc(netdev_mc_count(netdev) * ETH_ALEN, GFP_ATOMIC);
 	if (!mta_list)
 		return -ENOMEM;
 
@@ -3528,12 +3545,15 @@ s32 e1000e_get_base_timinca(struct e1000_adapter *adapter, u32 *timinca)
 		}
 		break;
 	case e1000_pch_spt:
-		/* Stable 24MHz frequency */
-		incperiod = INCPERIOD_24MHZ;
-		incvalue = INCVALUE_24MHZ;
-		shift = INCVALUE_SHIFT_24MHZ;
-		adapter->cc.shift = shift;
-		break;
+		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI) {
+			/* Stable 24MHz frequency */
+			incperiod = INCPERIOD_24MHZ;
+			incvalue = INCVALUE_24MHZ;
+			shift = INCVALUE_SHIFT_24MHZ;
+			adapter->cc.shift = shift;
+			break;
+		}
+		return -EINVAL;
 	case e1000_pch_cnp:
 		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI) {
 			/* Stable 24MHz frequency */
@@ -4320,16 +4340,13 @@ void e1000e_reinit_locked(struct e1000_adapter *adapter)
 /**
  * e1000e_sanitize_systim - sanitize raw cycle counter reads
  * @hw: pointer to the HW structure
- * @systim: PHC time value read, sanitized and returned
- * @sts: structure to hold system time before and after reading SYSTIML,
- * may be NULL
+ * @systim: time value read, sanitized and returned
  *
  * Errata for 82574/82583 possible bad bits read from SYSTIMH/L:
  * check to see that the time is incrementing at a reasonable
  * rate and is a multiple of incvalue.
  **/
-static u64 e1000e_sanitize_systim(struct e1000_hw *hw, u64 systim,
-				  struct ptp_system_timestamp *sts)
+static u64 e1000e_sanitize_systim(struct e1000_hw *hw, u64 systim)
 {
 	u64 time_delta, rem, temp;
 	u64 systim_next;
@@ -4339,9 +4356,7 @@ static u64 e1000e_sanitize_systim(struct e1000_hw *hw, u64 systim,
 	incvalue = er32(TIMINCA) & E1000_TIMINCA_INCVALUE_MASK;
 	for (i = 0; i < E1000_MAX_82574_SYSTIM_REREADS; i++) {
 		/* latch SYSTIMH on read of SYSTIML */
-		ptp_read_system_prets(sts);
 		systim_next = (u64)er32(SYSTIML);
-		ptp_read_system_postts(sts);
 		systim_next |= (u64)er32(SYSTIMH) << 32;
 
 		time_delta = systim_next - systim;
@@ -4359,16 +4374,15 @@ static u64 e1000e_sanitize_systim(struct e1000_hw *hw, u64 systim,
 }
 
 /**
- * e1000e_read_systim - read SYSTIM register
- * @adapter: board private structure
- * @sts: structure which will contain system time before and after reading
- * SYSTIML, may be NULL
+ * e1000e_cyclecounter_read - read raw cycle counter (used by time counter)
+ * @cc: cyclecounter structure
  **/
-u64 e1000e_read_systim(struct e1000_adapter *adapter,
-		       struct ptp_system_timestamp *sts)
+static u64 e1000e_cyclecounter_read(const struct cyclecounter *cc)
 {
+	struct e1000_adapter *adapter = container_of(cc, struct e1000_adapter,
+						     cc);
 	struct e1000_hw *hw = &adapter->hw;
-	u32 systimel, systimel_2, systimeh;
+	u32 systimel, systimeh;
 	u64 systim;
 	/* SYSTIMH latching upon SYSTIML read does not work well.
 	 * This means that if SYSTIML overflows after we read it but before
@@ -4376,15 +4390,11 @@ u64 e1000e_read_systim(struct e1000_adapter *adapter,
 	 * will experience a huge non linear increment in the systime value
 	 * to fix that we test for overflow and if true, we re-read systime.
 	 */
-	ptp_read_system_prets(sts);
 	systimel = er32(SYSTIML);
-	ptp_read_system_postts(sts);
 	systimeh = er32(SYSTIMH);
 	/* Is systimel is so large that overflow is possible? */
 	if (systimel >= (u32)0xffffffff - E1000_TIMINCA_INCVALUE_MASK) {
-		ptp_read_system_prets(sts);
-		systimel_2 = er32(SYSTIML);
-		ptp_read_system_postts(sts);
+		u32 systimel_2 = er32(SYSTIML);
 		if (systimel > systimel_2) {
 			/* There was an overflow, read again SYSTIMH, and use
 			 * systimel_2
@@ -4397,21 +4407,9 @@ u64 e1000e_read_systim(struct e1000_adapter *adapter,
 	systim |= (u64)systimeh << 32;
 
 	if (adapter->flags2 & FLAG2_CHECK_SYSTIM_OVERFLOW)
-		systim = e1000e_sanitize_systim(hw, systim, sts);
+		systim = e1000e_sanitize_systim(hw, systim);
 
 	return systim;
-}
-
-/**
- * e1000e_cyclecounter_read - read raw cycle counter (used by time counter)
- * @cc: cyclecounter structure
- **/
-static u64 e1000e_cyclecounter_read(const struct cyclecounter *cc)
-{
-	struct e1000_adapter *adapter = container_of(cc, struct e1000_adapter,
-						     cc);
-
-	return e1000e_read_systim(adapter, NULL);
 }
 
 /**
@@ -6877,6 +6875,8 @@ static pci_ers_result_t e1000_io_slot_reset(struct pci_dev *pdev)
 		result = PCI_ERS_RESULT_RECOVERED;
 	}
 
+	pci_cleanup_aer_uncorrect_error_status(pdev);
+
 	return result;
 }
 
@@ -7613,7 +7613,7 @@ module_exit(e1000_exit_module);
 
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/1000 Network Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 
 /* netdev.c */

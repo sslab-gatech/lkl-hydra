@@ -37,7 +37,6 @@
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
 #include "mlx5_core.h"
-#include "lib/eq.h"
 
 enum {
 	MLX5_PAGES_CANT_GIVE	= 0,
@@ -434,28 +433,15 @@ static void pages_work_handler(struct work_struct *work)
 	kfree(req);
 }
 
-static int req_pages_handler(struct notifier_block *nb,
-			     unsigned long type, void *data)
+void mlx5_core_req_pages_handler(struct mlx5_core_dev *dev, u16 func_id,
+				 s32 npages)
 {
 	struct mlx5_pages_req *req;
-	struct mlx5_core_dev *dev;
-	struct mlx5_priv *priv;
-	struct mlx5_eqe *eqe;
-	u16 func_id;
-	s32 npages;
 
-	priv = mlx5_nb_cof(nb, struct mlx5_priv, pg_nb);
-	dev  = container_of(priv, struct mlx5_core_dev, priv);
-	eqe  = data;
-
-	func_id = be16_to_cpu(eqe->data.req_pages.func_id);
-	npages  = be32_to_cpu(eqe->data.req_pages.num_pages);
-	mlx5_core_dbg(dev, "page request for func 0x%x, npages %d\n",
-		      func_id, npages);
 	req = kzalloc(sizeof(*req), GFP_ATOMIC);
 	if (!req) {
 		mlx5_core_warn(dev, "failed to allocate pages request\n");
-		return NOTIFY_DONE;
+		return;
 	}
 
 	req->dev = dev;
@@ -463,7 +449,6 @@ static int req_pages_handler(struct notifier_block *nb,
 	req->npages = npages;
 	INIT_WORK(&req->work, pages_work_handler);
 	queue_work(dev->priv.pg_wq, &req->work);
-	return NOTIFY_OK;
 }
 
 int mlx5_satisfy_startup_pages(struct mlx5_core_dev *dev, int boot)
@@ -539,10 +524,19 @@ int mlx5_reclaim_startup_pages(struct mlx5_core_dev *dev)
 	return 0;
 }
 
-int mlx5_pagealloc_init(struct mlx5_core_dev *dev)
+void mlx5_pagealloc_init(struct mlx5_core_dev *dev)
 {
 	dev->priv.page_root = RB_ROOT;
 	INIT_LIST_HEAD(&dev->priv.free_list);
+}
+
+void mlx5_pagealloc_cleanup(struct mlx5_core_dev *dev)
+{
+	/* nothing */
+}
+
+int mlx5_pagealloc_start(struct mlx5_core_dev *dev)
+{
 	dev->priv.pg_wq = create_singlethread_workqueue("mlx5_page_allocator");
 	if (!dev->priv.pg_wq)
 		return -ENOMEM;
@@ -550,21 +544,9 @@ int mlx5_pagealloc_init(struct mlx5_core_dev *dev)
 	return 0;
 }
 
-void mlx5_pagealloc_cleanup(struct mlx5_core_dev *dev)
-{
-	destroy_workqueue(dev->priv.pg_wq);
-}
-
-void mlx5_pagealloc_start(struct mlx5_core_dev *dev)
-{
-	MLX5_NB_INIT(&dev->priv.pg_nb, req_pages_handler, PAGE_REQUEST);
-	mlx5_eq_notifier_register(dev, &dev->priv.pg_nb);
-}
-
 void mlx5_pagealloc_stop(struct mlx5_core_dev *dev)
 {
-	mlx5_eq_notifier_unregister(dev, &dev->priv.pg_nb);
-	flush_workqueue(dev->priv.pg_wq);
+	destroy_workqueue(dev->priv.pg_wq);
 }
 
 int mlx5_wait_for_vf_pages(struct mlx5_core_dev *dev)

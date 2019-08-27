@@ -84,7 +84,7 @@ struct ibmpex_bmc_data {
 
 	struct ipmi_addr	address;
 	struct completion	read_complete;
-	struct ipmi_user	*user;
+	ipmi_user_t		user;
 	int			interface;
 
 	struct kernel_ipmi_msg	tx_message;
@@ -387,7 +387,7 @@ static int ibmpex_find_sensors(struct ibmpex_bmc_data *data)
 		return -ENOENT;
 	data->num_sensors = err;
 
-	data->sensors = kcalloc(data->num_sensors, sizeof(*data->sensors),
+	data->sensors = kzalloc(data->num_sensors * sizeof(*data->sensors),
 				GFP_KERNEL);
 	if (!data->sensors)
 		return -ENOMEM;

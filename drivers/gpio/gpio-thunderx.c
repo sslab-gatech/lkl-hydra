@@ -504,17 +504,16 @@ static int thunderx_gpio_probe(struct pci_dev *pdev,
 		txgpio->base_msi = (c >> 8) & 0xff;
 	}
 
-	txgpio->msix_entries = devm_kcalloc(dev,
-					  ngpio, sizeof(struct msix_entry),
+	txgpio->msix_entries = devm_kzalloc(dev,
+					  sizeof(struct msix_entry) * ngpio,
 					  GFP_KERNEL);
 	if (!txgpio->msix_entries) {
 		err = -ENOMEM;
 		goto out;
 	}
 
-	txgpio->line_entries = devm_kcalloc(dev,
-					    ngpio,
-					    sizeof(struct thunderx_line),
+	txgpio->line_entries = devm_kzalloc(dev,
+					    sizeof(struct thunderx_line) * ngpio,
 					    GFP_KERNEL);
 	if (!txgpio->line_entries) {
 		err = -ENOMEM;

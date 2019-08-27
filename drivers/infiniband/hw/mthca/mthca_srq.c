@@ -95,8 +95,7 @@ static inline int *wqe_to_link(void *wqe)
 static void mthca_tavor_init_srq_context(struct mthca_dev *dev,
 					 struct mthca_pd *pd,
 					 struct mthca_srq *srq,
-					 struct mthca_tavor_srq_context *context,
-					 bool is_user)
+					 struct mthca_tavor_srq_context *context)
 {
 	memset(context, 0, sizeof *context);
 
@@ -104,7 +103,7 @@ static void mthca_tavor_init_srq_context(struct mthca_dev *dev,
 	context->state_pd    = cpu_to_be32(pd->pd_num);
 	context->lkey        = cpu_to_be32(srq->mr.ibmr.lkey);
 
-	if (is_user)
+	if (pd->ibpd.uobject)
 		context->uar =
 			cpu_to_be32(to_mucontext(pd->ibpd.uobject->context)->uar.index);
 	else
@@ -114,8 +113,7 @@ static void mthca_tavor_init_srq_context(struct mthca_dev *dev,
 static void mthca_arbel_init_srq_context(struct mthca_dev *dev,
 					 struct mthca_pd *pd,
 					 struct mthca_srq *srq,
-					 struct mthca_arbel_srq_context *context,
-					 bool is_user)
+					 struct mthca_arbel_srq_context *context)
 {
 	int logsize, max;
 
@@ -131,7 +129,7 @@ static void mthca_arbel_init_srq_context(struct mthca_dev *dev,
 	context->lkey = cpu_to_be32(srq->mr.ibmr.lkey);
 	context->db_index = cpu_to_be32(srq->db_index);
 	context->logstride_usrpage = cpu_to_be32((srq->wqe_shift - 4) << 29);
-	if (is_user)
+	if (pd->ibpd.uobject)
 		context->logstride_usrpage |=
 			cpu_to_be32(to_mucontext(pd->ibpd.uobject->context)->uar.index);
 	else
@@ -147,17 +145,17 @@ static void mthca_free_srq_buf(struct mthca_dev *dev, struct mthca_srq *srq)
 }
 
 static int mthca_alloc_srq_buf(struct mthca_dev *dev, struct mthca_pd *pd,
-			       struct mthca_srq *srq, struct ib_udata *udata)
+			       struct mthca_srq *srq)
 {
 	struct mthca_data_seg *scatter;
 	void *wqe;
 	int err;
 	int i;
 
-	if (udata)
+	if (pd->ibpd.uobject)
 		return 0;
 
-	srq->wrid = kmalloc_array(srq->max, sizeof(u64), GFP_KERNEL);
+	srq->wrid = kmalloc(srq->max * sizeof (u64), GFP_KERNEL);
 	if (!srq->wrid)
 		return -ENOMEM;
 
@@ -199,8 +197,7 @@ static int mthca_alloc_srq_buf(struct mthca_dev *dev, struct mthca_pd *pd,
 }
 
 int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
-		    struct ib_srq_attr *attr, struct mthca_srq *srq,
-		    struct ib_udata *udata)
+		    struct ib_srq_attr *attr, struct mthca_srq *srq)
 {
 	struct mthca_mailbox *mailbox;
 	int ds;
@@ -238,7 +235,7 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 		if (err)
 			goto err_out;
 
-		if (!udata) {
+		if (!pd->ibpd.uobject) {
 			srq->db_index = mthca_alloc_db(dev, MTHCA_DB_TYPE_SRQ,
 						       srq->srqn, &srq->db);
 			if (srq->db_index < 0) {
@@ -254,7 +251,7 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 		goto err_out_db;
 	}
 
-	err = mthca_alloc_srq_buf(dev, pd, srq, udata);
+	err = mthca_alloc_srq_buf(dev, pd, srq);
 	if (err)
 		goto err_out_mailbox;
 
@@ -264,9 +261,9 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 	mutex_init(&srq->mutex);
 
 	if (mthca_is_memfree(dev))
-		mthca_arbel_init_srq_context(dev, pd, srq, mailbox->buf, udata);
+		mthca_arbel_init_srq_context(dev, pd, srq, mailbox->buf);
 	else
-		mthca_tavor_init_srq_context(dev, pd, srq, mailbox->buf, udata);
+		mthca_tavor_init_srq_context(dev, pd, srq, mailbox->buf);
 
 	err = mthca_SW2HW_SRQ(dev, mailbox, srq->srqn);
 
@@ -300,14 +297,14 @@ err_out_free_srq:
 		mthca_warn(dev, "HW2SW_SRQ failed (%d)\n", err);
 
 err_out_free_buf:
-	if (!udata)
+	if (!pd->ibpd.uobject)
 		mthca_free_srq_buf(dev, srq);
 
 err_out_mailbox:
 	mthca_free_mailbox(dev, mailbox);
 
 err_out_db:
-	if (!udata && mthca_is_memfree(dev))
+	if (!pd->ibpd.uobject && mthca_is_memfree(dev))
 		mthca_free_db(dev, MTHCA_DB_TYPE_SRQ, srq->db_index);
 
 err_out_icm:
@@ -475,8 +472,8 @@ void mthca_free_srq_wqe(struct mthca_srq *srq, u32 wqe_addr)
 	spin_unlock(&srq->lock);
 }
 
-int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
-			      const struct ib_recv_wr **bad_wr)
+int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
+			      struct ib_recv_wr **bad_wr)
 {
 	struct mthca_dev *dev = to_mdev(ibsrq->device);
 	struct mthca_srq *srq = to_msrq(ibsrq);
@@ -575,8 +572,8 @@ int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
 	return err;
 }
 
-int mthca_arbel_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
-			      const struct ib_recv_wr **bad_wr)
+int mthca_arbel_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
+			      struct ib_recv_wr **bad_wr)
 {
 	struct mthca_dev *dev = to_mdev(ibsrq->device);
 	struct mthca_srq *srq = to_msrq(ibsrq);

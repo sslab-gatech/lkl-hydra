@@ -139,6 +139,8 @@ enum rxe_qp_state {
 	QP_STATE_ERROR
 };
 
+extern char *rxe_qp_state_name[];
+
 struct rxe_req_info {
 	enum rxe_qp_state	state;
 	int			wqe_index;
@@ -158,7 +160,6 @@ struct rxe_comp_info {
 	int			opcode;
 	int			timeout;
 	int			timeout_retry;
-	int			started_retry;
 	u32			retry_cnt;
 	u32			rnr_retry;
 	struct rxe_task		task;
@@ -172,7 +173,6 @@ enum rdatm_res_state {
 
 struct resp_res {
 	int			type;
-	int			replay;
 	u32			first_psn;
 	u32			last_psn;
 	u32			cur_psn;
@@ -197,7 +197,6 @@ struct rxe_resp_info {
 	enum rxe_qp_state	state;
 	u32			msn;
 	u32			psn;
-	u32			ack_psn;
 	int			opcode;
 	int			drop_msg;
 	int			goto_error;
@@ -251,7 +250,6 @@ struct rxe_qp {
 
 	struct socket		*sk;
 	u32			dst_cookie;
-	u16			src_port;
 
 	struct rxe_av		pri_av;
 	struct rxe_av		alt_av;
@@ -409,16 +407,16 @@ struct rxe_dev {
 	spinlock_t		mmap_offset_lock; /* guard mmap_offset */
 	int			mmap_offset;
 
-	atomic64_t		stats_counters[RXE_NUM_OF_COUNTERS];
+	u64			stats_counters[RXE_NUM_OF_COUNTERS];
 
 	struct rxe_port		port;
 	struct list_head	list;
 	struct crypto_shash	*tfm;
 };
 
-static inline void rxe_counter_inc(struct rxe_dev *rxe, enum rxe_counters index)
+static inline void rxe_counter_inc(struct rxe_dev *rxe, enum rxe_counters cnt)
 {
-	atomic64_inc(&rxe->stats_counters[index]);
+	rxe->stats_counters[cnt]++;
 }
 
 static inline struct rxe_dev *to_rdev(struct ib_device *dev)
@@ -467,7 +465,7 @@ static inline struct rxe_mem *to_rmw(struct ib_mw *mw)
 }
 
 int rxe_register_device(struct rxe_dev *rxe);
-void rxe_unregister_device(struct rxe_dev *rxe);
+int rxe_unregister_device(struct rxe_dev *rxe);
 
 void rxe_mc_cleanup(struct rxe_pool_entry *arg);
 

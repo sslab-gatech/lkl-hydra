@@ -43,9 +43,6 @@
 #include "i2c_sw_engine_dce110.h"
 #include "i2c_hw_engine_dce110.h"
 #include "aux_engine_dce110.h"
-#include "../../dc.h"
-#include "dc_types.h"
-
 
 /*
  * Post-requisites: headers required by this unit
@@ -202,7 +199,6 @@ static const struct dce110_i2c_hw_engine_mask i2c_mask = {
 void dal_i2caux_dce110_construct(
 	struct i2caux_dce110 *i2caux_dce110,
 	struct dc_context *ctx,
-	unsigned int num_i2caux_inst,
 	const struct dce110_aux_registers aux_regs[],
 	const struct dce110_i2c_hw_engine_registers i2c_hw_engine_regs[],
 	const struct dce110_i2c_hw_engine_shift *i2c_shift,
@@ -253,22 +249,9 @@ void dal_i2caux_dce110_construct(
 
 		base->i2c_hw_engines[line_id] =
 			dal_i2c_hw_engine_dce110_create(&hw_arg_dce110);
-		if (base->i2c_hw_engines[line_id] != NULL) {
-			switch (ctx->dce_version) {
-			case DCN_VERSION_1_0:
-				base->i2c_hw_engines[line_id]->setup_limit =
-					I2C_SETUP_TIME_LIMIT_DCN;
-				base->i2c_hw_engines[line_id]->send_reset_length  = 0;
-			break;
-			default:
-				base->i2c_hw_engines[line_id]->setup_limit =
-					I2C_SETUP_TIME_LIMIT_DCE;
-				base->i2c_hw_engines[line_id]->send_reset_length  = 0;
-				break;
-			}
-		}
+
 		++i;
-	} while (i < num_i2caux_inst);
+	} while (i < ARRAY_SIZE(hw_ddc_lines));
 
 	/* Create AUX engines for all lines which has assisted HW AUX
 	 * 'i' (loop counter) used as DDC/AUX engine_id */
@@ -289,7 +272,7 @@ void dal_i2caux_dce110_construct(
 			dal_aux_engine_dce110_create(&aux_init_data);
 
 		++i;
-	} while (i < num_i2caux_inst);
+	} while (i < ARRAY_SIZE(hw_aux_lines));
 
 	/*TODO Generic I2C SW and HW*/
 }
@@ -320,7 +303,6 @@ struct i2caux *dal_i2caux_dce110_create(
 
 	dal_i2caux_dce110_construct(i2caux_dce110,
 				    ctx,
-				    ARRAY_SIZE(dce110_aux_regs),
 				    dce110_aux_regs,
 				    i2c_hw_engine_regs,
 				    &i2c_shift,

@@ -583,16 +583,36 @@ static int f81232_carrier_raised(struct usb_serial_port *port)
 	return 0;
 }
 
-static int f81232_get_serial_info(struct tty_struct *tty,
-		struct serial_struct *ss)
+static int f81232_get_serial_info(struct usb_serial_port *port,
+		unsigned long arg)
+{
+	struct serial_struct ser;
+
+	memset(&ser, 0, sizeof(ser));
+
+	ser.type = PORT_16550A;
+	ser.line = port->minor;
+	ser.port = port->port_number;
+	ser.baud_base = F81232_MAX_BAUDRATE;
+
+	if (copy_to_user((void __user *)arg, &ser, sizeof(ser)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int f81232_ioctl(struct tty_struct *tty,
+			unsigned int cmd, unsigned long arg)
 {
 	struct usb_serial_port *port = tty->driver_data;
 
-	ss->type = PORT_16550A;
-	ss->line = port->minor;
-	ss->port = port->port_number;
-	ss->baud_base = F81232_MAX_BAUDRATE;
-	return 0;
+	switch (cmd) {
+	case TIOCGSERIAL:
+		return f81232_get_serial_info(port, arg);
+	default:
+		break;
+	}
+	return -ENOIOCTLCMD;
 }
 
 static void  f81232_interrupt_work(struct work_struct *work)
@@ -645,7 +665,7 @@ static struct usb_serial_driver f81232_device = {
 	.close =		f81232_close,
 	.dtr_rts =		f81232_dtr_rts,
 	.carrier_raised =	f81232_carrier_raised,
-	.get_serial =		f81232_get_serial_info,
+	.ioctl =		f81232_ioctl,
 	.break_ctl =		f81232_break_ctl,
 	.set_termios =		f81232_set_termios,
 	.tiocmget =		f81232_tiocmget,

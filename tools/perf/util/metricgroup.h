@@ -28,5 +28,4 @@ int metricgroup__parse_groups(const struct option *opt,
 			struct rblist *metric_events);
 
 void metricgroup__print(bool metrics, bool groups, char *filter, bool raw);
-bool metricgroup__has_metric(const char *metric);
 #endif

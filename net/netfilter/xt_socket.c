@@ -56,12 +56,8 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 	struct sk_buff *pskb = (struct sk_buff *)skb;
 	struct sock *sk = skb->sk;
 
-	if (sk && !net_eq(xt_net(par), sock_net(sk)))
-		sk = NULL;
-
 	if (!sk)
 		sk = nf_sk_lookup_slow_v4(xt_net(par), skb, xt_in(par));
-
 	if (sk) {
 		bool wildcard;
 		bool transparent = true;
@@ -77,7 +73,7 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 		 * if XT_SOCKET_TRANSPARENT is used
 		 */
 		if (info->flags & XT_SOCKET_TRANSPARENT)
-			transparent = inet_sk_transparent(sk);
+			transparent = nf_sk_is_transparent(sk);
 
 		if (info->flags & XT_SOCKET_RESTORESKMARK && !wildcard &&
 		    transparent && sk_fullsock(sk))
@@ -117,12 +113,8 @@ socket_mt6_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
 	struct sk_buff *pskb = (struct sk_buff *)skb;
 	struct sock *sk = skb->sk;
 
-	if (sk && !net_eq(xt_net(par), sock_net(sk)))
-		sk = NULL;
-
 	if (!sk)
 		sk = nf_sk_lookup_slow_v6(xt_net(par), skb, xt_in(par));
-
 	if (sk) {
 		bool wildcard;
 		bool transparent = true;
@@ -138,7 +130,7 @@ socket_mt6_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
 		 * if XT_SOCKET_TRANSPARENT is used
 		 */
 		if (info->flags & XT_SOCKET_TRANSPARENT)
-			transparent = inet_sk_transparent(sk);
+			transparent = nf_sk_is_transparent(sk);
 
 		if (info->flags & XT_SOCKET_RESTORESKMARK && !wildcard &&
 		    transparent && sk_fullsock(sk))

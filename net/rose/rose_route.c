@@ -850,7 +850,6 @@ void rose_link_device_down(struct net_device *dev)
 
 /*
  *	Route a frame to an appropriate AX.25 connection.
- *	A NULL ax25_cb indicates an internally generated frame.
  */
 int rose_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 {
@@ -868,10 +867,6 @@ int rose_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 
 	if (skb->len < ROSE_MIN_LEN)
 		return res;
-
-	if (!ax25)
-		return rose_loopback_queue(skb, NULL);
-
 	frametype = skb->data[2];
 	lci = ((skb->data[0] << 8) & 0xF00) + ((skb->data[1] << 0) & 0x0FF);
 	if (frametype == ROSE_CALL_REQUEST &&
@@ -1148,11 +1143,23 @@ static int rose_node_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-const struct seq_operations rose_node_seqops = {
+static const struct seq_operations rose_node_seqops = {
 	.start = rose_node_start,
 	.next = rose_node_next,
 	.stop = rose_node_stop,
 	.show = rose_node_show,
+};
+
+static int rose_nodes_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &rose_node_seqops);
+}
+
+const struct file_operations rose_nodes_fops = {
+	.open = rose_nodes_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
 };
 
 static void *rose_neigh_start(struct seq_file *seq, loff_t *pos)
@@ -1219,12 +1226,25 @@ static int rose_neigh_show(struct seq_file *seq, void *v)
 }
 
 
-const struct seq_operations rose_neigh_seqops = {
+static const struct seq_operations rose_neigh_seqops = {
 	.start = rose_neigh_start,
 	.next = rose_neigh_next,
 	.stop = rose_neigh_stop,
 	.show = rose_neigh_show,
 };
+
+static int rose_neigh_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &rose_neigh_seqops);
+}
+
+const struct file_operations rose_neigh_fops = {
+	.open = rose_neigh_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
 
 static void *rose_route_start(struct seq_file *seq, loff_t *pos)
 	__acquires(rose_route_list_lock)
@@ -1291,12 +1311,25 @@ static int rose_route_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-struct seq_operations rose_route_seqops = {
+static const struct seq_operations rose_route_seqops = {
 	.start = rose_route_start,
 	.next = rose_route_next,
 	.stop = rose_route_stop,
 	.show = rose_route_show,
 };
+
+static int rose_route_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &rose_route_seqops);
+}
+
+const struct file_operations rose_routes_fops = {
+	.open = rose_route_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
 #endif /* CONFIG_PROC_FS */
 
 /*

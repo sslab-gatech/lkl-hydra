@@ -20,12 +20,6 @@
 #include "bcm_sf2.h"
 #include "bcm_sf2_regs.h"
 
-struct cfp_rule {
-	int port;
-	struct ethtool_rx_flow_spec fs;
-	struct list_head next;
-};
-
 struct cfp_udf_slice_layout {
 	u8 slices[UDFS_PER_SLICE];
 	u32 mask_value;
@@ -360,12 +354,9 @@ static int bcm_sf2_cfp_ipv4_rule_set(struct bcm_sf2_priv *priv, int port,
 	/* Locate the first rule available */
 	if (fs->location == RX_CLS_LOC_ANY)
 		rule_index = find_first_zero_bit(priv->cfp.used,
-						 priv->num_cfp_rules);
+						 bcm_sf2_cfp_rule_size(priv));
 	else
 		rule_index = fs->location;
-
-	if (rule_index > bcm_sf2_cfp_rule_size(priv))
-		return -ENOSPC;
 
 	layout = &udf_tcpip4_layout;
 	/* We only use one UDF slice for now */
@@ -521,61 +512,6 @@ static void bcm_sf2_cfp_slice_ipv6(struct bcm_sf2_priv *priv,
 	core_writel(priv, reg, offset);
 }
 
-static struct cfp_rule *bcm_sf2_cfp_rule_find(struct bcm_sf2_priv *priv,
-					      int port, u32 location)
-{
-	struct cfp_rule *rule = NULL;
-
-	list_for_each_entry(rule, &priv->cfp.rules_list, next) {
-		if (rule->port == port && rule->fs.location == location)
-			break;
-	}
-
-	return rule;
-}
-
-static int bcm_sf2_cfp_rule_cmp(struct bcm_sf2_priv *priv, int port,
-				struct ethtool_rx_flow_spec *fs)
-{
-	struct cfp_rule *rule = NULL;
-	size_t fs_size = 0;
-	int ret = 1;
-
-	if (list_empty(&priv->cfp.rules_list))
-		return ret;
-
-	list_for_each_entry(rule, &priv->cfp.rules_list, next) {
-		ret = 1;
-		if (rule->port != port)
-			continue;
-
-		if (rule->fs.flow_type != fs->flow_type ||
-		    rule->fs.ring_cookie != fs->ring_cookie ||
-		    rule->fs.m_ext.data[0] != fs->m_ext.data[0])
-			continue;
-
-		switch (fs->flow_type & ~FLOW_EXT) {
-		case TCP_V6_FLOW:
-		case UDP_V6_FLOW:
-			fs_size = sizeof(struct ethtool_tcpip6_spec);
-			break;
-		case TCP_V4_FLOW:
-		case UDP_V4_FLOW:
-			fs_size = sizeof(struct ethtool_tcpip4_spec);
-			break;
-		default:
-			continue;
-		}
-
-		ret = memcmp(&rule->fs.h_u, &fs->h_u, fs_size);
-		ret |= memcmp(&rule->fs.m_u, &fs->m_u, fs_size);
-		if (ret == 0)
-			break;
-	}
-
-	return ret;
-}
-
 static int bcm_sf2_cfp_ipv6_rule_set(struct bcm_sf2_priv *priv, int port,
 				     unsigned int port_num,
 				     unsigned int queue_num,
@@ -626,21 +562,19 @@ static int bcm_sf2_cfp_ipv6_rule_set(struct bcm_sf2_priv *priv, int port,
 	 * first half because the HW search is by incrementing addresses.
 	 */
 	if (fs->location == RX_CLS_LOC_ANY)
-		rule_index[1] = find_first_zero_bit(priv->cfp.used,
-						    priv->num_cfp_rules);
+		rule_index[0] = find_first_zero_bit(priv->cfp.used,
+						    bcm_sf2_cfp_rule_size(priv));
 	else
-		rule_index[1] = fs->location;
-	if (rule_index[1] > bcm_sf2_cfp_rule_size(priv))
-		return -ENOSPC;
+		rule_index[0] = fs->location;
 
 	/* Flag it as used (cleared on error path) such that we can immediately
 	 * obtain a second one to chain from.
 	 */
-	set_bit(rule_index[1], priv->cfp.used);
+	set_bit(rule_index[0], priv->cfp.used);
 
-	rule_index[0] = find_first_zero_bit(priv->cfp.used,
-					    priv->num_cfp_rules);
-	if (rule_index[0] > bcm_sf2_cfp_rule_size(priv)) {
+	rule_index[1] = find_first_zero_bit(priv->cfp.used,
+					    bcm_sf2_cfp_rule_size(priv));
+	if (rule_index[1] > bcm_sf2_cfp_rule_size(priv)) {
 		ret = -ENOSPC;
 		goto out_err;
 	}
@@ -778,67 +712,14 @@ static int bcm_sf2_cfp_ipv6_rule_set(struct bcm_sf2_priv *priv, int port,
 	/* Flag the second half rule as being used now, return it as the
 	 * location, and flag it as unique while dumping rules
 	 */
-	set_bit(rule_index[0], priv->cfp.used);
+	set_bit(rule_index[1], priv->cfp.used);
 	set_bit(rule_index[1], priv->cfp.unique);
 	fs->location = rule_index[1];
 
 	return ret;
 
 out_err:
-	clear_bit(rule_index[1], priv->cfp.used);
-	return ret;
-}
-
-static int bcm_sf2_cfp_rule_insert(struct dsa_switch *ds, int port,
-				   struct ethtool_rx_flow_spec *fs)
-{
-	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
-	s8 cpu_port = ds->ports[port].cpu_dp->index;
-	__u64 ring_cookie = fs->ring_cookie;
-	unsigned int queue_num, port_num;
-	int ret;
-
-	/* This rule is a Wake-on-LAN filter and we must specifically
-	 * target the CPU port in order for it to be working.
-	 */
-	if (ring_cookie == RX_CLS_FLOW_WAKE)
-		ring_cookie = cpu_port * SF2_NUM_EGRESS_QUEUES;
-
-	/* We do not support discarding packets, check that the
-	 * destination port is enabled and that we are within the
-	 * number of ports supported by the switch
-	 */
-	port_num = ring_cookie / SF2_NUM_EGRESS_QUEUES;
-
-	if (ring_cookie == RX_CLS_FLOW_DISC ||
-	    !(dsa_is_user_port(ds, port_num) ||
-	      dsa_is_cpu_port(ds, port_num)) ||
-	    port_num >= priv->hw_params.num_ports)
-		return -EINVAL;
-	/*
-	 * We have a small oddity where Port 6 just does not have a
-	 * valid bit here (so we substract by one).
-	 */
-	queue_num = ring_cookie % SF2_NUM_EGRESS_QUEUES;
-	if (port_num >= 7)
-		port_num -= 1;
-
-	switch (fs->flow_type & ~FLOW_EXT) {
-	case TCP_V4_FLOW:
-	case UDP_V4_FLOW:
-		ret = bcm_sf2_cfp_ipv4_rule_set(priv, port, port_num,
-						queue_num, fs);
-		break;
-	case TCP_V6_FLOW:
-	case UDP_V6_FLOW:
-		ret = bcm_sf2_cfp_ipv6_rule_set(priv, port, port_num,
-						queue_num, fs);
-		break;
-	default:
-		ret = -EINVAL;
-		break;
-	}
-
+	clear_bit(rule_index[0], priv->cfp.used);
 	return ret;
 }
 
@@ -846,7 +727,7 @@ static int bcm_sf2_cfp_rule_set(struct dsa_switch *ds, int port,
 				struct ethtool_rx_flow_spec *fs)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
-	struct cfp_rule *rule = NULL;
+	unsigned int queue_num, port_num;
 	int ret = -EINVAL;
 
 	/* Check for unsupported extensions */
@@ -862,23 +743,38 @@ static int bcm_sf2_cfp_rule_set(struct dsa_switch *ds, int port,
 	    fs->location > bcm_sf2_cfp_rule_size(priv))
 		return -EINVAL;
 
-	ret = bcm_sf2_cfp_rule_cmp(priv, port, fs);
-	if (ret == 0)
-		return -EEXIST;
+	/* We do not support discarding packets, check that the
+	 * destination port is enabled and that we are within the
+	 * number of ports supported by the switch
+	 */
+	port_num = fs->ring_cookie / SF2_NUM_EGRESS_QUEUES;
 
-	rule = kzalloc(sizeof(*rule), GFP_KERNEL);
-	if (!rule)
-		return -ENOMEM;
+	if (fs->ring_cookie == RX_CLS_FLOW_DISC ||
+	    !dsa_is_user_port(ds, port_num) ||
+	    port_num >= priv->hw_params.num_ports)
+		return -EINVAL;
+	/*
+	 * We have a small oddity where Port 6 just does not have a
+	 * valid bit here (so we substract by one).
+	 */
+	queue_num = fs->ring_cookie % SF2_NUM_EGRESS_QUEUES;
+	if (port_num >= 7)
+		port_num -= 1;
 
-	ret = bcm_sf2_cfp_rule_insert(ds, port, fs);
-	if (ret) {
-		kfree(rule);
-		return ret;
+	switch (fs->flow_type & ~FLOW_EXT) {
+	case TCP_V4_FLOW:
+	case UDP_V4_FLOW:
+		ret = bcm_sf2_cfp_ipv4_rule_set(priv, port, port_num,
+						queue_num, fs);
+		break;
+	case TCP_V6_FLOW:
+	case UDP_V6_FLOW:
+		ret = bcm_sf2_cfp_ipv6_rule_set(priv, port, port_num,
+						queue_num, fs);
+		break;
+	default:
+		break;
 	}
-
-	rule->port = port;
-	memcpy(&rule->fs, fs, sizeof(*fs));
-	list_add_tail(&rule->next, &priv->cfp.rules_list);
 
 	return ret;
 }
@@ -888,6 +784,10 @@ static int bcm_sf2_cfp_rule_del_one(struct bcm_sf2_priv *priv, int port,
 {
 	int ret;
 	u32 reg;
+
+	/* Refuse deletion of unused rules, and the default reserved rule */
+	if (!test_bit(loc, priv->cfp.used) || loc == 0)
+		return -EINVAL;
 
 	/* Indicate which rule we want to read */
 	bcm_sf2_cfp_rule_addr_set(priv, loc);
@@ -920,8 +820,8 @@ static int bcm_sf2_cfp_rule_del_one(struct bcm_sf2_priv *priv, int port,
 	return 0;
 }
 
-static int bcm_sf2_cfp_rule_remove(struct bcm_sf2_priv *priv, int port,
-				   u32 loc)
+static int bcm_sf2_cfp_rule_del(struct bcm_sf2_priv *priv, int port,
+				u32 loc)
 {
 	u32 next_loc = 0;
 	int ret;
@@ -933,30 +833,6 @@ static int bcm_sf2_cfp_rule_remove(struct bcm_sf2_priv *priv, int port,
 	/* If this was an IPv6 rule, delete is companion rule too */
 	if (next_loc)
 		ret = bcm_sf2_cfp_rule_del_one(priv, port, next_loc, NULL);
-
-	return ret;
-}
-
-static int bcm_sf2_cfp_rule_del(struct bcm_sf2_priv *priv, int port, u32 loc)
-{
-	struct cfp_rule *rule;
-	int ret;
-
-	/* Refuse deleting unused rules, and those that are not unique since
-	 * that could leave IPv6 rules with one of the chained rule in the
-	 * table.
-	 */
-	if (!test_bit(loc, priv->cfp.unique) || loc == 0)
-		return -EINVAL;
-
-	rule = bcm_sf2_cfp_rule_find(priv, port, loc);
-	if (!rule)
-		return -EINVAL;
-
-	ret = bcm_sf2_cfp_rule_remove(priv, port, loc);
-
-	list_del(&rule->next);
-	kfree(rule);
 
 	return ret;
 }
@@ -974,16 +850,304 @@ static void bcm_sf2_invert_masks(struct ethtool_rx_flow_spec *flow)
 	flow->m_ext.data[1] ^= cpu_to_be32(~0);
 }
 
+static int bcm_sf2_cfp_unslice_ipv4(struct bcm_sf2_priv *priv,
+				    struct ethtool_tcpip4_spec *v4_spec,
+				    bool mask)
+{
+	u32 reg, offset, ipv4;
+	u16 src_dst_port;
+
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(3);
+	else
+		offset = CORE_CFP_DATA_PORT(3);
+
+	reg = core_readl(priv, offset);
+	/* src port [15:8] */
+	src_dst_port = reg << 8;
+
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(2);
+	else
+		offset = CORE_CFP_DATA_PORT(2);
+
+	reg = core_readl(priv, offset);
+	/* src port [7:0] */
+	src_dst_port |= (reg >> 24);
+
+	v4_spec->pdst = cpu_to_be16(src_dst_port);
+	v4_spec->psrc = cpu_to_be16((u16)(reg >> 8));
+
+	/* IPv4 dst [15:8] */
+	ipv4 = (reg & 0xff) << 8;
+
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(1);
+	else
+		offset = CORE_CFP_DATA_PORT(1);
+
+	reg = core_readl(priv, offset);
+	/* IPv4 dst [31:16] */
+	ipv4 |= ((reg >> 8) & 0xffff) << 16;
+	/* IPv4 dst [7:0] */
+	ipv4 |= (reg >> 24) & 0xff;
+	v4_spec->ip4dst = cpu_to_be32(ipv4);
+
+	/* IPv4 src [15:8] */
+	ipv4 = (reg & 0xff) << 8;
+
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(0);
+	else
+		offset = CORE_CFP_DATA_PORT(0);
+	reg = core_readl(priv, offset);
+
+	/* Once the TCAM is programmed, the mask reflects the slice number
+	 * being matched, don't bother checking it when reading back the
+	 * mask spec
+	 */
+	if (!mask && !(reg & SLICE_VALID))
+		return -EINVAL;
+
+	/* IPv4 src [7:0] */
+	ipv4 |= (reg >> 24) & 0xff;
+	/* IPv4 src [31:16] */
+	ipv4 |= ((reg >> 8) & 0xffff) << 16;
+	v4_spec->ip4src = cpu_to_be32(ipv4);
+
+	return 0;
+}
+
+static int bcm_sf2_cfp_ipv4_rule_get(struct bcm_sf2_priv *priv, int port,
+				     struct ethtool_rx_flow_spec *fs)
+{
+	struct ethtool_tcpip4_spec *v4_spec = NULL, *v4_m_spec = NULL;
+	u32 reg;
+	int ret;
+
+	reg = core_readl(priv, CORE_CFP_DATA_PORT(6));
+
+	switch ((reg & IPPROTO_MASK) >> IPPROTO_SHIFT) {
+	case IPPROTO_TCP:
+		fs->flow_type = TCP_V4_FLOW;
+		v4_spec = &fs->h_u.tcp_ip4_spec;
+		v4_m_spec = &fs->m_u.tcp_ip4_spec;
+		break;
+	case IPPROTO_UDP:
+		fs->flow_type = UDP_V4_FLOW;
+		v4_spec = &fs->h_u.udp_ip4_spec;
+		v4_m_spec = &fs->m_u.udp_ip4_spec;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	fs->m_ext.data[0] = cpu_to_be32((reg >> IP_FRAG_SHIFT) & 1);
+	v4_spec->tos = (reg >> IPTOS_SHIFT) & IPTOS_MASK;
+
+	ret = bcm_sf2_cfp_unslice_ipv4(priv, v4_spec, false);
+	if (ret)
+		return ret;
+
+	return bcm_sf2_cfp_unslice_ipv4(priv, v4_m_spec, true);
+}
+
+static int bcm_sf2_cfp_unslice_ipv6(struct bcm_sf2_priv *priv,
+				     __be32 *ip6_addr, __be16 *port,
+				     bool mask)
+{
+	u32 reg, tmp, offset;
+
+	/* C-Tag		[31:24]
+	 * UDF_n_B8		[23:8] (port)
+	 * UDF_n_B7 (upper)	[7:0] (addr[15:8])
+	 */
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(4);
+	else
+		offset = CORE_CFP_DATA_PORT(4);
+	reg = core_readl(priv, offset);
+	*port = cpu_to_be32(reg) >> 8;
+	tmp = (u32)(reg & 0xff) << 8;
+
+	/* UDF_n_B7 (lower)	[31:24] (addr[7:0])
+	 * UDF_n_B6		[23:8] (addr[31:16])
+	 * UDF_n_B5 (upper)	[7:0] (addr[47:40])
+	 */
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(3);
+	else
+		offset = CORE_CFP_DATA_PORT(3);
+	reg = core_readl(priv, offset);
+	tmp |= (reg >> 24) & 0xff;
+	tmp |= (u32)((reg >> 8) << 16);
+	ip6_addr[3] = cpu_to_be32(tmp);
+	tmp = (u32)(reg & 0xff) << 8;
+
+	/* UDF_n_B5 (lower)	[31:24] (addr[39:32])
+	 * UDF_n_B4		[23:8] (addr[63:48])
+	 * UDF_n_B3 (upper)	[7:0] (addr[79:72])
+	 */
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(2);
+	else
+		offset = CORE_CFP_DATA_PORT(2);
+	reg = core_readl(priv, offset);
+	tmp |= (reg >> 24) & 0xff;
+	tmp |= (u32)((reg >> 8) << 16);
+	ip6_addr[2] = cpu_to_be32(tmp);
+	tmp = (u32)(reg & 0xff) << 8;
+
+	/* UDF_n_B3 (lower)	[31:24] (addr[71:64])
+	 * UDF_n_B2		[23:8] (addr[95:80])
+	 * UDF_n_B1 (upper)	[7:0] (addr[111:104])
+	 */
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(1);
+	else
+		offset = CORE_CFP_DATA_PORT(1);
+	reg = core_readl(priv, offset);
+	tmp |= (reg >> 24) & 0xff;
+	tmp |= (u32)((reg >> 8) << 16);
+	ip6_addr[1] = cpu_to_be32(tmp);
+	tmp = (u32)(reg & 0xff) << 8;
+
+	/* UDF_n_B1 (lower)	[31:24] (addr[103:96])
+	 * UDF_n_B0		[23:8] (addr[127:112])
+	 * Reserved		[7:4]
+	 * Slice ID		[3:2]
+	 * Slice valid		[1:0]
+	 */
+	if (mask)
+		offset = CORE_CFP_MASK_PORT(0);
+	else
+		offset = CORE_CFP_DATA_PORT(0);
+	reg = core_readl(priv, offset);
+	tmp |= (reg >> 24) & 0xff;
+	tmp |= (u32)((reg >> 8) << 16);
+	ip6_addr[0] = cpu_to_be32(tmp);
+
+	if (!mask && !(reg & SLICE_VALID))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int bcm_sf2_cfp_ipv6_rule_get(struct bcm_sf2_priv *priv, int port,
+				     struct ethtool_rx_flow_spec *fs,
+				     u32 next_loc)
+{
+	struct ethtool_tcpip6_spec *v6_spec = NULL, *v6_m_spec = NULL;
+	u32 reg;
+	int ret;
+
+	/* UDPv6 and TCPv6 both use ethtool_tcpip6_spec so we are fine
+	 * assuming tcp_ip6_spec here being an union.
+	 */
+	v6_spec = &fs->h_u.tcp_ip6_spec;
+	v6_m_spec = &fs->m_u.tcp_ip6_spec;
+
+	/* Read the second half first */
+	ret = bcm_sf2_cfp_unslice_ipv6(priv, v6_spec->ip6dst, &v6_spec->pdst,
+				       false);
+	if (ret)
+		return ret;
+
+	ret = bcm_sf2_cfp_unslice_ipv6(priv, v6_m_spec->ip6dst,
+				       &v6_m_spec->pdst, true);
+	if (ret)
+		return ret;
+
+	/* Read last to avoid next entry clobbering the results during search
+	 * operations. We would not have the port enabled for this rule, so
+	 * don't bother checking it.
+	 */
+	(void)core_readl(priv, CORE_CFP_DATA_PORT(7));
+
+	/* The slice number is valid, so read the rule we are chained from now
+	 * which is our first half.
+	 */
+	bcm_sf2_cfp_rule_addr_set(priv, next_loc);
+	ret = bcm_sf2_cfp_op(priv, OP_SEL_READ | TCAM_SEL);
+	if (ret)
+		return ret;
+
+	reg = core_readl(priv, CORE_CFP_DATA_PORT(6));
+
+	switch ((reg & IPPROTO_MASK) >> IPPROTO_SHIFT) {
+	case IPPROTO_TCP:
+		fs->flow_type = TCP_V6_FLOW;
+		break;
+	case IPPROTO_UDP:
+		fs->flow_type = UDP_V6_FLOW;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	ret = bcm_sf2_cfp_unslice_ipv6(priv, v6_spec->ip6src, &v6_spec->psrc,
+				       false);
+	if (ret)
+		return ret;
+
+	return bcm_sf2_cfp_unslice_ipv6(priv, v6_m_spec->ip6src,
+					&v6_m_spec->psrc, true);
+}
+
 static int bcm_sf2_cfp_rule_get(struct bcm_sf2_priv *priv, int port,
 				struct ethtool_rxnfc *nfc)
 {
-	struct cfp_rule *rule;
+	u32 reg, ipv4_or_chain_id;
+	unsigned int queue_num;
+	int ret;
 
-	rule = bcm_sf2_cfp_rule_find(priv, port, nfc->fs.location);
-	if (!rule)
+	bcm_sf2_cfp_rule_addr_set(priv, nfc->fs.location);
+
+	ret = bcm_sf2_cfp_op(priv, OP_SEL_READ | ACT_POL_RAM);
+	if (ret)
+		return ret;
+
+	reg = core_readl(priv, CORE_ACT_POL_DATA0);
+
+	ret = bcm_sf2_cfp_op(priv, OP_SEL_READ | TCAM_SEL);
+	if (ret)
+		return ret;
+
+	/* Extract the destination port */
+	nfc->fs.ring_cookie = fls((reg >> DST_MAP_IB_SHIFT) &
+				  DST_MAP_IB_MASK) - 1;
+
+	/* There is no Port 6, so we compensate for that here */
+	if (nfc->fs.ring_cookie >= 6)
+		nfc->fs.ring_cookie++;
+	nfc->fs.ring_cookie *= SF2_NUM_EGRESS_QUEUES;
+
+	/* Extract the destination queue */
+	queue_num = (reg >> NEW_TC_SHIFT) & NEW_TC_MASK;
+	nfc->fs.ring_cookie += queue_num;
+
+	/* Extract the L3_FRAMING or CHAIN_ID */
+	reg = core_readl(priv, CORE_CFP_DATA_PORT(6));
+
+	/* With IPv6 rules this would contain a non-zero chain ID since
+	 * we reserve entry 0 and it cannot be used. So if we read 0 here
+	 * this means an IPv4 rule.
+	 */
+	ipv4_or_chain_id = (reg >> L3_FRAMING_SHIFT) & 0xff;
+	if (ipv4_or_chain_id == 0)
+		ret = bcm_sf2_cfp_ipv4_rule_get(priv, port, &nfc->fs);
+	else
+		ret = bcm_sf2_cfp_ipv6_rule_get(priv, port, &nfc->fs,
+						ipv4_or_chain_id);
+	if (ret)
+		return ret;
+
+	/* Read last to avoid next entry clobbering the results during search
+	 * operations
+	 */
+	reg = core_readl(priv, CORE_CFP_DATA_PORT(7));
+	if (!(reg & 1 << port))
 		return -EINVAL;
-
-	memcpy(&nfc->fs, &rule->fs, sizeof(rule->fs));
 
 	bcm_sf2_invert_masks(&nfc->fs);
 
@@ -1015,7 +1179,6 @@ static int bcm_sf2_cfp_rule_get_all(struct bcm_sf2_priv *priv,
 int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc, u32 *rule_locs)
 {
-	struct net_device *p = ds->ports[port].cpu_dp->master;
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1042,23 +1205,12 @@ int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 
 	mutex_unlock(&priv->cfp.lock);
 
-	if (ret)
-		return ret;
-
-	/* Pass up the commands to the attached master network device */
-	if (p->ethtool_ops->get_rxnfc) {
-		ret = p->ethtool_ops->get_rxnfc(p, nfc, rule_locs);
-		if (ret == -EOPNOTSUPP)
-			ret = 0;
-	}
-
 	return ret;
 }
 
 int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc)
 {
-	struct net_device *p = ds->ports[port].cpu_dp->master;
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1078,23 +1230,6 @@ int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 	}
 
 	mutex_unlock(&priv->cfp.lock);
-
-	if (ret)
-		return ret;
-
-	/* Pass up the commands to the attached master network device.
-	 * This can fail, so rollback the operation if we need to.
-	 */
-	if (p->ethtool_ops->set_rxnfc) {
-		ret = p->ethtool_ops->set_rxnfc(p, nfc);
-		if (ret && ret != -EOPNOTSUPP) {
-			mutex_lock(&priv->cfp.lock);
-			bcm_sf2_cfp_rule_del(priv, port, nfc->fs.location);
-			mutex_unlock(&priv->cfp.lock);
-		} else {
-			ret = 0;
-		}
-	}
 
 	return ret;
 }
@@ -1120,52 +1255,4 @@ int bcm_sf2_cfp_rst(struct bcm_sf2_priv *priv)
 		return -ETIMEDOUT;
 
 	return 0;
-}
-
-void bcm_sf2_cfp_exit(struct dsa_switch *ds)
-{
-	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
-	struct cfp_rule *rule, *n;
-
-	if (list_empty(&priv->cfp.rules_list))
-		return;
-
-	list_for_each_entry_safe_reverse(rule, n, &priv->cfp.rules_list, next)
-		bcm_sf2_cfp_rule_del(priv, rule->port, rule->fs.location);
-}
-
-int bcm_sf2_cfp_resume(struct dsa_switch *ds)
-{
-	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
-	struct cfp_rule *rule;
-	int ret = 0;
-	u32 reg;
-
-	if (list_empty(&priv->cfp.rules_list))
-		return ret;
-
-	reg = core_readl(priv, CORE_CFP_CTL_REG);
-	reg &= ~CFP_EN_MAP_MASK;
-	core_writel(priv, reg, CORE_CFP_CTL_REG);
-
-	ret = bcm_sf2_cfp_rst(priv);
-	if (ret)
-		return ret;
-
-	list_for_each_entry(rule, &priv->cfp.rules_list, next) {
-		ret = bcm_sf2_cfp_rule_remove(priv, rule->port,
-					      rule->fs.location);
-		if (ret) {
-			dev_err(ds->dev, "failed to remove rule\n");
-			return ret;
-		}
-
-		ret = bcm_sf2_cfp_rule_insert(ds, rule->port, &rule->fs);
-		if (ret) {
-			dev_err(ds->dev, "failed to restore rule\n");
-			return ret;
-		}
-	}
-
-	return ret;
 }

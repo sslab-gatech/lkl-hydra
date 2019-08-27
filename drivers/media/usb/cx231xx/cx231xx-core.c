@@ -799,7 +799,6 @@ static void cx231xx_isoc_irq_callback(struct urb *urb)
 	struct cx231xx_video_mode *vmode =
 	    container_of(dma_q, struct cx231xx_video_mode, vidq);
 	struct cx231xx *dev = container_of(vmode, struct cx231xx, video_mode);
-	unsigned long flags;
 	int i;
 
 	switch (urb->status) {
@@ -816,9 +815,9 @@ static void cx231xx_isoc_irq_callback(struct urb *urb)
 	}
 
 	/* Copy data from URB */
-	spin_lock_irqsave(&dev->video_mode.slock, flags);
+	spin_lock(&dev->video_mode.slock);
 	dev->video_mode.isoc_ctl.isoc_copy(dev, urb);
-	spin_unlock_irqrestore(&dev->video_mode.slock, flags);
+	spin_unlock(&dev->video_mode.slock);
 
 	/* Reset urb buffers */
 	for (i = 0; i < urb->number_of_packets; i++) {
@@ -845,7 +844,6 @@ static void cx231xx_bulk_irq_callback(struct urb *urb)
 	struct cx231xx_video_mode *vmode =
 	    container_of(dma_q, struct cx231xx_video_mode, vidq);
 	struct cx231xx *dev = container_of(vmode, struct cx231xx, video_mode);
-	unsigned long flags;
 
 	switch (urb->status) {
 	case 0:		/* success */
@@ -864,9 +862,9 @@ static void cx231xx_bulk_irq_callback(struct urb *urb)
 	}
 
 	/* Copy data from URB */
-	spin_lock_irqsave(&dev->video_mode.slock, flags);
+	spin_lock(&dev->video_mode.slock);
 	dev->video_mode.bulk_ctl.bulk_copy(dev, urb);
-	spin_unlock_irqrestore(&dev->video_mode.slock, flags);
+	spin_unlock(&dev->video_mode.slock);
 
 	/* Reset urb buffers */
 	urb->status = usb_submit_urb(urb, GFP_ATOMIC);
@@ -1036,7 +1034,7 @@ int cx231xx_init_isoc(struct cx231xx *dev, int max_packets,
 		dma_q->partial_buf[i] = 0;
 
 	dev->video_mode.isoc_ctl.urb =
-	    kcalloc(num_bufs, sizeof(void *), GFP_KERNEL);
+	    kzalloc(sizeof(void *) * num_bufs, GFP_KERNEL);
 	if (!dev->video_mode.isoc_ctl.urb) {
 		dev_err(dev->dev,
 			"cannot alloc memory for usb buffers\n");
@@ -1044,7 +1042,7 @@ int cx231xx_init_isoc(struct cx231xx *dev, int max_packets,
 	}
 
 	dev->video_mode.isoc_ctl.transfer_buffer =
-	    kcalloc(num_bufs, sizeof(void *), GFP_KERNEL);
+	    kzalloc(sizeof(void *) * num_bufs, GFP_KERNEL);
 	if (!dev->video_mode.isoc_ctl.transfer_buffer) {
 		dev_err(dev->dev,
 			"cannot allocate memory for usbtransfer\n");
@@ -1171,7 +1169,7 @@ int cx231xx_init_bulk(struct cx231xx *dev, int max_packets,
 		dma_q->partial_buf[i] = 0;
 
 	dev->video_mode.bulk_ctl.urb =
-	    kcalloc(num_bufs, sizeof(void *), GFP_KERNEL);
+	    kzalloc(sizeof(void *) * num_bufs, GFP_KERNEL);
 	if (!dev->video_mode.bulk_ctl.urb) {
 		dev_err(dev->dev,
 			"cannot alloc memory for usb buffers\n");
@@ -1179,7 +1177,7 @@ int cx231xx_init_bulk(struct cx231xx *dev, int max_packets,
 	}
 
 	dev->video_mode.bulk_ctl.transfer_buffer =
-	    kcalloc(num_bufs, sizeof(void *), GFP_KERNEL);
+	    kzalloc(sizeof(void *) * num_bufs, GFP_KERNEL);
 	if (!dev->video_mode.bulk_ctl.transfer_buffer) {
 		dev_err(dev->dev,
 			"cannot allocate memory for usbtransfer\n");

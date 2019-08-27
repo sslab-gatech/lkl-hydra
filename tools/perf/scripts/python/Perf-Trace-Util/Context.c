@@ -23,17 +23,7 @@
 #include "../../../perf.h"
 #include "../../../util/trace-event.h"
 
-#if PY_MAJOR_VERSION < 3
-#define _PyCapsule_GetPointer(arg1, arg2) \
-  PyCObject_AsVoidPtr(arg1)
-
 PyMODINIT_FUNC initperf_trace_context(void);
-#else
-#define _PyCapsule_GetPointer(arg1, arg2) \
-  PyCapsule_GetPointer((arg1), (arg2))
-
-PyMODINIT_FUNC PyInit_perf_trace_context(void);
-#endif
 
 static PyObject *perf_trace_context_common_pc(PyObject *obj, PyObject *args)
 {
@@ -44,7 +34,7 @@ static PyObject *perf_trace_context_common_pc(PyObject *obj, PyObject *args)
 	if (!PyArg_ParseTuple(args, "O", &context))
 		return NULL;
 
-	scripting_context = _PyCapsule_GetPointer(context, NULL);
+	scripting_context = PyCObject_AsVoidPtr(context);
 	retval = common_pc(scripting_context);
 
 	return Py_BuildValue("i", retval);
@@ -60,7 +50,7 @@ static PyObject *perf_trace_context_common_flags(PyObject *obj,
 	if (!PyArg_ParseTuple(args, "O", &context))
 		return NULL;
 
-	scripting_context = _PyCapsule_GetPointer(context, NULL);
+	scripting_context = PyCObject_AsVoidPtr(context);
 	retval = common_flags(scripting_context);
 
 	return Py_BuildValue("i", retval);
@@ -76,7 +66,7 @@ static PyObject *perf_trace_context_common_lock_depth(PyObject *obj,
 	if (!PyArg_ParseTuple(args, "O", &context))
 		return NULL;
 
-	scripting_context = _PyCapsule_GetPointer(context, NULL);
+	scripting_context = PyCObject_AsVoidPtr(context);
 	retval = common_lock_depth(scripting_context);
 
 	return Py_BuildValue("i", retval);
@@ -92,25 +82,7 @@ static PyMethodDef ContextMethods[] = {
 	{ NULL, NULL, 0, NULL}
 };
 
-#if PY_MAJOR_VERSION < 3
 PyMODINIT_FUNC initperf_trace_context(void)
 {
 	(void) Py_InitModule("perf_trace_context", ContextMethods);
 }
-#else
-PyMODINIT_FUNC PyInit_perf_trace_context(void)
-{
-	static struct PyModuleDef moduledef = {
-		PyModuleDef_HEAD_INIT,
-		"perf_trace_context",	/* m_name */
-		"",			/* m_doc */
-		-1,			/* m_size */
-		ContextMethods,		/* m_methods */
-		NULL,			/* m_reload */
-		NULL,			/* m_traverse */
-		NULL,			/* m_clear */
-		NULL,			/* m_free */
-	};
-	return PyModule_Create(&moduledef);
-}
-#endif

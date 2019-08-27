@@ -1,10 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Renesas INTC External IRQ Pin Driver
  *
  *  Copyright (C) 2013 Magnus Damm
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/clk.h>
 #include <linux/init.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -65,14 +78,16 @@ struct intc_irqpin_priv {
 	struct platform_device *pdev;
 	struct irq_chip irq_chip;
 	struct irq_domain *irq_domain;
-	atomic_t wakeup_path;
+	struct clk *clk;
 	unsigned shared_irqs:1;
+	unsigned needs_clk:1;
 	u8 shared_irq_mask;
 };
 
 struct intc_irqpin_config {
 	unsigned int irlm_bit;
 	unsigned needs_irlm:1;
+	unsigned needs_clk:1;
 };
 
 static unsigned long intc_irqpin_read32(void __iomem *iomem)
@@ -272,10 +287,14 @@ static int intc_irqpin_irq_set_wake(struct irq_data *d, unsigned int on)
 	int hw_irq = irqd_to_hwirq(d);
 
 	irq_set_irq_wake(p->irq[hw_irq].requested_irq, on);
+
+	if (!p->clk)
+		return 0;
+
 	if (on)
-		atomic_inc(&p->wakeup_path);
+		clk_enable(p->clk);
 	else
-		atomic_dec(&p->wakeup_path);
+		clk_disable(p->clk);
 
 	return 0;
 }
@@ -350,10 +369,12 @@ static const struct irq_domain_ops intc_irqpin_irq_domain_ops = {
 static const struct intc_irqpin_config intc_irqpin_irlm_r8a777x = {
 	.irlm_bit = 23, /* ICR0.IRLM0 */
 	.needs_irlm = 1,
+	.needs_clk = 0,
 };
 
 static const struct intc_irqpin_config intc_irqpin_rmobile = {
 	.needs_irlm = 0,
+	.needs_clk = 1,
 };
 
 static const struct of_device_id intc_irqpin_dt_ids[] = {
@@ -405,6 +426,18 @@ static int intc_irqpin_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, p);
 
 	config = of_device_get_match_data(dev);
+	if (config)
+		p->needs_clk = config->needs_clk;
+
+	p->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(p->clk)) {
+		if (p->needs_clk) {
+			dev_err(dev, "unable to get clock\n");
+			ret = PTR_ERR(p->clk);
+			goto err0;
+		}
+		p->clk = NULL;
+	}
 
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
@@ -573,25 +606,12 @@ static int intc_irqpin_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused intc_irqpin_suspend(struct device *dev)
-{
-	struct intc_irqpin_priv *p = dev_get_drvdata(dev);
-
-	if (atomic_read(&p->wakeup_path))
-		device_set_wakeup_path(dev);
-
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(intc_irqpin_pm_ops, intc_irqpin_suspend, NULL);
-
 static struct platform_driver intc_irqpin_device_driver = {
 	.probe		= intc_irqpin_probe,
 	.remove		= intc_irqpin_remove,
 	.driver		= {
 		.name	= "renesas_intc_irqpin",
 		.of_match_table = intc_irqpin_dt_ids,
-		.pm	= &intc_irqpin_pm_ops,
 	}
 };
 

@@ -28,7 +28,6 @@
 #include "amdgpu_i2c.h"
 #include "amdgpu_dpm.h"
 #include "atom.h"
-#include "amd_pcie.h"
 
 void amdgpu_dpm_print_class_info(u32 class, u32 class2)
 {
@@ -114,26 +113,6 @@ void amdgpu_dpm_print_ps_status(struct amdgpu_device *adev,
 	if (rps == adev->pm.dpm.boot_ps)
 		pr_cont(" b");
 	pr_cont("\n");
-}
-
-void amdgpu_dpm_get_active_displays(struct amdgpu_device *adev)
-{
-	struct drm_device *ddev = adev->ddev;
-	struct drm_crtc *crtc;
-	struct amdgpu_crtc *amdgpu_crtc;
-
-	adev->pm.dpm.new_active_crtcs = 0;
-	adev->pm.dpm.new_active_crtc_count = 0;
-	if (adev->mode_info.num_crtc && adev->mode_info.mode_config_initialized) {
-		list_for_each_entry(crtc,
-				    &ddev->mode_config.crtc_list, head) {
-			amdgpu_crtc = to_amdgpu_crtc(crtc);
-			if (amdgpu_crtc->enabled) {
-				adev->pm.dpm.new_active_crtcs |= (1 << amdgpu_crtc->crtc_id);
-				adev->pm.dpm.new_active_crtc_count++;
-			}
-		}
-	}
 }
 
 
@@ -453,7 +432,7 @@ int amdgpu_parse_extended_power_table(struct amdgpu_device *adev)
 			ATOM_PPLIB_PhaseSheddingLimits_Record *entry;
 
 			adev->pm.dpm.dyn_state.phase_shedding_limits_table.entries =
-				kcalloc(psl->ucNumEntries,
+				kzalloc(psl->ucNumEntries *
 					sizeof(struct amdgpu_phase_shedding_limits_entry),
 					GFP_KERNEL);
 			if (!adev->pm.dpm.dyn_state.phase_shedding_limits_table.entries) {
@@ -937,11 +916,9 @@ enum amdgpu_pcie_gen amdgpu_get_pcie_gen_support(struct amdgpu_device *adev,
 	case AMDGPU_PCIE_GEN3:
 		return AMDGPU_PCIE_GEN3;
 	default:
-		if ((sys_mask & CAIL_PCIE_LINK_SPEED_SUPPORT_GEN3) &&
-		    (default_gen == AMDGPU_PCIE_GEN3))
+		if ((sys_mask & DRM_PCIE_SPEED_80) && (default_gen == AMDGPU_PCIE_GEN3))
 			return AMDGPU_PCIE_GEN3;
-		else if ((sys_mask & CAIL_PCIE_LINK_SPEED_SUPPORT_GEN2) &&
-			 (default_gen == AMDGPU_PCIE_GEN2))
+		else if ((sys_mask & DRM_PCIE_SPEED_50) && (default_gen == AMDGPU_PCIE_GEN2))
 			return AMDGPU_PCIE_GEN2;
 		else
 			return AMDGPU_PCIE_GEN1;

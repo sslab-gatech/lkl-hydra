@@ -27,7 +27,6 @@
 #include <linux/ethtool.h>
 #include <net/dsa.h>
 #include <asm/io.h>
-#include "stmmac.h"
 #include "stmmac_pcs.h"
 #include "dwmac1000.h"
 
@@ -499,7 +498,7 @@ static void dwmac1000_debug(void __iomem *ioaddr, struct stmmac_extra_stats *x,
 		x->mac_gmii_rx_proto_engine++;
 }
 
-const struct stmmac_ops dwmac1000_ops = {
+static const struct stmmac_ops dwmac1000_ops = {
 	.core_init = dwmac1000_core_init,
 	.set_mac = stmmac_set_mac,
 	.rx_ipc = dwmac1000_rx_ipc_enable,
@@ -520,20 +519,27 @@ const struct stmmac_ops dwmac1000_ops = {
 	.pcs_get_adv_lp = dwmac1000_get_adv_lp,
 };
 
-int dwmac1000_setup(struct stmmac_priv *priv)
+struct mac_device_info *dwmac1000_setup(void __iomem *ioaddr, int mcbins,
+					int perfect_uc_entries,
+					int *synopsys_id)
 {
-	struct mac_device_info *mac = priv->hw;
+	struct mac_device_info *mac;
+	u32 hwid = readl(ioaddr + GMAC_VERSION);
 
-	dev_info(priv->device, "\tDWMAC1000\n");
+	mac = kzalloc(sizeof(const struct mac_device_info), GFP_KERNEL);
+	if (!mac)
+		return NULL;
 
-	priv->dev->priv_flags |= IFF_UNICAST_FLT;
-	mac->pcsr = priv->ioaddr;
-	mac->multicast_filter_bins = priv->plat->multicast_filter_bins;
-	mac->unicast_filter_entries = priv->plat->unicast_filter_entries;
+	mac->pcsr = ioaddr;
+	mac->multicast_filter_bins = mcbins;
+	mac->unicast_filter_entries = perfect_uc_entries;
 	mac->mcast_bits_log2 = 0;
 
 	if (mac->multicast_filter_bins)
 		mac->mcast_bits_log2 = ilog2(mac->multicast_filter_bins);
+
+	mac->mac = &dwmac1000_ops;
+	mac->dma = &dwmac1000_dma_ops;
 
 	mac->link.duplex = GMAC_CONTROL_DM;
 	mac->link.speed10 = GMAC_CONTROL_PS;
@@ -549,5 +555,8 @@ int dwmac1000_setup(struct stmmac_priv *priv)
 	mac->mii.clk_csr_shift = 2;
 	mac->mii.clk_csr_mask = GENMASK(5, 2);
 
-	return 0;
+	/* Get and dump the chip ID */
+	*synopsys_id = stmmac_get_synopsys_id(hwid);
+
+	return mac;
 }

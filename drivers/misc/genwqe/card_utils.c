@@ -23,12 +23,14 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/dma-mapping.h>
 #include <linux/sched.h>
 #include <linux/vmalloc.h>
 #include <linux/page-flags.h>
 #include <linux/scatterlist.h>
 #include <linux/hugetlb.h>
 #include <linux/iommu.h>
+#include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/ctype.h>
@@ -215,11 +217,11 @@ u32 genwqe_crc32(u8 *buff, size_t len, u32 init)
 void *__genwqe_alloc_consistent(struct genwqe_dev *cd, size_t size,
 			       dma_addr_t *dma_handle)
 {
-	if (get_order(size) >= MAX_ORDER)
+	if (get_order(size) > MAX_ORDER)
 		return NULL;
 
-	return dma_alloc_coherent(&cd->pci_dev->dev, size, dma_handle,
-				  GFP_KERNEL);
+	return dma_zalloc_coherent(&cd->pci_dev->dev, size, dma_handle,
+				   GFP_KERNEL);
 }
 
 void __genwqe_free_consistent(struct genwqe_dev *cd, size_t size,
@@ -296,7 +298,7 @@ static int genwqe_sgl_size(int num_pages)
 int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 			  void __user *user_addr, size_t user_size, int write)
 {
-	int ret = -ENOMEM;
+	int rc;
 	struct pci_dev *pci_dev = cd->pci_dev;
 
 	sgl->fpage_offs = offset_in_page((unsigned long)user_addr);
@@ -316,7 +318,7 @@ int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 	if (get_order(sgl->sgl_size) > MAX_ORDER) {
 		dev_err(&pci_dev->dev,
 			"[%s] err: too much memory requested!\n", __func__);
-		return ret;
+		return -ENOMEM;
 	}
 
 	sgl->sgl = __genwqe_alloc_consistent(cd, sgl->sgl_size,
@@ -324,7 +326,7 @@ int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 	if (sgl->sgl == NULL) {
 		dev_err(&pci_dev->dev,
 			"[%s] err: no memory available!\n", __func__);
-		return ret;
+		return -ENOMEM;
 	}
 
 	/* Only use buffering on incomplete pages */
@@ -337,7 +339,7 @@ int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 		/* Sync with user memory */
 		if (copy_from_user(sgl->fpage + sgl->fpage_offs,
 				   user_addr, sgl->fpage_size)) {
-			ret = -EFAULT;
+			rc = -EFAULT;
 			goto err_out;
 		}
 	}
@@ -350,7 +352,7 @@ int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 		/* Sync with user memory */
 		if (copy_from_user(sgl->lpage, user_addr + user_size -
 				   sgl->lpage_size, sgl->lpage_size)) {
-			ret = -EFAULT;
+			rc = -EFAULT;
 			goto err_out2;
 		}
 	}
@@ -372,8 +374,7 @@ int genwqe_alloc_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 	sgl->sgl = NULL;
 	sgl->sgl_dma_addr = 0;
 	sgl->sgl_size = 0;
-
-	return ret;
+	return -ENOMEM;
 }
 
 int genwqe_setup_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
@@ -452,7 +453,7 @@ int genwqe_setup_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
 		s += 8;		/* continue 8 elements further */
 	}
  fixup:
-	if (j == 1) {		/* combining happened on last entry! */
+	if (j == 1) {		/* combining happend on last entry! */
 		s -= 8;		/* full shift needed on previous sgl block */
 		j =  7;		/* shift all elements */
 	}
@@ -470,7 +471,7 @@ int genwqe_setup_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl,
  * genwqe_free_sync_sgl() - Free memory for sgl and overlapping pages
  *
  * After the DMA transfer has been completed we free the memory for
- * the sgl and the cached pages. Data is being transferred from cached
+ * the sgl and the cached pages. Data is being transfered from cached
  * pages into user-space buffers.
  */
 int genwqe_free_sync_sgl(struct genwqe_dev *cd, struct genwqe_sgl *sgl)

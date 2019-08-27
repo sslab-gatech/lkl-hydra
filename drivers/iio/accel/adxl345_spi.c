@@ -42,7 +42,7 @@ static int adxl345_spi_probe(struct spi_device *spi)
 		return PTR_ERR(regmap);
 	}
 
-	return adxl345_core_probe(&spi->dev, regmap, id->driver_data, id->name);
+	return adxl345_core_probe(&spi->dev, regmap, id->name);
 }
 
 static int adxl345_spi_remove(struct spi_device *spi)
@@ -51,8 +51,7 @@ static int adxl345_spi_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id adxl345_spi_id[] = {
-	{ "adxl345", ADXL345 },
-	{ "adxl375", ADXL375 },
+	{ "adxl345", 0 },
 	{ }
 };
 
@@ -60,7 +59,6 @@ MODULE_DEVICE_TABLE(spi, adxl345_spi_id);
 
 static const struct of_device_id adxl345_of_match[] = {
 	{ .compatible = "adi,adxl345" },
-	{ .compatible = "adi,adxl375" },
 	{ },
 };
 

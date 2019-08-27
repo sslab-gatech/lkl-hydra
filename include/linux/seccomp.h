@@ -5,9 +5,7 @@
 #include <uapi/linux/seccomp.h>
 
 #define SECCOMP_FILTER_FLAG_MASK	(SECCOMP_FILTER_FLAG_TSYNC | \
-					 SECCOMP_FILTER_FLAG_LOG | \
-					 SECCOMP_FILTER_FLAG_SPEC_ALLOW | \
-					 SECCOMP_FILTER_FLAG_NEW_LISTENER)
+					 SECCOMP_FILTER_FLAG_LOG)
 
 #ifdef CONFIG_SECCOMP
 
@@ -44,7 +42,7 @@ extern void secure_computing_strict(int this_syscall);
 #endif
 
 extern long prctl_get_seccomp(void);
-extern long prctl_set_seccomp(unsigned long, void __user *);
+extern long prctl_set_seccomp(unsigned long, char __user *);
 
 static inline int seccomp_mode(struct seccomp *s)
 {

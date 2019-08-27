@@ -77,7 +77,8 @@ struct rxe_queue {
 };
 
 int do_mmap_info(struct rxe_dev *rxe,
-		 struct mminfo __user *outbuf,
+		 struct ib_udata *udata,
+		 bool is_req,
 		 struct ib_ucontext *context,
 		 struct rxe_queue_buf *buf,
 		 size_t buf_size,
@@ -93,7 +94,7 @@ int rxe_queue_resize(struct rxe_queue *q,
 		     unsigned int *num_elem_p,
 		     unsigned int elem_size,
 		     struct ib_ucontext *context,
-		     struct mminfo __user *outbuf,
+		     struct ib_udata *udata,
 		     /* Protect producers while resizing queue */
 		     spinlock_t *producer_lock,
 		     /* Protect consumers while resizing queue */

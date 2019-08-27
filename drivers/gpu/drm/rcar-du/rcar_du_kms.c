@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * rcar_du_kms.c  --  R-Car Display Unit Mode Setting
  *
  * Copyright (C) 2013-2015 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <drm/drmP.h>
@@ -23,6 +27,7 @@
 #include "rcar_du_drv.h"
 #include "rcar_du_encoder.h"
 #include "rcar_du_kms.h"
+#include "rcar_du_lvdsenc.h"
 #include "rcar_du_regs.h"
 #include "rcar_du_vsp.h"
 
@@ -97,38 +102,6 @@ static const struct rcar_du_format_info rcar_du_format_infos[] = {
 	 * associated .pnmr or .edf settings.
 	 */
 	{
-		.fourcc = DRM_FORMAT_RGB332,
-		.bpp = 8,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_ARGB4444,
-		.bpp = 16,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_XRGB4444,
-		.bpp = 16,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_BGR888,
-		.bpp = 24,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_RGB888,
-		.bpp = 24,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_BGRA8888,
-		.bpp = 32,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_BGRX8888,
-		.bpp = 32,
-		.planes = 1,
-	}, {
-		.fourcc = DRM_FORMAT_YVYU,
-		.bpp = 16,
-		.planes = 1,
-	}, {
 		.fourcc = DRM_FORMAT_NV61,
 		.bpp = 16,
 		.planes = 2,
@@ -204,6 +177,7 @@ rcar_du_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 	const struct rcar_du_format_info *format;
 	unsigned int max_pitch;
 	unsigned int align;
+	unsigned int bpp;
 	unsigned int i;
 
 	format = rcar_du_format_info(mode_cmd->pixel_format);
@@ -213,32 +187,20 @@ rcar_du_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (rcdu->info->gen < 3) {
-		/*
-		 * On Gen2 the DU limits the pitch to 4095 pixels and requires
-		 * buffers to be aligned to a 16 pixels boundary (or 128 bytes
-		 * on some platforms).
-		 */
-		unsigned int bpp = format->planes == 1 ? format->bpp / 8 : 1;
+	/*
+	 * The pitch and alignment constraints are expressed in pixels on the
+	 * hardware side and in bytes in the DRM API.
+	 */
+	bpp = format->planes == 1 ? format->bpp / 8 : 1;
+	max_pitch =  4096 * bpp;
 
-		max_pitch = 4095 * bpp;
-
-		if (rcar_du_needs(rcdu, RCAR_DU_QUIRK_ALIGN_128B))
-			align = 128;
-		else
-			align = 16 * bpp;
-	} else {
-		/*
-		 * On Gen3 the memory interface is handled by the VSP that
-		 * limits the pitch to 65535 bytes and has no alignment
-		 * constraint.
-		 */
-		max_pitch = 65535;
-		align = 1;
-	}
+	if (rcar_du_needs(rcdu, RCAR_DU_QUIRK_ALIGN_128B))
+		align = 128;
+	else
+		align = 16 * bpp;
 
 	if (mode_cmd->pitches[0] & (align - 1) ||
-	    mode_cmd->pitches[0] > max_pitch) {
+	    mode_cmd->pitches[0] >= max_pitch) {
 		dev_dbg(dev->dev, "invalid pitch value %u\n",
 			mode_cmd->pitches[0]);
 		return ERR_PTR(-EINVAL);
@@ -255,6 +217,13 @@ rcar_du_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 	return drm_gem_fb_create(dev, file_priv, mode_cmd);
 }
 
+static void rcar_du_output_poll_changed(struct drm_device *dev)
+{
+	struct rcar_du_device *rcdu = dev->dev_private;
+
+	drm_fbdev_cma_hotplug_event(rcdu->fbdev);
+}
+
 /* -----------------------------------------------------------------------------
  * Atomic Check and Update
  */
@@ -265,7 +234,15 @@ static int rcar_du_atomic_check(struct drm_device *dev,
 	struct rcar_du_device *rcdu = dev->dev_private;
 	int ret;
 
-	ret = drm_atomic_helper_check(dev, state);
+	ret = drm_atomic_helper_check_modeset(dev, state);
+	if (ret)
+		return ret;
+
+	ret = drm_atomic_normalize_zpos(dev, state);
+	if (ret)
+		return ret;
+
+	ret = drm_atomic_helper_check_planes(dev, state);
 	if (ret)
 		return ret;
 
@@ -301,6 +278,7 @@ static const struct drm_mode_config_helper_funcs rcar_du_mode_config_helper = {
 
 static const struct drm_mode_config_funcs rcar_du_mode_config_funcs = {
 	.fb_create = rcar_du_fb_create,
+	.output_poll_changed = rcar_du_output_poll_changed,
 	.atomic_check = rcar_du_atomic_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
@@ -363,10 +341,11 @@ static int rcar_du_encoders_init_one(struct rcar_du_device *rcdu,
 	of_node_put(entity_ep_node);
 
 	if (!encoder) {
-		dev_warn(rcdu->dev,
-			 "no encoder found for endpoint %pOF, skipping\n",
-			 ep->local_node);
-		return -ENODEV;
+		/*
+		 * If no encoder has been found the entity must be the
+		 * connector.
+		 */
+		connector = entity;
 	}
 
 	ret = rcar_du_encoder_init(rcdu, output, encoder, connector);
@@ -438,6 +417,11 @@ static int rcar_du_encoders_init(struct rcar_du_device *rcdu)
 
 static int rcar_du_properties_init(struct rcar_du_device *rcdu)
 {
+	rcdu->props.alpha =
+		drm_property_create_range(rcdu->ddev, 0, "alpha", 0, 255);
+	if (rcdu->props.alpha == NULL)
+		return -ENOMEM;
+
 	/*
 	 * The color key is expressed as an RGB888 triplet stored in a 32-bit
 	 * integer in XRGB8888 format. Bit 24 is used as a flag to disable (0)
@@ -459,7 +443,7 @@ static int rcar_du_vsps_init(struct rcar_du_device *rcdu)
 	struct {
 		struct device_node *np;
 		unsigned int crtcs_mask;
-	} vsps[RCAR_DU_MAX_VSPS] = { { NULL, }, };
+	} vsps[RCAR_DU_MAX_VSPS] = { { 0, }, };
 	unsigned int vsps_count = 0;
 	unsigned int cells;
 	unsigned int i;
@@ -535,11 +519,9 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 
 	struct drm_device *dev = rcdu->ddev;
 	struct drm_encoder *encoder;
-	unsigned int dpad0_sources;
+	struct drm_fbdev_cma *fbdev;
 	unsigned int num_encoders;
 	unsigned int num_groups;
-	unsigned int swindex;
-	unsigned int hwindex;
 	unsigned int i;
 	int ret;
 
@@ -547,23 +529,12 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 
 	dev->mode_config.min_width = 0;
 	dev->mode_config.min_height = 0;
-	dev->mode_config.normalize_zpos = true;
+	dev->mode_config.max_width = 4095;
+	dev->mode_config.max_height = 2047;
 	dev->mode_config.funcs = &rcar_du_mode_config_funcs;
 	dev->mode_config.helper_private = &rcar_du_mode_config_helper;
 
-	if (rcdu->info->gen < 3) {
-		dev->mode_config.max_width = 4095;
-		dev->mode_config.max_height = 2047;
-	} else {
-		/*
-		 * The Gen3 DU uses the VSP1 for memory access, and is limited
-		 * to frame sizes of 8190x8190.
-		 */
-		dev->mode_config.max_width = 8190;
-		dev->mode_config.max_height = 8190;
-	}
-
-	rcdu->num_crtcs = hweight8(rcdu->info->channels_mask);
+	rcdu->num_crtcs = rcdu->info->num_crtcs;
 
 	ret = rcar_du_properties_init(rcdu);
 	if (ret < 0)
@@ -573,7 +544,7 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 	 * Initialize vertical blanking interrupts handling. Start with vblank
 	 * disabled for all CRTCs.
 	 */
-	ret = drm_vblank_init(dev, rcdu->num_crtcs);
+	ret = drm_vblank_init(dev, (1 << rcdu->info->num_crtcs) - 1);
 	if (ret < 0)
 		return ret;
 
@@ -588,10 +559,7 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 		rgrp->dev = rcdu;
 		rgrp->mmio_offset = mmio_offsets[i];
 		rgrp->index = i;
-		/* Extract the channel mask for this group only. */
-		rgrp->channels_mask = (rcdu->info->channels_mask >> (2 * i))
-				   & GENMASK(1, 0);
-		rgrp->num_crtcs = hweight8(rgrp->channels_mask);
+		rgrp->num_crtcs = min(rcdu->num_crtcs - 2 * i, 2U);
 
 		/*
 		 * If we have more than one CRTCs in this group pre-associate
@@ -618,21 +586,19 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 	}
 
 	/* Create the CRTCs. */
-	for (swindex = 0, hwindex = 0; swindex < rcdu->num_crtcs; ++hwindex) {
-		struct rcar_du_group *rgrp;
+	for (i = 0; i < rcdu->num_crtcs; ++i) {
+		struct rcar_du_group *rgrp = &rcdu->groups[i / 2];
 
-		/* Skip unpopulated DU channels. */
-		if (!(rcdu->info->channels_mask & BIT(hwindex)))
-			continue;
-
-		rgrp = &rcdu->groups[hwindex / 2];
-
-		ret = rcar_du_crtc_create(rgrp, swindex++, hwindex);
+		ret = rcar_du_crtc_create(rgrp, i);
 		if (ret < 0)
 			return ret;
 	}
 
 	/* Initialize the encoders. */
+	ret = rcar_du_lvdsenc_init(rcdu);
+	if (ret < 0)
+		return ret;
+
 	ret = rcar_du_encoders_init(rcdu);
 	if (ret < 0)
 		return ret;
@@ -658,20 +624,21 @@ int rcar_du_modeset_init(struct rcar_du_device *rcdu)
 		encoder->possible_clones = (1 << num_encoders) - 1;
 	}
 
-	/*
-	 * Initialize the default DPAD0 source to the index of the first DU
-	 * channel that can be connected to DPAD0. The exact value doesn't
-	 * matter as it should be overwritten by mode setting for the RGB
-	 * output, but it is nonetheless required to ensure a valid initial
-	 * hardware configuration on Gen3 where DU0 can't always be connected to
-	 * DPAD0.
-	 */
-	dpad0_sources = rcdu->info->routes[RCAR_DU_OUTPUT_DPAD0].possible_crtcs;
-	rcdu->dpad0_source = ffs(dpad0_sources) - 1;
-
 	drm_mode_config_reset(dev);
 
 	drm_kms_helper_poll_init(dev);
+
+	if (dev->mode_config.num_connector) {
+		fbdev = drm_fbdev_cma_init(dev, 32,
+					   dev->mode_config.num_connector);
+		if (IS_ERR(fbdev))
+			return PTR_ERR(fbdev);
+
+		rcdu->fbdev = fbdev;
+	} else {
+		dev_info(rcdu->dev,
+			 "no connector found, disabling fbdev emulation\n");
+	}
 
 	return 0;
 }

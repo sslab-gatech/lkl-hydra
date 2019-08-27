@@ -1377,7 +1377,8 @@ static int __exit davinci_mmcsd_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 static int davinci_mmcsd_suspend(struct device *dev)
 {
-	struct mmc_davinci_host *host = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct mmc_davinci_host *host = platform_get_drvdata(pdev);
 
 	writel(0, host->base + DAVINCI_MMCIM);
 	mmc_davinci_reset_ctrl(host, 1);
@@ -1388,7 +1389,8 @@ static int davinci_mmcsd_suspend(struct device *dev)
 
 static int davinci_mmcsd_resume(struct device *dev)
 {
-	struct mmc_davinci_host *host = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct mmc_davinci_host *host = platform_get_drvdata(pdev);
 
 	clk_enable(host->clk);
 	mmc_davinci_reset_ctrl(host, 0);

@@ -100,9 +100,8 @@ static int rmi_f34_command(struct f34_data *f34, u8 command,
 	return 0;
 }
 
-static irqreturn_t rmi_f34_attention(int irq, void *ctx)
+static int rmi_f34_attention(struct rmi_function *fn, unsigned long *irq_bits)
 {
-	struct rmi_function *fn = ctx;
 	struct f34_data *f34 = dev_get_drvdata(&fn->dev);
 	int ret;
 	u8 status;
@@ -127,7 +126,7 @@ static irqreturn_t rmi_f34_attention(int irq, void *ctx)
 			complete(&f34->v7.cmd_done);
 	}
 
-	return IRQ_HANDLED;
+	return 0;
 }
 
 static int rmi_f34_write_blocks(struct f34_data *f34, const void *data,

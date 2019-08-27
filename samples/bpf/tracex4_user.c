@@ -14,7 +14,7 @@
 #include <linux/bpf.h>
 #include <sys/resource.h>
 
-#include <bpf/bpf.h>
+#include "libbpf.h"
 #include "bpf_load.h"
 
 struct pair {

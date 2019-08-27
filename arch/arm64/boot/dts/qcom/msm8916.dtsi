@@ -15,9 +15,11 @@
 #include <dt-bindings/clock/qcom,gcc-msm8916.h>
 #include <dt-bindings/reset/qcom,gcc-msm8916.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
-#include <dt-bindings/thermal/thermal.h>
 
 / {
+	model = "Qualcomm Technologies, Inc. MSM8916";
+	compatible = "qcom,msm8916";
+
 	interrupt-parent = <&intc>;
 
 	#address-cells = <2>;
@@ -111,9 +113,6 @@
 			next-level-cache = <&L2_0>;
 			enable-method = "psci";
 			cpu-idle-states = <&CPU_SPC>;
-			clocks = <&apcs 0>;
-			operating-points-v2 = <&cpu_opp_table>;
-			#cooling-cells = <2>;
 		};
 
 		CPU1: cpu@1 {
@@ -123,9 +122,6 @@
 			next-level-cache = <&L2_0>;
 			enable-method = "psci";
 			cpu-idle-states = <&CPU_SPC>;
-			clocks = <&apcs 0>;
-			operating-points-v2 = <&cpu_opp_table>;
-			#cooling-cells = <2>;
 		};
 
 		CPU2: cpu@2 {
@@ -135,9 +131,6 @@
 			next-level-cache = <&L2_0>;
 			enable-method = "psci";
 			cpu-idle-states = <&CPU_SPC>;
-			clocks = <&apcs 0>;
-			operating-points-v2 = <&cpu_opp_table>;
-			#cooling-cells = <2>;
 		};
 
 		CPU3: cpu@3 {
@@ -147,9 +140,6 @@
 			next-level-cache = <&L2_0>;
 			enable-method = "psci";
 			cpu-idle-states = <&CPU_SPC>;
-			clocks = <&apcs 0>;
-			operating-points-v2 = <&cpu_opp_table>;
-			#cooling-cells = <2>;
 		};
 
 		L2_0: l2-cache {
@@ -176,7 +166,7 @@
 
 	pmu {
 		compatible = "arm,cortex-a53-pmu";
-		interrupts = <GIC_PPI 7 (GIC_CPU_MASK_SIMPLE(4)| IRQ_TYPE_LEVEL_HIGH)>;
+		interrupts = <GIC_PPI 7 GIC_CPU_MASK_SIMPLE(4)>;
 	};
 
 	thermal-zones {
@@ -196,16 +186,6 @@
 					temperature = <110000>;
 					hysteresis = <2000>;
 					type = "critical";
-				};
-			};
-
-			cooling-maps {
-				map0 {
-					trip = <&cpu_alert0>;
-					cooling-device = <&CPU0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -228,77 +208,8 @@
 					type = "critical";
 				};
 			};
-
-			cooling-maps {
-				map0 {
-					trip = <&cpu_alert1>;
-					cooling-device = <&CPU0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
-				};
-			};
 		};
 
-		gpu-thermal {
-			polling-delay-passive = <250>;
-			polling-delay = <1000>;
-
-			thermal-sensors = <&tsens 2>;
-
-			trips {
-				gpu_alert: trip0 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "passive";
-				};
-				gpu_crit: trip1 {
-					temperature = <95000>;
-					hysteresis = <2000>;
-					type = "critical";
-				};
-			};
-		};
-
-		camera-thermal {
-			polling-delay-passive = <250>;
-			polling-delay = <1000>;
-
-			thermal-sensors = <&tsens 1>;
-
-			trips {
-				cam_alert: trip0 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "passive";
-				};
-				cam_crit: trip1 {
-					temperature = <95000>;
-					hysteresis = <2000>;
-					type = "critical";
-				};
-			};
-
-		};
-
-	};
-
-	cpu_opp_table: cpu_opp_table {
-		compatible = "operating-points-v2";
-		opp-shared;
-
-		opp-200000000 {
-			opp-hz = /bits/ 64 <200000000>;
-		};
-		opp-400000000 {
-			opp-hz = /bits/ 64 <400000000>;
-		};
-		opp-800000000 {
-			opp-hz = /bits/ 64 <800000000>;
-		};
-		opp-998400000 {
-			opp-hz = /bits/ 64 <998400000>;
-		};
 	};
 
 	gpu_opp_table: opp_table {
@@ -415,18 +326,9 @@
 			status = "disabled";
 		};
 
-		a53pll: clock@b016000 {
-			compatible = "qcom,msm8916-a53pll";
-			reg = <0xb016000 0x40>;
-			#clock-cells = <0>;
-		};
-
-		apcs: mailbox@b011000 {
-			compatible = "qcom,msm8916-apcs-kpss-global", "syscon";
-			reg = <0xb011000 0x1000>;
-			#mbox-cells = <1>;
-			clocks = <&a53pll>;
-			#clock-cells = <0>;
+		apcs: syscon@b011000 {
+			compatible = "syscon";
+			reg = <0x0b011000 0x1000>;
 		};
 
 		blsp1_uart2: serial@78b0000 {
@@ -556,7 +458,7 @@
 		blsp_i2c2: i2c@78b6000 {
 			compatible = "qcom,i2c-qup-v2.2.1";
 			reg = <0x078b6000 0x500>;
-			interrupts = <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 96 0>;
 			clocks = <&gcc GCC_BLSP1_AHB_CLK>,
 				 <&gcc GCC_BLSP1_QUP2_I2C_APPS_CLK>;
 			clock-names = "iface", "core";
@@ -571,7 +473,7 @@
 		blsp_i2c4: i2c@78b8000 {
 			compatible = "qcom,i2c-qup-v2.2.1";
 			reg = <0x078b8000 0x500>;
-			interrupts = <GIC_SPI 98 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 98 0>;
 			clocks = <&gcc GCC_BLSP1_AHB_CLK>,
 				 <&gcc GCC_BLSP1_QUP4_I2C_APPS_CLK>;
 			clock-names = "iface", "core";
@@ -586,7 +488,7 @@
 		blsp_i2c6: i2c@78ba000 {
 			compatible = "qcom,i2c-qup-v2.2.1";
 			reg = <0x078ba000 0x500>;
-			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 100 0>;
 			clocks = <&gcc GCC_BLSP1_AHB_CLK>,
 				 <&gcc GCC_BLSP1_QUP6_I2C_APPS_CLK>;
 			clock-names = "iface", "core";
@@ -618,7 +520,7 @@
 					"mi2s-bit-clk3";
 			#sound-dai-cells = <1>;
 
-			interrupts = <0 160 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 160 0>;
 			interrupt-names = "lpass-irq-lpaif";
 			reg = <0x07708000 0x10000>;
 			reg-names = "lpass-lpaif";
@@ -638,7 +540,7 @@
 			reg = <0x07824900 0x11c>, <0x07824000 0x800>;
 			reg-names = "hc_mem", "core_mem";
 
-			interrupts = <0 123 IRQ_TYPE_LEVEL_HIGH>, <0 138 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 123 0>, <0 138 0>;
 			interrupt-names = "hc_irq", "pwr_irq";
 			clocks = <&gcc GCC_SDCC1_APPS_CLK>,
 				 <&gcc GCC_SDCC1_AHB_CLK>,
@@ -655,7 +557,7 @@
 			reg = <0x07864900 0x11c>, <0x07864000 0x800>;
 			reg-names = "hc_mem", "core_mem";
 
-			interrupts = <0 125 IRQ_TYPE_LEVEL_HIGH>, <0 221 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 125 0>, <0 221 0>;
 			interrupt-names = "hc_irq", "pwr_irq";
 			clocks = <&gcc GCC_SDCC2_APPS_CLK>,
 				 <&gcc GCC_SDCC2_AHB_CLK>,
@@ -805,13 +707,11 @@
 			};
 		};
 
-		tsens: thermal-sensor@4a9000 {
+		tsens: thermal-sensor@4a8000 {
 			compatible = "qcom,msm8916-tsens";
-			reg = <0x4a9000 0x1000>, /* TM */
-			      <0x4a8000 0x1000>; /* SROT */
+			reg = <0x4a8000 0x2000>;
 			nvmem-cells = <&tsens_caldata>, <&tsens_calsel>;
 			nvmem-cell-names = "calib", "calib_sel";
-			#qcom,sensors = <5>;
 			#thermal-sensor-cells = <1>;
 		};
 
@@ -826,13 +726,6 @@
 				 <&gcc GCC_APSS_TCU_CLK>;
 			clock-names = "iface", "bus";
 			qcom,iommu-secure-id = <17>;
-
-			// vfe:
-			iommu-ctx@3000 {
-				compatible = "qcom,msm-iommu-v1-sec";
-				reg = <0x3000 0x1000>;
-				interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>;
-			};
 
 			// mdp_0:
 			iommu-ctx@4000 {
@@ -871,7 +764,7 @@
 			iommu-ctx@2000 {
 				compatible = "qcom,msm-iommu-v1-ns";
 				reg = <0x2000 0x1000>;
-				interrupts = <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>;
+				interrupts = <GIC_SPI 242 0>;
 			};
 		};
 
@@ -911,11 +804,11 @@
 			clocks = <&gcc GCC_MDSS_AHB_CLK>,
 				 <&gcc GCC_MDSS_AXI_CLK>,
 				 <&gcc GCC_MDSS_VSYNC_CLK>;
-			clock-names = "iface",
-				      "bus",
-				      "vsync";
+			clock-names = "iface_clk",
+				      "bus_clk",
+				      "vsync_clk";
 
-			interrupts = <0 72 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 72 0>;
 
 			interrupt-controller;
 			#interrupt-cells = <1>;
@@ -936,10 +829,10 @@
 					 <&gcc GCC_MDSS_AXI_CLK>,
 					 <&gcc GCC_MDSS_MDP_CLK>,
 					 <&gcc GCC_MDSS_VSYNC_CLK>;
-				clock-names = "iface",
-					      "bus",
-					      "core",
-					      "vsync";
+				clock-names = "iface_clk",
+					      "bus_clk",
+					      "core_clk",
+					      "vsync_clk";
 
 				iommus = <&apps_iommu 4>;
 
@@ -975,12 +868,12 @@
 					 <&gcc GCC_MDSS_BYTE0_CLK>,
 					 <&gcc GCC_MDSS_PCLK0_CLK>,
 					 <&gcc GCC_MDSS_ESC0_CLK>;
-				clock-names = "mdp_core",
-					      "iface",
-					      "bus",
-					      "byte",
-					      "pixel",
-					      "core";
+				clock-names = "mdp_core_clk",
+					      "iface_clk",
+					      "bus_clk",
+					      "byte_clk",
+					      "pixel_clk",
+					      "core_clk";
 				phys = <&dsi_phy0>;
 				phy-names = "dsi-phy";
 
@@ -1016,7 +909,7 @@
 				#phy-cells = <0>;
 
 				clocks = <&gcc GCC_MDSS_AHB_CLK>;
-				clock-names = "iface";
+				clock-names = "iface_clk";
 			};
 		};
 
@@ -1152,11 +1045,10 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			in-ports {
-				port {
-					tpiu_in: endpoint {
-						remote-endpoint = <&replicator_out1>;
-					};
+			port {
+				tpiu_in: endpoint {
+					slave-mode;
+					remote-endpoint = <&replicator_out1>;
 				};
 			};
 		};
@@ -1168,7 +1060,7 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			in-ports {
+			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
 
@@ -1186,13 +1078,12 @@
 				port@4 {
 					reg = <4>;
 					funnel0_in4: endpoint {
+						slave-mode;
 						remote-endpoint = <&funnel1_out>;
 					};
 				};
-			};
-
-			out-ports {
-				port {
+				port@8 {
+					reg = <0>;
 					funnel0_out: endpoint {
 						remote-endpoint = <&etf_in>;
 					};
@@ -1207,7 +1098,7 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			out-ports {
+			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
 
@@ -1223,11 +1114,10 @@
 						remote-endpoint = <&tpiu_in>;
 					};
 				};
-			};
-
-			in-ports {
-				port {
+				port@2 {
+					reg = <0>;
 					replicator_in: endpoint {
+						slave-mode;
 						remote-endpoint = <&etf_out>;
 					};
 				};
@@ -1241,17 +1131,20 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			in-ports {
-				port {
-					etf_in: endpoint {
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					etf_out: endpoint {
+						slave-mode;
 						remote-endpoint = <&funnel0_out>;
 					};
 				};
-			};
-
-			out-ports {
-				port {
-					etf_out: endpoint {
+				port@1 {
+					reg = <0>;
+					etf_in: endpoint {
 						remote-endpoint = <&replicator_in>;
 					};
 				};
@@ -1265,11 +1158,10 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			in-ports {
-				port {
-					etr_in: endpoint {
-						remote-endpoint = <&replicator_out0>;
-					};
+			port {
+				etr_in: endpoint {
+					slave-mode;
+					remote-endpoint = <&replicator_out0>;
 				};
 			};
 		};
@@ -1281,38 +1173,40 @@
 			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
 			clock-names = "apb_pclk", "atclk";
 
-			in-ports {
+			ports {
 				#address-cells = <1>;
 				#size-cells = <0>;
 
 				port@0 {
 					reg = <0>;
 					funnel1_in0: endpoint {
+						slave-mode;
 						remote-endpoint = <&etm0_out>;
 					};
 				};
 				port@1 {
 					reg = <1>;
 					funnel1_in1: endpoint {
+						slave-mode;
 						remote-endpoint = <&etm1_out>;
 					};
 				};
 				port@2 {
 					reg = <2>;
 					funnel1_in2: endpoint {
+						slave-mode;
 						remote-endpoint = <&etm2_out>;
 					};
 				};
 				port@3 {
 					reg = <3>;
 					funnel1_in3: endpoint {
+						slave-mode;
 						remote-endpoint = <&etm3_out>;
 					};
 				};
-			};
-
-			out-ports {
-				port {
+				port@4 {
+					reg = <0>;
 					funnel1_out: endpoint {
 						remote-endpoint = <&funnel0_in4>;
 					};
@@ -1361,11 +1255,9 @@
 
 			cpu = <&CPU0>;
 
-			out-ports {
-				port {
-					etm0_out: endpoint {
-						remote-endpoint = <&funnel1_in0>;
-					};
+			port {
+				etm0_out: endpoint {
+				remote-endpoint = <&funnel1_in0>;
 				};
 			};
 		};
@@ -1379,11 +1271,9 @@
 
 			cpu = <&CPU1>;
 
-			out-ports {
-				port {
-					etm1_out: endpoint {
-						remote-endpoint = <&funnel1_in1>;
-					};
+			port {
+				etm1_out: endpoint {
+					remote-endpoint = <&funnel1_in1>;
 				};
 			};
 		};
@@ -1397,11 +1287,9 @@
 
 			cpu = <&CPU2>;
 
-			out-ports {
-				port {
-					etm2_out: endpoint {
-						remote-endpoint = <&funnel1_in2>;
-					};
+			port {
+				etm2_out: endpoint {
+					remote-endpoint = <&funnel1_in2>;
 				};
 			};
 		};
@@ -1415,11 +1303,9 @@
 
 			cpu = <&CPU3>;
 
-			out-ports {
-				port {
-					etm3_out: endpoint {
-						remote-endpoint = <&funnel1_in3>;
-					};
+			port {
+				etm3_out: endpoint {
+					remote-endpoint = <&funnel1_in3>;
 				};
 			};
 		};
@@ -1443,86 +1329,6 @@
 
 			video-encoder {
 				compatible = "venus-encoder";
-			};
-		};
-
-		camss: camss@1b00000 {
-			compatible = "qcom,msm8916-camss";
-			reg = <0x1b0ac00 0x200>,
-				<0x1b00030 0x4>,
-				<0x1b0b000 0x200>,
-				<0x1b00038 0x4>,
-				<0x1b08000 0x100>,
-				<0x1b08400 0x100>,
-				<0x1b0a000 0x500>,
-				<0x1b00020 0x10>,
-				<0x1b10000 0x1000>;
-			reg-names = "csiphy0",
-				"csiphy0_clk_mux",
-				"csiphy1",
-				"csiphy1_clk_mux",
-				"csid0",
-				"csid1",
-				"ispif",
-				"csi_clk_mux",
-				"vfe0";
-			interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
-				<GIC_SPI 79 IRQ_TYPE_EDGE_RISING>,
-				<GIC_SPI 51 IRQ_TYPE_EDGE_RISING>,
-				<GIC_SPI 52 IRQ_TYPE_EDGE_RISING>,
-				<GIC_SPI 55 IRQ_TYPE_EDGE_RISING>,
-				<GIC_SPI 57 IRQ_TYPE_EDGE_RISING>;
-			interrupt-names = "csiphy0",
-				"csiphy1",
-				"csid0",
-				"csid1",
-				"ispif",
-				"vfe0";
-			power-domains = <&gcc VFE_GDSC>;
-			clocks = <&gcc GCC_CAMSS_TOP_AHB_CLK>,
-				<&gcc GCC_CAMSS_ISPIF_AHB_CLK>,
-				<&gcc GCC_CAMSS_CSI0PHYTIMER_CLK>,
-				<&gcc GCC_CAMSS_CSI1PHYTIMER_CLK>,
-				<&gcc GCC_CAMSS_CSI0_AHB_CLK>,
-				<&gcc GCC_CAMSS_CSI0_CLK>,
-				<&gcc GCC_CAMSS_CSI0PHY_CLK>,
-				<&gcc GCC_CAMSS_CSI0PIX_CLK>,
-				<&gcc GCC_CAMSS_CSI0RDI_CLK>,
-				<&gcc GCC_CAMSS_CSI1_AHB_CLK>,
-				<&gcc GCC_CAMSS_CSI1_CLK>,
-				<&gcc GCC_CAMSS_CSI1PHY_CLK>,
-				<&gcc GCC_CAMSS_CSI1PIX_CLK>,
-				<&gcc GCC_CAMSS_CSI1RDI_CLK>,
-				<&gcc GCC_CAMSS_AHB_CLK>,
-				<&gcc GCC_CAMSS_VFE0_CLK>,
-				<&gcc GCC_CAMSS_CSI_VFE0_CLK>,
-				<&gcc GCC_CAMSS_VFE_AHB_CLK>,
-				<&gcc GCC_CAMSS_VFE_AXI_CLK>;
-			clock-names = "top_ahb",
-				"ispif_ahb",
-				"csiphy0_timer",
-				"csiphy1_timer",
-				"csi0_ahb",
-				"csi0",
-				"csi0_phy",
-				"csi0_pix",
-				"csi0_rdi",
-				"csi1_ahb",
-				"csi1",
-				"csi1_phy",
-				"csi1_pix",
-				"csi1_rdi",
-				"ahb",
-				"vfe0",
-				"csi_vfe0",
-				"vfe_ahb",
-				"vfe_axi";
-			vdda-supply = <&pm8916_l2>;
-			iommus = <&apps_iommu 3>;
-			status = "disabled";
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
 			};
 		};
 	};

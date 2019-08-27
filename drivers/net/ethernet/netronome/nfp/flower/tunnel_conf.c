@@ -1,5 +1,35 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-/* Copyright (C) 2017-2018 Netronome Systems, Inc. */
+/*
+ * Copyright (C) 2017 Netronome Systems, Inc.
+ *
+ * This software is dual licensed under the GNU General License Version 2,
+ * June 1991 as shown in the file COPYING in the top-level directory of this
+ * source tree or the BSD 2-Clause License provided below.  You have the
+ * option to license this software under the complete terms of either license.
+ *
+ * The BSD 2-Clause License:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      1. Redistributions of source code must retain the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer.
+ *
+ *      2. Redistributions in binary form must reproduce the above
+ *         copyright notice, this list of conditions and the following
+ *         disclaimer in the documentation and/or other materials
+ *         provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 
 #include <linux/etherdevice.h>
 #include <linux/inetdevice.h>
@@ -181,6 +211,18 @@ void nfp_tunnel_keep_alive(struct nfp_app *app, struct sk_buff *skb)
 	}
 }
 
+static bool nfp_tun_is_netdev_to_offload(struct net_device *netdev)
+{
+	if (!netdev->rtnl_link_ops)
+		return false;
+	if (!strcmp(netdev->rtnl_link_ops->kind, "openvswitch"))
+		return true;
+	if (!strcmp(netdev->rtnl_link_ops->kind, "vxlan"))
+		return true;
+
+	return false;
+}
+
 static int
 nfp_flower_xmit_tun_conf(struct nfp_app *app, u8 mtype, u16 plen, void *pdata,
 			 gfp_t flag)
@@ -275,7 +317,7 @@ nfp_tun_write_neigh(struct net_device *netdev, struct nfp_app *app,
 	payload.dst_ipv4 = flow->daddr;
 
 	/* If entry has expired send dst IP with all other fields 0. */
-	if (!(neigh->nud_state & NUD_VALID) || neigh->dead) {
+	if (!(neigh->nud_state & NUD_VALID)) {
 		nfp_tun_del_route_from_cache(app, payload.dst_ipv4);
 		/* Trigger ARP to verify invalid neighbour state. */
 		neigh_event_send(neigh, NULL);
@@ -339,8 +381,6 @@ nfp_tun_neigh_event_handler(struct notifier_block *nb, unsigned long event,
 	err = PTR_ERR_OR_ZERO(rt);
 	if (err)
 		return NOTIFY_DONE;
-
-	ip_rt_put(rt);
 #else
 	return NOTIFY_DONE;
 #endif
@@ -602,7 +642,7 @@ static void nfp_tun_add_to_mac_offload_list(struct net_device *netdev,
 
 	if (nfp_netdev_is_nfp_repr(netdev))
 		port = nfp_repr_get_port_id(netdev);
-	else if (!nfp_fl_is_netdev_to_offload(netdev))
+	else if (!nfp_tun_is_netdev_to_offload(netdev))
 		return;
 
 	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
@@ -639,16 +679,29 @@ static void nfp_tun_add_to_mac_offload_list(struct net_device *netdev,
 	mutex_unlock(&priv->nfp_mac_off_lock);
 }
 
-int nfp_tunnel_mac_event_handler(struct nfp_app *app,
-				 struct net_device *netdev,
-				 unsigned long event, void *ptr)
+static int nfp_tun_mac_event_handler(struct notifier_block *nb,
+				     unsigned long event, void *ptr)
 {
+	struct nfp_flower_priv *app_priv;
+	struct net_device *netdev;
+	struct nfp_app *app;
+
 	if (event == NETDEV_DOWN || event == NETDEV_UNREGISTER) {
+		app_priv = container_of(nb, struct nfp_flower_priv,
+					nfp_tun_mac_nb);
+		app = app_priv->app;
+		netdev = netdev_notifier_info_to_dev(ptr);
+
 		/* If non-nfp netdev then free its offload index. */
-		if (nfp_fl_is_netdev_to_offload(netdev))
+		if (nfp_tun_is_netdev_to_offload(netdev))
 			nfp_tun_del_mac_idx(app, netdev->ifindex);
 	} else if (event == NETDEV_UP || event == NETDEV_CHANGEADDR ||
 		   event == NETDEV_REGISTER) {
+		app_priv = container_of(nb, struct nfp_flower_priv,
+					nfp_tun_mac_nb);
+		app = app_priv->app;
+		netdev = netdev_notifier_info_to_dev(ptr);
+
 		nfp_tun_add_to_mac_offload_list(netdev, app);
 
 		/* Force a list write to keep NFP up to date. */
@@ -660,11 +713,14 @@ int nfp_tunnel_mac_event_handler(struct nfp_app *app,
 int nfp_tunnel_config_start(struct nfp_app *app)
 {
 	struct nfp_flower_priv *priv = app->priv;
+	struct net_device *netdev;
+	int err;
 
 	/* Initialise priv data for MAC offloading. */
 	priv->nfp_mac_off_count = 0;
 	mutex_init(&priv->nfp_mac_off_lock);
 	INIT_LIST_HEAD(&priv->nfp_mac_off_list);
+	priv->nfp_tun_mac_nb.notifier_call = nfp_tun_mac_event_handler;
 	mutex_init(&priv->nfp_mac_index_lock);
 	INIT_LIST_HEAD(&priv->nfp_mac_index_list);
 	ida_init(&priv->nfp_mac_off_ids);
@@ -678,7 +734,27 @@ int nfp_tunnel_config_start(struct nfp_app *app)
 	INIT_LIST_HEAD(&priv->nfp_neigh_off_list);
 	priv->nfp_tun_neigh_nb.notifier_call = nfp_tun_neigh_event_handler;
 
-	return register_netevent_notifier(&priv->nfp_tun_neigh_nb);
+	err = register_netdevice_notifier(&priv->nfp_tun_mac_nb);
+	if (err)
+		goto err_free_mac_ida;
+
+	err = register_netevent_notifier(&priv->nfp_tun_neigh_nb);
+	if (err)
+		goto err_unreg_mac_nb;
+
+	/* Parse netdevs already registered for MACs that need offloaded. */
+	rtnl_lock();
+	for_each_netdev(&init_net, netdev)
+		nfp_tun_add_to_mac_offload_list(netdev, app);
+	rtnl_unlock();
+
+	return 0;
+
+err_unreg_mac_nb:
+	unregister_netdevice_notifier(&priv->nfp_tun_mac_nb);
+err_free_mac_ida:
+	ida_destroy(&priv->nfp_mac_off_ids);
+	return err;
 }
 
 void nfp_tunnel_config_stop(struct nfp_app *app)
@@ -690,6 +766,7 @@ void nfp_tunnel_config_stop(struct nfp_app *app)
 	struct nfp_ipv4_addr_entry *ip_entry;
 	struct list_head *ptr, *storage;
 
+	unregister_netdevice_notifier(&priv->nfp_tun_mac_nb);
 	unregister_netevent_notifier(&priv->nfp_tun_neigh_nb);
 
 	/* Free any memory that may be occupied by MAC list. */

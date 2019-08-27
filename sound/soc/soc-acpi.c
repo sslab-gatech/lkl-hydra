@@ -1,8 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// soc-apci.c - support for ACPI enumeration.
-//
-// Copyright (c) 2013-15, Intel Corporation.
+/*
+ * soc-apci.c - support for ACPI enumeration.
+ *
+ * Copyright (c) 2013-15, Intel Corporation.
+ *
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ */
 
 #include <sound/soc-acpi.h>
 
@@ -10,17 +20,11 @@ struct snd_soc_acpi_mach *
 snd_soc_acpi_find_machine(struct snd_soc_acpi_mach *machines)
 {
 	struct snd_soc_acpi_mach *mach;
-	struct snd_soc_acpi_mach *mach_alt;
 
 	for (mach = machines; mach->id[0]; mach++) {
 		if (acpi_dev_present(mach->id, NULL, -1)) {
-			if (mach->machine_quirk) {
-				mach_alt = mach->machine_quirk(mach);
-				if (!mach_alt)
-					continue; /* not full match, ignore */
-				mach = mach_alt;
-			}
-
+			if (mach->machine_quirk)
+				mach = mach->machine_quirk(mach);
 			return mach;
 		}
 	}

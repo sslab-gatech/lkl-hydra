@@ -7,7 +7,7 @@
  * Contains common routines for sun3/sun3x DVMA management.
  */
 
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -267,8 +267,7 @@ void __init dvma_init(void)
 
 	list_add(&(hole->list), &hole_list);
 
-	iommu_use = memblock_alloc(IOMMU_TOTAL_ENTRIES * sizeof(unsigned long),
-				   SMP_CACHE_BYTES);
+	iommu_use = alloc_bootmem(IOMMU_TOTAL_ENTRIES * sizeof(unsigned long));
 
 	dvma_unmap_iommu(DVMA_START, DVMA_SIZE);
 

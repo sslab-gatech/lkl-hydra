@@ -268,29 +268,43 @@ static inline int wbsd_next_sg(struct wbsd_host *host)
 	return host->num_sg;
 }
 
-static inline char *wbsd_map_sg(struct wbsd_host *host)
+static inline char *wbsd_sg_to_buffer(struct wbsd_host *host)
 {
-	return kmap_atomic(sg_page(host->cur_sg)) + host->cur_sg->offset;
+	return sg_virt(host->cur_sg);
 }
 
 static inline void wbsd_sg_to_dma(struct wbsd_host *host, struct mmc_data *data)
 {
-	size_t len = 0;
-	int i;
+	unsigned int len, i;
+	struct scatterlist *sg;
+	char *dmabuf = host->dma_buffer;
+	char *sgbuf;
 
-	for (i = 0; i < data->sg_len; i++)
-		len += data->sg[i].length;
-	sg_copy_to_buffer(data->sg, data->sg_len, host->dma_buffer, len);
+	sg = data->sg;
+	len = data->sg_len;
+
+	for (i = 0; i < len; i++) {
+		sgbuf = sg_virt(&sg[i]);
+		memcpy(dmabuf, sgbuf, sg[i].length);
+		dmabuf += sg[i].length;
+	}
 }
 
 static inline void wbsd_dma_to_sg(struct wbsd_host *host, struct mmc_data *data)
 {
-	size_t len = 0;
-	int i;
+	unsigned int len, i;
+	struct scatterlist *sg;
+	char *dmabuf = host->dma_buffer;
+	char *sgbuf;
 
-	for (i = 0; i < data->sg_len; i++)
-		len += data->sg[i].length;
-	sg_copy_from_buffer(data->sg, data->sg_len, host->dma_buffer, len);
+	sg = data->sg;
+	len = data->sg_len;
+
+	for (i = 0; i < len; i++) {
+		sgbuf = sg_virt(&sg[i]);
+		memcpy(sgbuf, dmabuf, sg[i].length);
+		dmabuf += sg[i].length;
+	}
 }
 
 /*
@@ -404,7 +418,7 @@ static void wbsd_empty_fifo(struct wbsd_host *host)
 {
 	struct mmc_data *data = host->mrq->cmd->data;
 	char *buffer;
-	int i, idx, fsr, fifo;
+	int i, fsr, fifo;
 
 	/*
 	 * Handle excessive data.
@@ -412,8 +426,7 @@ static void wbsd_empty_fifo(struct wbsd_host *host)
 	if (host->num_sg == 0)
 		return;
 
-	buffer = wbsd_map_sg(host) + host->offset;
-	idx = 0;
+	buffer = wbsd_sg_to_buffer(host) + host->offset;
 
 	/*
 	 * Drain the fifo. This has a tendency to loop longer
@@ -432,7 +445,8 @@ static void wbsd_empty_fifo(struct wbsd_host *host)
 			fifo = 1;
 
 		for (i = 0; i < fifo; i++) {
-			buffer[idx++] = inb(host->base + WBSD_DFR);
+			*buffer = inb(host->base + WBSD_DFR);
+			buffer++;
 			host->offset++;
 			host->remain--;
 
@@ -442,19 +456,16 @@ static void wbsd_empty_fifo(struct wbsd_host *host)
 			 * End of scatter list entry?
 			 */
 			if (host->remain == 0) {
-				kunmap_atomic(buffer);
 				/*
 				 * Get next entry. Check if last.
 				 */
 				if (!wbsd_next_sg(host))
 					return;
 
-				buffer = wbsd_map_sg(host);
-				idx = 0;
+				buffer = wbsd_sg_to_buffer(host);
 			}
 		}
 	}
-	kunmap_atomic(buffer);
 
 	/*
 	 * This is a very dirty hack to solve a
@@ -469,7 +480,7 @@ static void wbsd_fill_fifo(struct wbsd_host *host)
 {
 	struct mmc_data *data = host->mrq->cmd->data;
 	char *buffer;
-	int i, idx, fsr, fifo;
+	int i, fsr, fifo;
 
 	/*
 	 * Check that we aren't being called after the
@@ -478,8 +489,7 @@ static void wbsd_fill_fifo(struct wbsd_host *host)
 	if (host->num_sg == 0)
 		return;
 
-	buffer = wbsd_map_sg(host) + host->offset;
-	idx = 0;
+	buffer = wbsd_sg_to_buffer(host) + host->offset;
 
 	/*
 	 * Fill the fifo. This has a tendency to loop longer
@@ -498,7 +508,8 @@ static void wbsd_fill_fifo(struct wbsd_host *host)
 			fifo = 15;
 
 		for (i = 16; i > fifo; i--) {
-			outb(buffer[idx], host->base + WBSD_DFR);
+			outb(*buffer, host->base + WBSD_DFR);
+			buffer++;
 			host->offset++;
 			host->remain--;
 
@@ -508,19 +519,16 @@ static void wbsd_fill_fifo(struct wbsd_host *host)
 			 * End of scatter list entry?
 			 */
 			if (host->remain == 0) {
-				kunmap_atomic(buffer);
 				/*
 				 * Get next entry. Check if last.
 				 */
 				if (!wbsd_next_sg(host))
 					return;
 
-				buffer = wbsd_map_sg(host);
-				idx = 0;
+				buffer = wbsd_sg_to_buffer(host);
 			}
 		}
 	}
-	kunmap_atomic(buffer);
 
 	/*
 	 * The controller stops sending interrupts for

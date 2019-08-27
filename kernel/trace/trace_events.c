@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * event tracer
  *
@@ -240,7 +239,7 @@ bool trace_event_ignore_this_pid(struct trace_event_file *trace_file)
 	struct trace_array_cpu *data;
 	struct trace_pid_list *pid_list;
 
-	pid_list = rcu_dereference_raw(tr->filtered_pids);
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
 	if (!pid_list)
 		return false;
 
@@ -513,7 +512,7 @@ event_filter_pid_sched_process_exit(void *data, struct task_struct *task)
 	struct trace_pid_list *pid_list;
 	struct trace_array *tr = data;
 
-	pid_list = rcu_dereference_raw(tr->filtered_pids);
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
 	trace_filter_add_remove_task(pid_list, NULL, task);
 }
 
@@ -637,7 +636,7 @@ static void __ftrace_clear_event_pids(struct trace_array *tr)
 	rcu_assign_pointer(tr->filtered_pids, NULL);
 
 	/* Wait till all users are no longer using pid filtering */
-	tracepoint_synchronize_unregister();
+	synchronize_sched();
 
 	trace_free_pid_list(pid_list);
 }
@@ -1251,7 +1250,7 @@ static int f_show(struct seq_file *m, void *v)
 	 */
 	array_descriptor = strchr(field->type, '[');
 
-	if (str_has_prefix(field->type, "__data_loc"))
+	if (!strncmp(field->type, "__data_loc", 10))
 		array_descriptor = NULL;
 
 	if (!array_descriptor)
@@ -1623,7 +1622,7 @@ ftrace_event_pid_write(struct file *filp, const char __user *ubuf,
 	}
 
 	if (filtered_pids) {
-		tracepoint_synchronize_unregister();
+		synchronize_sched();
 		trace_free_pid_list(filtered_pids);
 	} else if (pid_list) {
 		/*
@@ -2008,18 +2007,16 @@ event_create_dir(struct dentry *parent, struct trace_event_file *file)
 			return -1;
 		}
 	}
+	trace_create_file("filter", 0644, file->dir, file,
+			  &ftrace_event_filter_fops);
 
 	/*
 	 * Only event directories that can be enabled should have
-	 * triggers or filters.
+	 * triggers.
 	 */
-	if (!(call->flags & TRACE_EVENT_FL_IGNORE_ENABLE)) {
-		trace_create_file("filter", 0644, file->dir, file,
-				  &ftrace_event_filter_fops);
-
+	if (!(call->flags & TRACE_EVENT_FL_IGNORE_ENABLE))
 		trace_create_file("trigger", 0644, file->dir, file,
 				  &event_trigger_fops);
-	}
 
 #ifdef CONFIG_HIST_TRIGGERS
 	trace_create_file("hist", 0444, file->dir, file,
@@ -2309,8 +2306,7 @@ static void __add_event_to_tracers(struct trace_event_call *call);
 int trace_add_event_call(struct trace_event_call *call)
 {
 	int ret;
-	lockdep_assert_held(&event_mutex);
-
+	mutex_lock(&event_mutex);
 	mutex_lock(&trace_types_lock);
 
 	ret = __register_event(call, NULL);
@@ -2318,6 +2314,7 @@ int trace_add_event_call(struct trace_event_call *call)
 		__add_event_to_tracers(call);
 
 	mutex_unlock(&trace_types_lock);
+	mutex_unlock(&event_mutex);
 	return ret;
 }
 
@@ -2371,13 +2368,13 @@ int trace_remove_event_call(struct trace_event_call *call)
 {
 	int ret;
 
-	lockdep_assert_held(&event_mutex);
-
+	mutex_lock(&event_mutex);
 	mutex_lock(&trace_types_lock);
 	down_write(&trace_event_sem);
 	ret = probe_remove_event_call(call);
 	up_write(&trace_event_sem);
 	mutex_unlock(&trace_types_lock);
+	mutex_unlock(&event_mutex);
 
 	return ret;
 }
@@ -2476,9 +2473,8 @@ __trace_add_event_dirs(struct trace_array *tr)
 	}
 }
 
-/* Returns any file that matches the system and event */
 struct trace_event_file *
-__find_event_file(struct trace_array *tr, const char *system, const char *event)
+find_event_file(struct trace_array *tr, const char *system,  const char *event)
 {
 	struct trace_event_file *file;
 	struct trace_event_call *call;
@@ -2489,7 +2485,10 @@ __find_event_file(struct trace_array *tr, const char *system, const char *event)
 		call = file->event_call;
 		name = trace_event_name(call);
 
-		if (!name || !call->class)
+		if (!name || !call->class || !call->class->reg)
+			continue;
+
+		if (call->flags & TRACE_EVENT_FL_IGNORE_ENABLE)
 			continue;
 
 		if (strcmp(event, name) == 0 &&
@@ -2497,20 +2496,6 @@ __find_event_file(struct trace_array *tr, const char *system, const char *event)
 			return file;
 	}
 	return NULL;
-}
-
-/* Returns valid trace event files that match system and event */
-struct trace_event_file *
-find_event_file(struct trace_array *tr, const char *system, const char *event)
-{
-	struct trace_event_file *file;
-
-	file = __find_event_file(tr, system, event);
-	if (!file || !file->event_call->class->reg ||
-	    file->event_call->flags & TRACE_EVENT_FL_IGNORE_ENABLE)
-		return NULL;
-
-	return file;
 }
 
 #ifdef CONFIG_DYNAMIC_FTRACE
@@ -3037,8 +3022,8 @@ int event_trace_del_tracer(struct trace_array *tr)
 	/* Disable any running events */
 	__ftrace_set_clr_event_nolock(tr, NULL, NULL, NULL, 0);
 
-	/* Make sure no more events are being executed */
-	tracepoint_synchronize_unregister();
+	/* Access to events are within rcu_read_lock_sched() */
+	synchronize_sched();
 
 	down_write(&trace_event_sem);
 	__trace_remove_event_dirs(tr);
@@ -3147,7 +3132,7 @@ static __init int event_trace_enable_again(void)
 
 early_initcall(event_trace_enable_again);
 
-__init int event_trace_init(void)
+static __init int event_trace_init(void)
 {
 	struct trace_array *tr;
 	struct dentry *d_tracer;
@@ -3191,6 +3176,8 @@ void __init trace_event_init(void)
 	init_ftrace_syscalls();
 	event_trace_enable();
 }
+
+fs_initcall(event_trace_init);
 
 #ifdef CONFIG_FTRACE_STARTUP_TEST
 

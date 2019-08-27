@@ -410,6 +410,6 @@
 	};
 
 	chosen {
-		stdout-path = &UART0;
+		linux,stdout-path = &UART0;
 	};
 };

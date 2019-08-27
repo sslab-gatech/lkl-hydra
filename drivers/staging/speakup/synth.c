@@ -18,7 +18,8 @@
 #include "speakup.h"
 #include "serialio.h"
 
-static LIST_HEAD(synths);
+#define MAXSYNTHS       16      /* Max number of synths in array. */
+static struct spk_synth *synths[MAXSYNTHS + 1];
 struct spk_synth *synth;
 char spk_pitch_buff[32] = "";
 static int module_status;
@@ -51,9 +52,9 @@ static int do_synth_init(struct spk_synth *in_synth);
  * For devices that have a "full" notification mechanism, the driver can
  * adapt the loop the way they prefer.
  */
-static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
+void spk_do_catch_up(struct spk_synth *synth)
 {
-	u16 ch;
+	u_char ch;
 	unsigned long flags;
 	unsigned long jiff_max;
 	struct var_t *delay_time;
@@ -62,7 +63,6 @@ static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
 	int jiffy_delta_val;
 	int delay_time_val;
 	int full_time_val;
-	int ret;
 
 	jiffy_delta = spk_get_var(JIFFY);
 	full_time = spk_get_var(FULL);
@@ -81,8 +81,7 @@ static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
 			synth->flush(synth);
 			continue;
 		}
-		if (!unicode)
-			synth_buffer_skip_nonlatin1();
+		synth_buffer_skip_nonlatin1();
 		if (synth_buffer_empty()) {
 			spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 			break;
@@ -93,11 +92,7 @@ static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
 		spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 		if (ch == '\n')
 			ch = synth->procspeech;
-		if (unicode)
-			ret = synth->io_ops->synth_out_unicode(synth, ch);
-		else
-			ret = synth->io_ops->synth_out(synth, ch);
-		if (!ret) {
+		if (!synth->io_ops->synth_out(synth, ch)) {
 			schedule_timeout(msecs_to_jiffies(full_time_val));
 			continue;
 		}
@@ -122,18 +117,7 @@ static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
 	}
 	synth->io_ops->synth_out(synth, synth->procspeech);
 }
-
-void spk_do_catch_up(struct spk_synth *synth)
-{
-	_spk_do_catch_up(synth, 0);
-}
 EXPORT_SYMBOL_GPL(spk_do_catch_up);
-
-void spk_do_catch_up_unicode(struct spk_synth *synth)
-{
-	_spk_do_catch_up(synth, 1);
-}
-EXPORT_SYMBOL_GPL(spk_do_catch_up_unicode);
 
 void spk_synth_flush(struct spk_synth *synth)
 {
@@ -354,8 +338,9 @@ struct var_t synth_time_vars[] = {
 /* called by: speakup_init() */
 int synth_init(char *synth_name)
 {
+	int i;
 	int ret = 0;
-	struct spk_synth *tmp, *synth = NULL;
+	struct spk_synth *synth = NULL;
 
 	if (!synth_name)
 		return 0;
@@ -369,10 +354,9 @@ int synth_init(char *synth_name)
 
 	mutex_lock(&spk_mutex);
 	/* First, check if we already have it loaded. */
-	list_for_each_entry(tmp, &synths, node) {
-		if (strcmp(tmp->name, synth_name) == 0)
-			synth = tmp;
-	}
+	for (i = 0; i < MAXSYNTHS && synths[i]; i++)
+		if (strcmp(synths[i]->name, synth_name) == 0)
+			synth = synths[i];
 
 	/* If we got one, initialize it now. */
 	if (synth)
@@ -447,23 +431,29 @@ void synth_release(void)
 /* called by: all_driver_init() */
 int synth_add(struct spk_synth *in_synth)
 {
+	int i;
 	int status = 0;
-	struct spk_synth *tmp;
 
 	mutex_lock(&spk_mutex);
-
-	list_for_each_entry(tmp, &synths, node) {
-		if (tmp == in_synth) {
+	for (i = 0; i < MAXSYNTHS && synths[i]; i++)
+		/* synth_remove() is responsible for rotating the array down */
+		if (in_synth == synths[i]) {
 			mutex_unlock(&spk_mutex);
 			return 0;
 		}
+	if (i == MAXSYNTHS) {
+		pr_warn("Error: attempting to add a synth past end of array\n");
+		mutex_unlock(&spk_mutex);
+		return -1;
 	}
 
 	if (in_synth->startup)
 		status = do_synth_init(in_synth);
 
-	if (!status)
-		list_add_tail(&in_synth->node, &synths);
+	if (!status) {
+		synths[i++] = in_synth;
+		synths[i] = NULL;
+	}
 
 	mutex_unlock(&spk_mutex);
 	return status;
@@ -472,10 +462,17 @@ EXPORT_SYMBOL_GPL(synth_add);
 
 void synth_remove(struct spk_synth *in_synth)
 {
+	int i;
+
 	mutex_lock(&spk_mutex);
 	if (synth == in_synth)
 		synth_release();
-	list_del(&in_synth->node);
+	for (i = 0; synths[i]; i++) {
+		if (in_synth == synths[i])
+			break;
+	}
+	for ( ; synths[i]; i++) /* compress table */
+		synths[i] = synths[i + 1];
 	module_status = 0;
 	mutex_unlock(&spk_mutex);
 }

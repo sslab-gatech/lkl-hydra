@@ -13,16 +13,12 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
- *
- * Note, all properties are considered as u8 arrays.
- * To get a value of any of them the caller must use device_property_read_u8_array().
  */
 
 #define pr_fmt(fmt) "apple-properties: " fmt
 
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/efi.h>
-#include <linux/io.h>
 #include <linux/platform_data/x86/apple.h>
 #include <linux/property.h>
 #include <linux/slab.h>
@@ -55,6 +51,8 @@ struct properties_header {
 	u32 dev_count;
 	struct dev_header dev_header[0];
 };
+
+static u8 one __initdata = 1;
 
 static void __init unmarshal_key_value_pairs(struct dev_header *dev_header,
 					     struct device *dev, void *ptr,
@@ -97,15 +95,19 @@ static void __init unmarshal_key_value_pairs(struct dev_header *dev_header,
 			     key_len - sizeof(key_len));
 
 		entry[i].name = key;
+		entry[i].is_array = true;
 		entry[i].length = val_len - sizeof(val_len);
-		entry[i].is_array = !!entry[i].length;
-		entry[i].type = DEV_PROP_U8;
-		entry[i].pointer.u8_data = ptr + key_len + sizeof(val_len);
+		entry[i].pointer.raw_data = ptr + key_len + sizeof(val_len);
+		if (!entry[i].length) {
+			/* driver core doesn't accept empty properties */
+			entry[i].length = 1;
+			entry[i].pointer.raw_data = &one;
+		}
 
 		if (dump_properties) {
 			dev_info(dev, "property: %s\n", entry[i].name);
 			print_hex_dump(KERN_INFO, pr_fmt(), DUMP_PREFIX_OFFSET,
-				16, 1, entry[i].pointer.u8_data,
+				16, 1, entry[i].pointer.raw_data,
 				entry[i].length, true);
 		}
 
@@ -194,7 +196,7 @@ static int __init map_properties(void)
 
 	pa_data = boot_params.hdr.setup_data;
 	while (pa_data) {
-		data = memremap(pa_data, sizeof(*data), MEMREMAP_WB);
+		data = ioremap(pa_data, sizeof(*data));
 		if (!data) {
 			pr_err("cannot map setup_data header\n");
 			return -ENOMEM;
@@ -202,14 +204,14 @@ static int __init map_properties(void)
 
 		if (data->type != SETUP_APPLE_PROPERTIES) {
 			pa_data = data->next;
-			memunmap(data);
+			iounmap(data);
 			continue;
 		}
 
 		data_len = data->len;
-		memunmap(data);
+		iounmap(data);
 
-		data = memremap(pa_data, sizeof(*data) + data_len, MEMREMAP_WB);
+		data = ioremap(pa_data, sizeof(*data) + data_len);
 		if (!data) {
 			pr_err("cannot map setup_data payload\n");
 			return -ENOMEM;
@@ -234,8 +236,8 @@ static int __init map_properties(void)
 		 * to avoid breaking the chain of ->next pointers.
 		 */
 		data->len = 0;
-		memunmap(data);
-		memblock_free_late(pa_data + sizeof(*data), data_len);
+		iounmap(data);
+		free_bootmem_late(pa_data + sizeof(*data), data_len);
 
 		return ret;
 	}

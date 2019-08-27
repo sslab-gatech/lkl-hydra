@@ -34,7 +34,7 @@
 #ifndef _ASM_STACKPROTECTOR_H
 #define _ASM_STACKPROTECTOR_H 1
 
-#ifdef CONFIG_STACKPROTECTOR
+#ifdef CONFIG_CC_STACKPROTECTOR
 
 #include <asm/tsc.h>
 #include <asm/processor.h>
@@ -105,7 +105,7 @@ static inline void load_stack_canary_segment(void)
 #endif
 }
 
-#else	/* STACKPROTECTOR */
+#else	/* CC_STACKPROTECTOR */
 
 #define GDT_STACK_CANARY_INIT
 
@@ -121,5 +121,5 @@ static inline void load_stack_canary_segment(void)
 #endif
 }
 
-#endif	/* STACKPROTECTOR */
+#endif	/* CC_STACKPROTECTOR */
 #endif	/* _ASM_STACKPROTECTOR_H */

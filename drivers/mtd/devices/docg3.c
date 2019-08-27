@@ -1191,27 +1191,39 @@ static int doc_erase(struct mtd_info *mtd, struct erase_info *info)
 {
 	struct docg3 *docg3 = mtd->priv;
 	uint64_t len;
-	int block0, block1, page, ret = 0, ofs = 0;
+	int block0, block1, page, ret, ofs = 0;
 
 	doc_dbg("doc_erase(from=%lld, len=%lld\n", info->addr, info->len);
 
+	info->state = MTD_ERASE_PENDING;
 	calc_block_sector(info->addr + info->len, &block0, &block1, &page,
 			  &ofs, docg3->reliable);
+	ret = -EINVAL;
 	if (info->addr + info->len > mtd->size || page || ofs)
-		return -EINVAL;
+		goto reset_err;
 
+	ret = 0;
 	calc_block_sector(info->addr, &block0, &block1, &page, &ofs,
 			  docg3->reliable);
 	mutex_lock(&docg3->cascade->lock);
 	doc_set_device_id(docg3, docg3->device_id);
 	doc_set_reliable_mode(docg3);
 	for (len = info->len; !ret && len > 0; len -= mtd->erasesize) {
+		info->state = MTD_ERASING;
 		ret = doc_erase_block(docg3, block0, block1);
 		block0 += 2;
 		block1 += 2;
 	}
 	mutex_unlock(&docg3->cascade->lock);
 
+	if (ret)
+		goto reset_err;
+
+	info->state = MTD_ERASE_DONE;
+	return 0;
+
+reset_err:
+	info->state = MTD_ERASE_FAILED;
 	return ret;
 }
 
@@ -1470,7 +1482,8 @@ static struct docg3 *sysfs_dev2docg3(struct device *dev,
 				     struct device_attribute *attr)
 {
 	int floor;
-	struct mtd_info **docg3_floors = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct mtd_info **docg3_floors = platform_get_drvdata(pdev);
 
 	floor = attr->attr.name[1] - '0';
 	if (floor < 0 || floor >= DOC_MAX_NBFLOORS)
@@ -1603,7 +1616,7 @@ static void doc_unregister_sysfs(struct platform_device *pdev,
 /*
  * Debug sysfs entries
  */
-static int flashcontrol_show(struct seq_file *s, void *p)
+static int dbg_flashctrl_show(struct seq_file *s, void *p)
 {
 	struct docg3 *docg3 = (struct docg3 *)s->private;
 
@@ -1623,9 +1636,9 @@ static int flashcontrol_show(struct seq_file *s, void *p)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(flashcontrol);
+DEBUGFS_RO_ATTR(flashcontrol, dbg_flashctrl_show);
 
-static int asic_mode_show(struct seq_file *s, void *p)
+static int dbg_asicmode_show(struct seq_file *s, void *p)
 {
 	struct docg3 *docg3 = (struct docg3 *)s->private;
 
@@ -1660,9 +1673,9 @@ static int asic_mode_show(struct seq_file *s, void *p)
 	seq_puts(s, ")\n");
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(asic_mode);
+DEBUGFS_RO_ATTR(asic_mode, dbg_asicmode_show);
 
-static int device_id_show(struct seq_file *s, void *p)
+static int dbg_device_id_show(struct seq_file *s, void *p)
 {
 	struct docg3 *docg3 = (struct docg3 *)s->private;
 	int id;
@@ -1674,9 +1687,9 @@ static int device_id_show(struct seq_file *s, void *p)
 	seq_printf(s, "DeviceId = %d\n", id);
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(device_id);
+DEBUGFS_RO_ATTR(device_id, dbg_device_id_show);
 
-static int protection_show(struct seq_file *s, void *p)
+static int dbg_protection_show(struct seq_file *s, void *p)
 {
 	struct docg3 *docg3 = (struct docg3 *)s->private;
 	int protect, dps0, dps0_low, dps0_high, dps1, dps1_low, dps1_high;
@@ -1726,7 +1739,7 @@ static int protection_show(struct seq_file *s, void *p)
 		   !!(dps1 & DOC_DPS_KEY_OK));
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(protection);
+DEBUGFS_RO_ATTR(protection, dbg_protection_show);
 
 static void __init doc_dbg_register(struct mtd_info *floor)
 {
@@ -1827,7 +1840,7 @@ doc_probe_device(struct docg3_cascade *cascade, int floor, struct device *dev)
 	mtd->dev.parent = dev;
 	bbt_nbpages = DIV_ROUND_UP(docg3->max_block + 1,
 				   8 * DOC_LAYOUT_PAGE_SIZE);
-	docg3->bbt = kcalloc(DOC_LAYOUT_PAGE_SIZE, bbt_nbpages, GFP_KERNEL);
+	docg3->bbt = kzalloc(bbt_nbpages * DOC_LAYOUT_PAGE_SIZE, GFP_KERNEL);
 	if (!docg3->bbt)
 		goto nomem3;
 
@@ -1993,7 +2006,7 @@ static int __init docg3_probe(struct platform_device *pdev)
 	base = devm_ioremap(dev, ress->start, DOC_IOSPACE_SIZE);
 
 	ret = -ENOMEM;
-	cascade = devm_kcalloc(dev, DOC_MAX_NBFLOORS, sizeof(*cascade),
+	cascade = devm_kzalloc(dev, sizeof(*cascade) * DOC_MAX_NBFLOORS,
 			       GFP_KERNEL);
 	if (!cascade)
 		return ret;

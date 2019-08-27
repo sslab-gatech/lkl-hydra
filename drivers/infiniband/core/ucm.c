@@ -46,8 +46,6 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 
-#include <linux/nospec.h>
-
 #include <linux/uaccess.h>
 
 #include <rdma/ib.h>
@@ -209,7 +207,7 @@ error:
 }
 
 static void ib_ucm_event_req_get(struct ib_ucm_req_event_resp *ureq,
-				 const struct ib_cm_req_event_param *kreq)
+				 struct ib_cm_req_event_param *kreq)
 {
 	ureq->remote_ca_guid             = kreq->remote_ca_guid;
 	ureq->remote_qkey                = kreq->remote_qkey;
@@ -233,7 +231,7 @@ static void ib_ucm_event_req_get(struct ib_ucm_req_event_resp *ureq,
 }
 
 static void ib_ucm_event_rep_get(struct ib_ucm_rep_event_resp *urep,
-				 const struct ib_cm_rep_event_param *krep)
+				 struct ib_cm_rep_event_param *krep)
 {
 	urep->remote_ca_guid      = krep->remote_ca_guid;
 	urep->remote_qkey         = krep->remote_qkey;
@@ -249,14 +247,14 @@ static void ib_ucm_event_rep_get(struct ib_ucm_rep_event_resp *urep,
 }
 
 static void ib_ucm_event_sidr_rep_get(struct ib_ucm_sidr_rep_event_resp *urep,
-				      const struct ib_cm_sidr_rep_event_param *krep)
+				      struct ib_cm_sidr_rep_event_param *krep)
 {
 	urep->status = krep->status;
 	urep->qkey   = krep->qkey;
 	urep->qpn    = krep->qpn;
 };
 
-static int ib_ucm_event_process(const struct ib_cm_event *evt,
+static int ib_ucm_event_process(struct ib_cm_event *evt,
 				struct ib_ucm_event *uvt)
 {
 	void *info = NULL;
@@ -353,7 +351,7 @@ err1:
 }
 
 static int ib_ucm_event_handler(struct ib_cm_id *cm_id,
-				const struct ib_cm_event *event)
+				struct ib_cm_event *event)
 {
 	struct ib_ucm_event *uevent;
 	struct ib_ucm_context *ctx;
@@ -432,7 +430,7 @@ static ssize_t ib_ucm_event(struct ib_ucm_file *file,
 		uevent->resp.id = ctx->id;
 	}
 
-	if (copy_to_user(u64_to_user_ptr(cmd.response),
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
 			 &uevent->resp, sizeof(uevent->resp))) {
 		result = -EFAULT;
 		goto done;
@@ -443,7 +441,7 @@ static ssize_t ib_ucm_event(struct ib_ucm_file *file,
 			result = -ENOMEM;
 			goto done;
 		}
-		if (copy_to_user(u64_to_user_ptr(cmd.data),
+		if (copy_to_user((void __user *)(unsigned long)cmd.data,
 				 uevent->data, uevent->data_len)) {
 			result = -EFAULT;
 			goto done;
@@ -455,7 +453,7 @@ static ssize_t ib_ucm_event(struct ib_ucm_file *file,
 			result = -ENOMEM;
 			goto done;
 		}
-		if (copy_to_user(u64_to_user_ptr(cmd.info),
+		if (copy_to_user((void __user *)(unsigned long)cmd.info,
 				 uevent->info, uevent->info_len)) {
 			result = -EFAULT;
 			goto done;
@@ -504,7 +502,7 @@ static ssize_t ib_ucm_create_id(struct ib_ucm_file *file,
 	}
 
 	resp.id = ctx->id;
-	if (copy_to_user(u64_to_user_ptr(cmd.response),
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
 			 &resp, sizeof(resp))) {
 		result = -EFAULT;
 		goto err2;
@@ -558,7 +556,7 @@ static ssize_t ib_ucm_destroy_id(struct ib_ucm_file *file,
 	ib_ucm_cleanup_events(ctx);
 
 	resp.events_reported = ctx->events_reported;
-	if (copy_to_user(u64_to_user_ptr(cmd.response),
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
 			 &resp, sizeof(resp)))
 		result = -EFAULT;
 
@@ -590,7 +588,7 @@ static ssize_t ib_ucm_attr_id(struct ib_ucm_file *file,
 	resp.local_id     = ctx->cm_id->local_id;
 	resp.remote_id    = ctx->cm_id->remote_id;
 
-	if (copy_to_user(u64_to_user_ptr(cmd.response),
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
 			 &resp, sizeof(resp)))
 		result = -EFAULT;
 
@@ -627,7 +625,7 @@ static ssize_t ib_ucm_init_qp_attr(struct ib_ucm_file *file,
 
 	ib_copy_qp_attr_to_user(ctx->cm_id->device, &resp, &qp_attr);
 
-	if (copy_to_user(u64_to_user_ptr(cmd.response),
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
 			 &resp, sizeof(resp)))
 		result = -EFAULT;
 
@@ -701,7 +699,7 @@ static int ib_ucm_alloc_data(const void **dest, u64 src, u32 len)
 	if (!len)
 		return 0;
 
-	data = memdup_user(u64_to_user_ptr(src), len);
+	data = memdup_user((void __user *)(unsigned long)src, len);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
@@ -723,7 +721,7 @@ static int ib_ucm_path_get(struct sa_path_rec **path, u64 src)
 	if (!sa_path)
 		return -ENOMEM;
 
-	if (copy_from_user(&upath, u64_to_user_ptr(src),
+	if (copy_from_user(&upath, (void __user *)(unsigned long)src,
 			   sizeof(upath))) {
 
 		kfree(sa_path);
@@ -1002,10 +1000,13 @@ static ssize_t ib_ucm_send_sidr_req(struct ib_ucm_file *file,
 				    const char __user *inbuf,
 				    int in_len, int out_len)
 {
-	struct ib_cm_sidr_req_param param = {};
+	struct ib_cm_sidr_req_param param;
 	struct ib_ucm_context *ctx;
 	struct ib_ucm_sidr_req cmd;
 	int result;
+
+	param.private_data = NULL;
+	param.path = NULL;
 
 	if (copy_from_user(&cmd, inbuf, sizeof(cmd)))
 		return -EFAULT;
@@ -1122,7 +1123,6 @@ static ssize_t ib_ucm_write(struct file *filp, const char __user *buf,
 
 	if (hdr.cmd >= ARRAY_SIZE(ucm_cmd_table))
 		return -EINVAL;
-	hdr.cmd = array_index_nospec(hdr.cmd, ARRAY_SIZE(ucm_cmd_table));
 
 	if (hdr.in + sizeof(hdr) > len)
 		return -EINVAL;
@@ -1242,7 +1242,7 @@ static void ib_ucm_add_one(struct ib_device *device)
 	dev_t base;
 	struct ib_ucm_device *ucm_dev;
 
-	if (!device->ops.alloc_ucontext || !rdma_cap_ib_cm(device, 1))
+	if (!device->alloc_ucontext || !rdma_cap_ib_cm(device, 1))
 		return;
 
 	ucm_dev = kzalloc(sizeof *ucm_dev, GFP_KERNEL);

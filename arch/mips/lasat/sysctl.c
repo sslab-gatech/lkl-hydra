@@ -73,16 +73,8 @@ int proc_dolasatrtc(struct ctl_table *table, int write,
 	if (r)
 		return r;
 
-	if (write) {
-		/*
-		 * Due to the RTC hardware limitation, we can not actually
-		 * use the full 64-bit range here.
-		 */
-		ts.tv_sec = rtctmp;
-		ts.tv_nsec = 0;
-
-		update_persistent_clock64(ts);
-	}
+	if (write)
+		rtc_mips_set_mmss(rtctmp);
 
 	return 0;
 }

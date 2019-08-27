@@ -201,7 +201,7 @@ static void mem_toupper(char *f, size_t len)
 
 /*
  * Check for "NAME_PATH" environment variable to override fs location (for
- * testing). This matches the recommendation in Documentation/admin-guide/sysfs-rules.rst
+ * testing). This matches the recommendation in Documentation/sysfs-rules.txt
  * for SYSFS_PATH.
  */
 static bool fs__env_override(struct fs *fs)
@@ -315,8 +315,12 @@ int filename__read_int(const char *filename, int *value)
 	return err;
 }
 
-static int filename__read_ull_base(const char *filename,
-				   unsigned long long *value, int base)
+/*
+ * Parses @value out of @filename with strtoull.
+ * By using 0 for base, the strtoull detects the
+ * base automatically (see man strtoull).
+ */
+int filename__read_ull(const char *filename, unsigned long long *value)
 {
 	char line[64];
 	int fd = open(filename, O_RDONLY), err = -1;
@@ -325,32 +329,13 @@ static int filename__read_ull_base(const char *filename,
 		return -1;
 
 	if (read(fd, line, sizeof(line)) > 0) {
-		*value = strtoull(line, NULL, base);
+		*value = strtoull(line, NULL, 0);
 		if (*value != ULLONG_MAX)
 			err = 0;
 	}
 
 	close(fd);
 	return err;
-}
-
-/*
- * Parses @value out of @filename with strtoull.
- * By using 16 for base to treat the number as hex.
- */
-int filename__read_xll(const char *filename, unsigned long long *value)
-{
-	return filename__read_ull_base(filename, value, 16);
-}
-
-/*
- * Parses @value out of @filename with strtoull.
- * By using 0 for base, the strtoull detects the
- * base automatically (see man strtoull).
- */
-int filename__read_ull(const char *filename, unsigned long long *value)
-{
-	return filename__read_ull_base(filename, value, 0);
 }
 
 #define STRERR_BUFSIZE  128     /* For the buffer size of strerror_r */
@@ -432,8 +417,7 @@ int procfs__read_str(const char *entry, char **buf, size_t *sizep)
 	return filename__read_str(path, buf, sizep);
 }
 
-static int sysfs__read_ull_base(const char *entry,
-				unsigned long long *value, int base)
+int sysfs__read_ull(const char *entry, unsigned long long *value)
 {
 	char path[PATH_MAX];
 	const char *sysfs = sysfs__mountpoint();
@@ -443,17 +427,7 @@ static int sysfs__read_ull_base(const char *entry,
 
 	snprintf(path, sizeof(path), "%s/%s", sysfs, entry);
 
-	return filename__read_ull_base(path, value, base);
-}
-
-int sysfs__read_xll(const char *entry, unsigned long long *value)
-{
-	return sysfs__read_ull_base(entry, value, 16);
-}
-
-int sysfs__read_ull(const char *entry, unsigned long long *value)
-{
-	return sysfs__read_ull_base(entry, value, 0);
+	return filename__read_ull(path, value);
 }
 
 int sysfs__read_int(const char *entry, int *value)

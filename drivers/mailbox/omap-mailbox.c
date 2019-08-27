@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP mailbox driver
  *
@@ -7,6 +6,15 @@
  *
  * Contact: Hiroshi DOYU <Hiroshi.DOYU@nokia.com>
  *          Suman Anna <s-anna@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  */
 
 #include <linux/interrupt.h>
@@ -67,10 +75,6 @@ struct omap_mbox_queue {
 	struct work_struct	work;
 	struct omap_mbox	*mbox;
 	bool full;
-};
-
-struct omap_mbox_match_data {
-	u32 intr_type;
 };
 
 struct omap_mbox_device {
@@ -486,7 +490,7 @@ static int omap_mbox_register(struct omap_mbox_device *mdev)
 	list_add(&mdev->elem, &omap_mbox_devices);
 	mutex_unlock(&omap_mbox_devices_lock);
 
-	ret = devm_mbox_controller_register(mdev->dev, &mdev->controller);
+	ret = mbox_controller_register(&mdev->controller);
 
 err_out:
 	if (ret) {
@@ -507,6 +511,8 @@ static int omap_mbox_unregister(struct omap_mbox_device *mdev)
 	mutex_lock(&omap_mbox_devices_lock);
 	list_del(&mdev->elem);
 	mutex_unlock(&omap_mbox_devices_lock);
+
+	mbox_controller_unregister(&mdev->controller);
 
 	mboxes = mdev->mboxes;
 	for (i = 0; mboxes[i]; i++)
@@ -640,21 +646,18 @@ static const struct dev_pm_ops omap_mbox_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(omap_mbox_suspend, omap_mbox_resume)
 };
 
-static const struct omap_mbox_match_data omap2_data = { MBOX_INTR_CFG_TYPE1 };
-static const struct omap_mbox_match_data omap4_data = { MBOX_INTR_CFG_TYPE2 };
-
 static const struct of_device_id omap_mailbox_of_match[] = {
 	{
 		.compatible	= "ti,omap2-mailbox",
-		.data		= &omap2_data,
+		.data		= (void *)MBOX_INTR_CFG_TYPE1,
 	},
 	{
 		.compatible	= "ti,omap3-mailbox",
-		.data		= &omap2_data,
+		.data		= (void *)MBOX_INTR_CFG_TYPE1,
 	},
 	{
 		.compatible	= "ti,omap4-mailbox",
-		.data		= &omap4_data,
+		.data		= (void *)MBOX_INTR_CFG_TYPE2,
 	},
 	{
 		/* end */
@@ -697,7 +700,7 @@ static int omap_mbox_probe(struct platform_device *pdev)
 	struct omap_mbox_fifo *fifo;
 	struct device_node *node = pdev->dev.of_node;
 	struct device_node *child;
-	const struct omap_mbox_match_data *match_data;
+	const struct of_device_id *match;
 	u32 intr_type, info_count;
 	u32 num_users, num_fifos;
 	u32 tmp[3];
@@ -709,10 +712,10 @@ static int omap_mbox_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	match_data = of_device_get_match_data(&pdev->dev);
-	if (!match_data)
+	match = of_match_device(omap_mailbox_of_match, &pdev->dev);
+	if (!match)
 		return -ENODEV;
-	intr_type = match_data->intr_type;
+	intr_type = (u32)match->data;
 
 	if (of_property_read_u32(node, "ti,mbox-num-users", &num_users))
 		return -ENODEV;
@@ -726,7 +729,7 @@ static int omap_mbox_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	finfoblk = devm_kcalloc(&pdev->dev, info_count, sizeof(*finfoblk),
+	finfoblk = devm_kzalloc(&pdev->dev, info_count * sizeof(*finfoblk),
 				GFP_KERNEL);
 	if (!finfoblk)
 		return -ENOMEM;
@@ -770,23 +773,23 @@ static int omap_mbox_probe(struct platform_device *pdev)
 	if (IS_ERR(mdev->mbox_base))
 		return PTR_ERR(mdev->mbox_base);
 
-	mdev->irq_ctx = devm_kcalloc(&pdev->dev, num_users, sizeof(u32),
+	mdev->irq_ctx = devm_kzalloc(&pdev->dev, num_users * sizeof(u32),
 				     GFP_KERNEL);
 	if (!mdev->irq_ctx)
 		return -ENOMEM;
 
 	/* allocate one extra for marking end of list */
-	list = devm_kcalloc(&pdev->dev, info_count + 1, sizeof(*list),
+	list = devm_kzalloc(&pdev->dev, (info_count + 1) * sizeof(*list),
 			    GFP_KERNEL);
 	if (!list)
 		return -ENOMEM;
 
-	chnls = devm_kcalloc(&pdev->dev, info_count + 1, sizeof(*chnls),
+	chnls = devm_kzalloc(&pdev->dev, (info_count + 1) * sizeof(*chnls),
 			     GFP_KERNEL);
 	if (!chnls)
 		return -ENOMEM;
 
-	mboxblk = devm_kcalloc(&pdev->dev, info_count, sizeof(*mbox),
+	mboxblk = devm_kzalloc(&pdev->dev, info_count * sizeof(*mbox),
 			       GFP_KERNEL);
 	if (!mboxblk)
 		return -ENOMEM;

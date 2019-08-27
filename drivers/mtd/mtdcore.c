@@ -41,7 +41,6 @@
 #include <linux/reboot.h>
 #include <linux/leds.h>
 #include <linux/debugfs.h>
-#include <linux/nvmem-provider.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -211,15 +210,6 @@ static ssize_t mtd_oobsize_show(struct device *dev,
 }
 static DEVICE_ATTR(oobsize, S_IRUGO, mtd_oobsize_show, NULL);
 
-static ssize_t mtd_oobavail_show(struct device *dev,
-				 struct device_attribute *attr, char *buf)
-{
-	struct mtd_info *mtd = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", mtd->oobavail);
-}
-static DEVICE_ATTR(oobavail, S_IRUGO, mtd_oobavail_show, NULL);
-
 static ssize_t mtd_numeraseregions_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -337,7 +327,6 @@ static struct attribute *mtd_attrs[] = {
 	&dev_attr_writesize.attr,
 	&dev_attr_subpagesize.attr,
 	&dev_attr_oobsize.attr,
-	&dev_attr_oobavail.attr,
 	&dev_attr_numeraseregions.attr,
 	&dev_attr_name.attr,
 	&dev_attr_ecc_strength.attr,
@@ -430,7 +419,7 @@ int mtd_wunit_to_pairing_info(struct mtd_info *mtd, int wunit,
 EXPORT_SYMBOL_GPL(mtd_wunit_to_pairing_info);
 
 /**
- * mtd_pairing_info_to_wunit - get wunit from pairing information
+ * mtd_wunit_to_pairing_info - get wunit from pairing information
  * @mtd: pointer to new MTD device info structure
  * @info: pairing information struct
  *
@@ -488,51 +477,6 @@ int mtd_pairing_groups(struct mtd_info *mtd)
 	return mtd->pairing->ngroups;
 }
 EXPORT_SYMBOL_GPL(mtd_pairing_groups);
-
-static int mtd_nvmem_reg_read(void *priv, unsigned int offset,
-			      void *val, size_t bytes)
-{
-	struct mtd_info *mtd = priv;
-	size_t retlen;
-	int err;
-
-	err = mtd_read(mtd, offset, bytes, &retlen, val);
-	if (err && err != -EUCLEAN)
-		return err;
-
-	return retlen == bytes ? 0 : -EIO;
-}
-
-static int mtd_nvmem_add(struct mtd_info *mtd)
-{
-	struct nvmem_config config = {};
-
-	config.id = -1;
-	config.dev = &mtd->dev;
-	config.name = mtd->name;
-	config.owner = THIS_MODULE;
-	config.reg_read = mtd_nvmem_reg_read;
-	config.size = mtd->size;
-	config.word_size = 1;
-	config.stride = 1;
-	config.read_only = true;
-	config.root_only = true;
-	config.no_of_node = true;
-	config.priv = mtd;
-
-	mtd->nvmem = nvmem_register(&config);
-	if (IS_ERR(mtd->nvmem)) {
-		/* Just ignore if there is no NVMEM support in the kernel */
-		if (PTR_ERR(mtd->nvmem) == -EOPNOTSUPP) {
-			mtd->nvmem = NULL;
-		} else {
-			dev_err(&mtd->dev, "Failed to register NVMEM device\n");
-			return PTR_ERR(mtd->nvmem);
-		}
-	}
-
-	return 0;
-}
 
 static struct dentry *dfs_dir_mtd;
 
@@ -616,11 +560,6 @@ int add_mtd_device(struct mtd_info *mtd)
 	if (error)
 		goto fail_added;
 
-	/* Add the nvmem provider */
-	error = mtd_nvmem_add(mtd);
-	if (error)
-		goto fail_nvmem_add;
-
 	if (!IS_ERR_OR_NULL(dfs_dir_mtd)) {
 		mtd->dbg.dfs_dir = debugfs_create_dir(dev_name(&mtd->dev), dfs_dir_mtd);
 		if (IS_ERR_OR_NULL(mtd->dbg.dfs_dir)) {
@@ -646,8 +585,6 @@ int add_mtd_device(struct mtd_info *mtd)
 	__module_get(THIS_MODULE);
 	return 0;
 
-fail_nvmem_add:
-	device_unregister(&mtd->dev);
 fail_added:
 	of_node_put(mtd_get_of_node(mtd));
 	idr_remove(&mtd_idr, i);
@@ -690,10 +627,6 @@ int del_mtd_device(struct mtd_info *mtd)
 		       mtd->index, mtd->name, mtd->usecount);
 		ret = -EBUSY;
 	} else {
-		/* Try to remove the NVMEM provider */
-		if (mtd->nvmem)
-			nvmem_unregister(mtd->nvmem);
-
 		device_unregister(&mtd->dev);
 
 		idr_remove(&mtd_idr, mtd->index);
@@ -706,6 +639,29 @@ int del_mtd_device(struct mtd_info *mtd)
 out_error:
 	mutex_unlock(&mtd_table_mutex);
 	return ret;
+}
+
+static int mtd_add_device_partitions(struct mtd_info *mtd,
+				     struct mtd_partitions *parts)
+{
+	const struct mtd_partition *real_parts = parts->parts;
+	int nbparts = parts->nr_parts;
+	int ret;
+
+	if (nbparts == 0 || IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER)) {
+		ret = add_mtd_device(mtd);
+		if (ret)
+			return ret;
+	}
+
+	if (nbparts > 0) {
+		ret = add_mtd_partitions(mtd, real_parts, nbparts);
+		if (ret && IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER))
+			del_mtd_device(mtd);
+		return ret;
+	}
+
+	return 0;
 }
 
 /*
@@ -722,8 +678,6 @@ static void mtd_set_dev_defaults(struct mtd_info *mtd)
 	} else {
 		pr_debug("mtd device won't show a device symlink in sysfs\n");
 	}
-
-	mtd->orig_flags = mtd->flags;
 }
 
 /**
@@ -742,13 +696,14 @@ static void mtd_set_dev_defaults(struct mtd_info *mtd)
  * 'parse_mtd_partitions()') and MTD device and partitions registering. It
  * basically follows the most common pattern found in many MTD drivers:
  *
- * * If the MTD_PARTITIONED_MASTER option is set, then the device as a whole is
- *   registered first.
- * * Then It tries to probe partitions on MTD device @mtd using parsers
+ * * It first tries to probe partitions on MTD device @mtd using parsers
  *   specified in @types (if @types is %NULL, then the default list of parsers
  *   is used, see 'parse_mtd_partitions()' for more information). If none are
  *   found this functions tries to fallback to information specified in
  *   @parts/@nr_parts.
+ * * If any partitioning info was found, this function registers the found
+ *   partitions. If the MTD_PARTITIONED_MASTER option is set, then the device
+ *   as a whole is registered first.
  * * If no partitions were found this function just registers the MTD device
  *   @mtd and exits.
  *
@@ -759,27 +714,29 @@ int mtd_device_parse_register(struct mtd_info *mtd, const char * const *types,
 			      const struct mtd_partition *parts,
 			      int nr_parts)
 {
+	struct mtd_partitions parsed;
 	int ret;
 
 	mtd_set_dev_defaults(mtd);
 
-	if (IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER)) {
-		ret = add_mtd_device(mtd);
-		if (ret)
-			return ret;
+	memset(&parsed, 0, sizeof(parsed));
+
+	ret = parse_mtd_partitions(mtd, types, &parsed, parser_data);
+	if ((ret < 0 || parsed.nr_parts == 0) && parts && nr_parts) {
+		/* Fall back to driver-provided partitions */
+		parsed = (struct mtd_partitions){
+			.parts		= parts,
+			.nr_parts	= nr_parts,
+		};
+	} else if (ret < 0) {
+		/* Didn't come up with parsed OR fallback partitions */
+		pr_info("mtd: failed to find partitions; one or more parsers reports errors (%d)\n",
+			ret);
+		/* Don't abort on errors; we can still use unpartitioned MTD */
+		memset(&parsed, 0, sizeof(parsed));
 	}
 
-	/* Prefer parsed partitions over driver-provided fallback */
-	ret = parse_mtd_partitions(mtd, types, parser_data);
-	if (ret > 0)
-		ret = 0;
-	else if (nr_parts)
-		ret = add_mtd_partitions(mtd, parts, nr_parts);
-	else if (!device_is_registered(&mtd->dev))
-		ret = add_mtd_device(mtd);
-	else
-		ret = 0;
-
+	ret = mtd_add_device_partitions(mtd, &parsed);
 	if (ret)
 		goto out;
 
@@ -799,9 +756,8 @@ int mtd_device_parse_register(struct mtd_info *mtd, const char * const *types,
 	}
 
 out:
-	if (ret && device_is_registered(&mtd->dev))
-		del_mtd_device(mtd);
-
+	/* Cleanup any parsed partitions */
+	mtd_part_parser_cleanup(&parsed);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mtd_device_parse_register);
@@ -1007,25 +963,24 @@ void __put_mtd_device(struct mtd_info *mtd)
 EXPORT_SYMBOL_GPL(__put_mtd_device);
 
 /*
- * Erase is an synchronous operation. Device drivers are epected to return a
- * negative error code if the operation failed and update instr->fail_addr
- * to point the portion that was not properly erased.
+ * Erase is an asynchronous operation.  Device drivers are supposed
+ * to call instr->callback() whenever the operation completes, even
+ * if it completes with a failure.
+ * Callers are supposed to pass a callback function and wait for it
+ * to be called before writing to the block.
  */
 int mtd_erase(struct mtd_info *mtd, struct erase_info *instr)
 {
-	instr->fail_addr = MTD_FAIL_ADDR_UNKNOWN;
-
-	if (!mtd->erasesize || !mtd->_erase)
-		return -ENOTSUPP;
-
 	if (instr->addr >= mtd->size || instr->len > mtd->size - instr->addr)
 		return -EINVAL;
 	if (!(mtd->flags & MTD_WRITEABLE))
 		return -EROFS;
-
-	if (!instr->len)
+	instr->fail_addr = MTD_FAIL_ADDR_UNKNOWN;
+	if (!instr->len) {
+		instr->state = MTD_ERASE_DONE;
+		mtd_erase_callback(instr);
 		return 0;
-
+	}
 	ledtrig_mtd_activity();
 	return mtd->_erase(mtd, instr);
 }
@@ -1195,13 +1150,13 @@ static int mtd_check_oob_ops(struct mtd_info *mtd, loff_t offs,
 		return -EINVAL;
 
 	if (ops->ooblen) {
-		size_t maxooblen;
+		u64 maxooblen;
 
 		if (ops->ooboffs >= mtd_oobavail(mtd, ops))
 			return -EINVAL;
 
-		maxooblen = ((size_t)(mtd_div_by_ws(mtd->size, mtd) -
-				      mtd_div_by_ws(offs, mtd)) *
+		maxooblen = ((mtd_div_by_ws(mtd->size, mtd) -
+			      mtd_div_by_ws(offs, mtd)) *
 			     mtd_oobavail(mtd, ops)) - ops->ooboffs;
 		if (ops->ooblen > maxooblen)
 			return -EINVAL;
@@ -1214,29 +1169,21 @@ int mtd_read_oob(struct mtd_info *mtd, loff_t from, struct mtd_oob_ops *ops)
 {
 	int ret_code;
 	ops->retlen = ops->oobretlen = 0;
+	if (!mtd->_read_oob)
+		return -EOPNOTSUPP;
 
 	ret_code = mtd_check_oob_ops(mtd, from, ops);
 	if (ret_code)
 		return ret_code;
 
 	ledtrig_mtd_activity();
-
-	/* Check the validity of a potential fallback on mtd->_read */
-	if (!mtd->_read_oob && (!mtd->_read || ops->oobbuf))
-		return -EOPNOTSUPP;
-
-	if (mtd->_read_oob)
-		ret_code = mtd->_read_oob(mtd, from, ops);
-	else
-		ret_code = mtd->_read(mtd, from, ops->len, &ops->retlen,
-				      ops->datbuf);
-
 	/*
 	 * In cases where ops->datbuf != NULL, mtd->_read_oob() has semantics
 	 * similar to mtd->_read(), returning a non-negative integer
 	 * representing max bitflips. In other cases, mtd->_read_oob() may
 	 * return -EUCLEAN. In all cases, perform similar logic to mtd_read().
 	 */
+	ret_code = mtd->_read_oob(mtd, from, ops);
 	if (unlikely(ret_code < 0))
 		return ret_code;
 	if (mtd->ecc_strength == 0)
@@ -1251,7 +1198,8 @@ int mtd_write_oob(struct mtd_info *mtd, loff_t to,
 	int ret;
 
 	ops->retlen = ops->oobretlen = 0;
-
+	if (!mtd->_write_oob)
+		return -EOPNOTSUPP;
 	if (!(mtd->flags & MTD_WRITEABLE))
 		return -EROFS;
 
@@ -1260,16 +1208,7 @@ int mtd_write_oob(struct mtd_info *mtd, loff_t to,
 		return ret;
 
 	ledtrig_mtd_activity();
-
-	/* Check the validity of a potential fallback on mtd->_write */
-	if (!mtd->_write_oob && (!mtd->_write || ops->oobbuf))
-		return -EOPNOTSUPP;
-
-	if (mtd->_write_oob)
-		return mtd->_write_oob(mtd, to, ops);
-	else
-		return mtd->_write(mtd, to, ops->len, &ops->retlen,
-				   ops->datbuf);
+	return mtd->_write_oob(mtd, to, ops);
 }
 EXPORT_SYMBOL_GPL(mtd_write_oob);
 
@@ -1586,9 +1525,9 @@ int mtd_ooblayout_get_databytes(struct mtd_info *mtd, u8 *databuf,
 EXPORT_SYMBOL_GPL(mtd_ooblayout_get_databytes);
 
 /**
- * mtd_ooblayout_set_databytes - set data bytes into the oob buffer
+ * mtd_ooblayout_get_eccbytes - set data bytes into the oob buffer
  * @mtd: mtd info structure
- * @databuf: source buffer to get data bytes from
+ * @eccbuf: source buffer to get data bytes from
  * @oobbuf: OOB buffer
  * @start: first ECC byte to set
  * @nbytes: number of ECC bytes to set
@@ -1620,7 +1559,7 @@ int mtd_ooblayout_count_freebytes(struct mtd_info *mtd)
 EXPORT_SYMBOL_GPL(mtd_ooblayout_count_freebytes);
 
 /**
- * mtd_ooblayout_count_eccbytes - count the number of ECC bytes in OOB
+ * mtd_ooblayout_count_freebytes - count the number of ECC bytes in OOB
  * @mtd: mtd info structure
  *
  * Works like mtd_ooblayout_count_bytes(), except it count ECC bytes.
@@ -1908,6 +1847,18 @@ static int mtd_proc_show(struct seq_file *m, void *v)
 	mutex_unlock(&mtd_table_mutex);
 	return 0;
 }
+
+static int mtd_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mtd_proc_show, NULL);
+}
+
+static const struct file_operations mtd_proc_ops = {
+	.open		= mtd_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif /* CONFIG_PROC_FS */
 
 /*====================================================================*/
@@ -1950,7 +1901,7 @@ static int __init init_mtd(void)
 		goto err_bdi;
 	}
 
-	proc_mtd = proc_create_single("mtd", 0, NULL, mtd_proc_show);
+	proc_mtd = proc_create("mtd", 0, NULL, &mtd_proc_ops);
 
 	ret = init_mtdchar();
 	if (ret)

@@ -1125,7 +1125,9 @@ enum {
 	RT5663_AD_STEREO_FILTER = 0x2,
 };
 
-int rt5663_sel_asrc_clk_src(struct snd_soc_component *component,
+int rt5663_set_jack_detect(struct snd_soc_codec *codec,
+	struct snd_soc_jack *hs_jack);
+int rt5663_sel_asrc_clk_src(struct snd_soc_codec *codec,
 	unsigned int filter_mask, unsigned int clk_src);
 
 #endif /* __RT5663_H__ */

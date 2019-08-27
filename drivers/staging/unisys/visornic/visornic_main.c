@@ -849,7 +849,7 @@ static bool vnic_hit_low_watermark(struct visornic_devdata *devdata,
  *
  * Return: NETDEV_TX_OK.
  */
-static netdev_tx_t visornic_xmit(struct sk_buff *skb, struct net_device *netdev)
+static int visornic_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct visornic_devdata *devdata;
 	int len, firstfraglen, padlen;
@@ -2095,7 +2095,7 @@ static int visornic_resume(struct visor_device *dev,
 	mod_timer(&devdata->irq_poll_timer, msecs_to_jiffies(2));
 
 	rtnl_lock();
-	dev_open(netdev, NULL);
+	dev_open(netdev);
 	rtnl_unlock();
 
 	complete_func(dev, 0);
@@ -2126,19 +2126,30 @@ static struct visor_driver visornic_driver = {
  */
 static int visornic_init(void)
 {
-	int err;
+	struct dentry *ret;
+	int err = -ENOMEM;
 
 	visornic_debugfs_dir = debugfs_create_dir("visornic", NULL);
+	if (!visornic_debugfs_dir)
+		return err;
 
-	debugfs_create_file("info", 0400, visornic_debugfs_dir, NULL,
-			    &debugfs_info_fops);
-	debugfs_create_file("enable_ints", 0200, visornic_debugfs_dir, NULL,
-			    &debugfs_enable_ints_fops);
+	ret = debugfs_create_file("info", 0400, visornic_debugfs_dir, NULL,
+				  &debugfs_info_fops);
+	if (!ret)
+		goto cleanup_debugfs;
+	ret = debugfs_create_file("enable_ints", 0200, visornic_debugfs_dir,
+				  NULL, &debugfs_enable_ints_fops);
+	if (!ret)
+		goto cleanup_debugfs;
 
 	err = visorbus_register_visor_driver(&visornic_driver);
 	if (err)
-		debugfs_remove_recursive(visornic_debugfs_dir);
+		goto cleanup_debugfs;
 
+	return 0;
+
+cleanup_debugfs:
+	debugfs_remove_recursive(visornic_debugfs_dir);
 	return err;
 }
 

@@ -1,5 +1,4 @@
 #include <linux/debugfs.h>
-#include <linux/efi.h>
 #include <linux/module.h>
 #include <linux/seq_file.h>
 #include <asm/pgtable.h>
@@ -10,9 +9,20 @@ static int ptdump_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(ptdump);
+static int ptdump_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, ptdump_show, NULL);
+}
 
-static int ptdump_curknl_show(struct seq_file *m, void *v)
+static const struct file_operations ptdump_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ptdump_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int ptdump_show_curknl(struct seq_file *m, void *v)
 {
 	if (current->mm->pgd) {
 		down_read(&current->mm->mmap_sem);
@@ -22,12 +32,23 @@ static int ptdump_curknl_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(ptdump_curknl);
+static int ptdump_open_curknl(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, ptdump_show_curknl, NULL);
+}
+
+static const struct file_operations ptdump_curknl_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ptdump_open_curknl,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 #ifdef CONFIG_PAGE_TABLE_ISOLATION
 static struct dentry *pe_curusr;
 
-static int ptdump_curusr_show(struct seq_file *m, void *v)
+static int ptdump_show_curusr(struct seq_file *m, void *v)
 {
 	if (current->mm->pgd) {
 		down_read(&current->mm->mmap_sem);
@@ -37,20 +58,18 @@ static int ptdump_curusr_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(ptdump_curusr);
-#endif
-
-#if defined(CONFIG_EFI) && defined(CONFIG_X86_64)
-static struct dentry *pe_efi;
-
-static int ptdump_efi_show(struct seq_file *m, void *v)
+static int ptdump_open_curusr(struct inode *inode, struct file *filp)
 {
-	if (efi_mm.pgd)
-		ptdump_walk_pgd_level_debugfs(m, efi_mm.pgd, false);
-	return 0;
+	return single_open(filp, ptdump_show_curusr, NULL);
 }
 
-DEFINE_SHOW_ATTRIBUTE(ptdump_efi);
+static const struct file_operations ptdump_curusr_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ptdump_open_curusr,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif
 
 static struct dentry *dir, *pe_knl, *pe_curknl;
@@ -77,13 +96,6 @@ static int __init pt_dump_debug_init(void)
 	if (!pe_curusr)
 		goto err;
 #endif
-
-#if defined(CONFIG_EFI) && defined(CONFIG_X86_64)
-	pe_efi = debugfs_create_file("efi", 0400, dir, NULL, &ptdump_efi_fops);
-	if (!pe_efi)
-		goto err;
-#endif
-
 	return 0;
 err:
 	debugfs_remove_recursive(dir);

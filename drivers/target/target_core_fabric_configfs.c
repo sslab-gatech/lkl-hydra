@@ -34,7 +34,6 @@
 #include <linux/configfs.h>
 
 #include <target/target_core_base.h>
-#include <target/target_core_backend.h>
 #include <target/target_core_fabric.h>
 
 #include "target_core_internal.h"
@@ -203,7 +202,7 @@ static ssize_t target_fabric_mappedlun_write_protect_store(
 
 	pr_debug("%s_ConfigFS: Changed Initiator ACL: %s"
 		" Mapped LUN: %llu Write Protect bit to %s\n",
-		se_tpg->se_tpg_tfo->fabric_name,
+		se_tpg->se_tpg_tfo->get_fabric_name(),
 		se_nacl->initiatorname, lacl->mapped_lun, (wp) ? "ON" : "OFF");
 
 	return count;
@@ -643,7 +642,7 @@ static int target_fabric_port_link(
 	}
 	dev = container_of(to_config_group(se_dev_ci), struct se_device, dev_group);
 
-	if (!target_dev_configured(dev)) {
+	if (!(dev->dev_flags & DF_CONFIGURED)) {
 		pr_err("se_device not configured yet, cannot port link\n");
 		return -ENODEV;
 	}
@@ -842,7 +841,7 @@ static struct config_group *target_fabric_make_tpg(
 		return ERR_PTR(-ENOSYS);
 	}
 
-	se_tpg = tf->tf_ops->fabric_make_tpg(wwn, name);
+	se_tpg = tf->tf_ops->fabric_make_tpg(wwn, group, name);
 	if (!se_tpg || IS_ERR(se_tpg))
 		return ERR_PTR(-EINVAL);
 

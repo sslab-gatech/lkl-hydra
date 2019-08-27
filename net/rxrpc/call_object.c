@@ -99,11 +99,9 @@ found_extant_call:
 /*
  * allocate a new call
  */
-struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp,
-				    unsigned int debug_id)
+struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp)
 {
 	struct rxrpc_call *call;
-	struct rxrpc_net *rxnet = rxrpc_net(sock_net(&rx->sk));
 
 	call = kmem_cache_zalloc(rxrpc_call_jar, gfp);
 	if (!call)
@@ -138,10 +136,9 @@ struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp,
 	init_waitqueue_head(&call->waitq);
 	spin_lock_init(&call->lock);
 	spin_lock_init(&call->notify_lock);
-	spin_lock_init(&call->input_lock);
 	rwlock_init(&call->state_lock);
 	atomic_set(&call->usage, 1);
-	call->debug_id = debug_id;
+	call->debug_id = atomic_inc_return(&rxrpc_debug_id);
 	call->tx_total_len = -1;
 	call->next_rx_timo = 20 * HZ;
 	call->next_req_timo = 1 * HZ;
@@ -155,9 +152,6 @@ struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp,
 
 	call->cong_cwnd = 2;
 	call->cong_ssthresh = RXRPC_RXTX_BUFF_SIZE - 1;
-
-	call->rxnet = rxnet;
-	atomic_inc(&rxnet->nr_calls);
 	return call;
 
 nomem_2:
@@ -172,15 +166,14 @@ nomem:
  */
 static struct rxrpc_call *rxrpc_alloc_client_call(struct rxrpc_sock *rx,
 						  struct sockaddr_rxrpc *srx,
-						  gfp_t gfp,
-						  unsigned int debug_id)
+						  gfp_t gfp)
 {
 	struct rxrpc_call *call;
 	ktime_t now;
 
 	_enter("");
 
-	call = rxrpc_alloc_call(rx, gfp, debug_id);
+	call = rxrpc_alloc_call(rx, gfp);
 	if (!call)
 		return ERR_PTR(-ENOMEM);
 	call->state = RXRPC_CALL_CLIENT_AWAIT_CONN;
@@ -221,20 +214,18 @@ struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 					 struct rxrpc_conn_parameters *cp,
 					 struct sockaddr_rxrpc *srx,
 					 struct rxrpc_call_params *p,
-					 gfp_t gfp,
-					 unsigned int debug_id)
+					 gfp_t gfp)
 	__releases(&rx->sk.sk_lock.slock)
-	__acquires(&call->user_mutex)
 {
 	struct rxrpc_call *call, *xcall;
-	struct rxrpc_net *rxnet;
+	struct rxrpc_net *rxnet = rxrpc_net(sock_net(&rx->sk));
 	struct rb_node *parent, **pp;
 	const void *here = __builtin_return_address(0);
 	int ret;
 
 	_enter("%p,%lx", rx, p->user_call_ID);
 
-	call = rxrpc_alloc_client_call(rx, srx, gfp, debug_id);
+	call = rxrpc_alloc_client_call(rx, srx, gfp);
 	if (IS_ERR(call)) {
 		release_sock(&rx->sk);
 		_leave(" = %ld", PTR_ERR(call));
@@ -277,7 +268,6 @@ struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 
 	write_unlock(&rx->call_lock);
 
-	rxnet = call->rxnet;
 	write_lock(&rxnet->call_lock);
 	list_add_tail(&call->link, &rxnet->calls);
 	write_unlock(&rxnet->call_lock);
@@ -288,7 +278,7 @@ struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 	/* Set up or get a connection record and set the protocol parameters,
 	 * including channel number and call ID.
 	 */
-	ret = rxrpc_connect_call(rx, call, cp, srx, gfp);
+	ret = rxrpc_connect_call(call, cp, srx, gfp);
 	if (ret < 0)
 		goto error;
 
@@ -322,6 +312,48 @@ error:
 	rxrpc_put_call(call, rxrpc_call_put);
 	_leave(" = %d", ret);
 	return ERR_PTR(ret);
+}
+
+/*
+ * Retry a call to a new address.  It is expected that the Tx queue of the call
+ * will contain data previously packaged for an old call.
+ */
+int rxrpc_retry_client_call(struct rxrpc_sock *rx,
+			    struct rxrpc_call *call,
+			    struct rxrpc_conn_parameters *cp,
+			    struct sockaddr_rxrpc *srx,
+			    gfp_t gfp)
+{
+	const void *here = __builtin_return_address(0);
+	int ret;
+
+	/* Set up or get a connection record and set the protocol parameters,
+	 * including channel number and call ID.
+	 */
+	ret = rxrpc_connect_call(call, cp, srx, gfp);
+	if (ret < 0)
+		goto error;
+
+	trace_rxrpc_call(call, rxrpc_call_connected, atomic_read(&call->usage),
+			 here, NULL);
+
+	rxrpc_start_call_timer(call);
+
+	_net("CALL new %d on CONN %d", call->debug_id, call->conn->debug_id);
+
+	if (!test_and_set_bit(RXRPC_CALL_EV_RESEND, &call->events))
+		rxrpc_queue_call(call);
+
+	_leave(" = 0");
+	return 0;
+
+error:
+	rxrpc_set_call_completion(call, RXRPC_CALL_LOCAL_ERROR,
+				  RX_CALL_DEAD, ret);
+	trace_rxrpc_call(call, rxrpc_call_error, atomic_read(&call->usage),
+			 here, ERR_PTR(ret));
+	_leave(" = %d", ret);
+	return ret;
 }
 
 /*
@@ -359,7 +391,7 @@ void rxrpc_incoming_call(struct rxrpc_sock *rx,
 	rcu_assign_pointer(conn->channels[chan].call, call);
 
 	spin_lock(&conn->params.peer->lock);
-	hlist_add_head_rcu(&call->error_link, &conn->params.peer->error_targets);
+	hlist_add_head(&call->error_link, &conn->params.peer->error_targets);
 	spin_unlock(&conn->params.peer->lock);
 
 	_net("CALL incoming %d on CONN %d", call->debug_id, call->conn->debug_id);
@@ -374,7 +406,7 @@ void rxrpc_incoming_call(struct rxrpc_sock *rx,
 bool rxrpc_queue_call(struct rxrpc_call *call)
 {
 	const void *here = __builtin_return_address(0);
-	int n = atomic_fetch_add_unless(&call->usage, 1, 0);
+	int n = __atomic_add_unless(&call->usage, 1, 0);
 	if (n == 0)
 		return false;
 	if (rxrpc_queue_work(&call->processor))
@@ -492,6 +524,61 @@ void rxrpc_release_call(struct rxrpc_sock *rx, struct rxrpc_call *call)
 }
 
 /*
+ * Prepare a kernel service call for retry.
+ */
+int rxrpc_prepare_call_for_retry(struct rxrpc_sock *rx, struct rxrpc_call *call)
+{
+	const void *here = __builtin_return_address(0);
+	int i;
+	u8 last = 0;
+
+	_enter("{%d,%d}", call->debug_id, atomic_read(&call->usage));
+
+	trace_rxrpc_call(call, rxrpc_call_release, atomic_read(&call->usage),
+			 here, (const void *)call->flags);
+
+	ASSERTCMP(call->state, ==, RXRPC_CALL_COMPLETE);
+	ASSERTCMP(call->completion, !=, RXRPC_CALL_REMOTELY_ABORTED);
+	ASSERTCMP(call->completion, !=, RXRPC_CALL_LOCALLY_ABORTED);
+	ASSERT(list_empty(&call->recvmsg_link));
+
+	del_timer_sync(&call->timer);
+
+	_debug("RELEASE CALL %p (%d CONN %p)", call, call->debug_id, call->conn);
+
+	if (call->conn)
+		rxrpc_disconnect_call(call);
+
+	if (rxrpc_is_service_call(call) ||
+	    !call->tx_phase ||
+	    call->tx_hard_ack != 0 ||
+	    call->rx_hard_ack != 0 ||
+	    call->rx_top != 0)
+		return -EINVAL;
+
+	call->state = RXRPC_CALL_UNINITIALISED;
+	call->completion = RXRPC_CALL_SUCCEEDED;
+	call->call_id = 0;
+	call->cid = 0;
+	call->cong_cwnd = 0;
+	call->cong_extra = 0;
+	call->cong_ssthresh = 0;
+	call->cong_mode = 0;
+	call->cong_dup_acks = 0;
+	call->cong_cumul_acks = 0;
+	call->acks_lowest_nak = 0;
+
+	for (i = 0; i < RXRPC_RXTX_BUFF_SIZE; i++) {
+		last |= call->rxtx_annotations[i];
+		call->rxtx_annotations[i] &= RXRPC_TX_ANNO_LAST;
+		call->rxtx_annotations[i] |= RXRPC_TX_ANNO_RETRANS;
+	}
+
+	_leave(" = 0");
+	return 0;
+}
+
+/*
  * release all the calls associated with a socket
  */
 void rxrpc_release_calls_on_socket(struct rxrpc_sock *rx)
@@ -526,7 +613,7 @@ void rxrpc_release_calls_on_socket(struct rxrpc_sock *rx)
  */
 void rxrpc_put_call(struct rxrpc_call *call, enum rxrpc_call_trace op)
 {
-	struct rxrpc_net *rxnet = call->rxnet;
+	struct rxrpc_net *rxnet;
 	const void *here = __builtin_return_address(0);
 	int n;
 
@@ -540,6 +627,7 @@ void rxrpc_put_call(struct rxrpc_call *call, enum rxrpc_call_trace op)
 		ASSERTCMP(call->state, ==, RXRPC_CALL_COMPLETE);
 
 		if (!list_empty(&call->link)) {
+			rxnet = rxrpc_net(sock_net(&call->socket->sk));
 			write_lock(&rxnet->call_lock);
 			list_del_init(&call->link);
 			write_unlock(&rxnet->call_lock);
@@ -555,14 +643,11 @@ void rxrpc_put_call(struct rxrpc_call *call, enum rxrpc_call_trace op)
 static void rxrpc_rcu_destroy_call(struct rcu_head *rcu)
 {
 	struct rxrpc_call *call = container_of(rcu, struct rxrpc_call, rcu);
-	struct rxrpc_net *rxnet = call->rxnet;
 
 	rxrpc_put_peer(call->peer);
 	kfree(call->rxtx_buffer);
 	kfree(call->rxtx_annotations);
 	kmem_cache_free(rxrpc_call_jar, call);
-	if (atomic_dec_and_test(&rxnet->nr_calls))
-		wake_up_var(&rxnet->nr_calls);
 }
 
 /*
@@ -627,7 +712,4 @@ void rxrpc_destroy_all_calls(struct rxrpc_net *rxnet)
 	}
 
 	write_unlock(&rxnet->call_lock);
-
-	atomic_dec(&rxnet->nr_calls);
-	wait_var_event(&rxnet->nr_calls, !atomic_read(&rxnet->nr_calls));
 }

@@ -23,6 +23,7 @@
 
 #include <linux/kernel.h>
 #include <linux/err.h>
+#include <linux/platform_data/gpio-omap.h>
 
 #include "prm.h"
 #include "common.h"

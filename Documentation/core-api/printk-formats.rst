@@ -60,8 +60,8 @@ Plain Pointers
 Pointers printed without a specifier extension (i.e unadorned %p) are
 hashed to prevent leaking information about the kernel memory layout. This
 has the added benefit of providing a unique identifier. On 64-bit machines
-the first 32 bits are zeroed. The kernel will print ``(ptrval)`` until it
-gathers enough entropy. If you *really* want the address see %px below.
+the first 32 bits are zeroed. If you *really* want the address see %px
+below.
 
 Symbols/Function Pointers
 -------------------------
@@ -376,15 +376,15 @@ correctness of the format string and va_list arguments.
 
 Passed by reference.
 
-Device tree nodes
------------------
+kobjects
+--------
 
 ::
 
 	%pOF[fnpPcCF]
 
 
-For printing device tree node structures. Default behaviour is
+For printing kobject based structs (device nodes). Default behaviour is
 equivalent to %pOFf.
 
 	- f - device node full_name
@@ -412,24 +412,6 @@ Examples::
 
 Passed by reference.
 
-Time and date (struct rtc_time)
--------------------------------
-
-::
-
-	%ptR		YYYY-mm-ddTHH:MM:SS
-	%ptRd		YYYY-mm-dd
-	%ptRt		HH:MM:SS
-	%ptR[dt][r]
-
-For printing date and time as represented by struct rtc_time structure in
-human readable format.
-
-By default year will be incremented by 1900 and month by 1. Use %ptRr (raw)
-to suppress this behaviour.
-
-Passed by reference.
-
 struct clk
 ----------
 
@@ -437,9 +419,11 @@ struct clk
 
 	%pC	pll1
 	%pCn	pll1
+	%pCr	1560000000
 
-For printing struct clk structures. %pC and %pCn print the name of the clock
-(Common Clock Framework) or a unique 32-bit ID (legacy clock framework).
+For printing struct clk structures. %pC and %pCn print the name
+(Common Clock Framework) or address (legacy clock framework) of the
+structure; %pCr prints the current clock rate.
 
 Passed by reference.
 

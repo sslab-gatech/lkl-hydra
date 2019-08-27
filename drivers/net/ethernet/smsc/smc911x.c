@@ -74,6 +74,7 @@ static const char version[] =
 #include <linux/skbuff.h>
 
 #include <linux/dmaengine.h>
+#include <linux/dma/pxa-dma.h>
 
 #include <asm/io.h>
 
@@ -513,8 +514,7 @@ static void smc911x_hardware_send_pkt(struct net_device *dev)
  * now, or set the card to generates an interrupt when ready
  * for the packet.
  */
-static netdev_tx_t
-smc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static int smc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct smc911x_local *lp = netdev_priv(dev);
 	unsigned int free;
@@ -1795,6 +1795,7 @@ static int smc911x_probe(struct net_device *dev)
 #ifdef SMC_USE_DMA
 	struct dma_slave_config	config;
 	dma_cap_mask_t mask;
+	struct pxad_param param;
 #endif
 
 	DBG(SMC_DEBUG_FUNC, dev, "--> %s\n", __func__);
@@ -1970,8 +1971,15 @@ static int smc911x_probe(struct net_device *dev)
 
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
-	lp->rxdma = dma_request_channel(mask, NULL, NULL);
-	lp->txdma = dma_request_channel(mask, NULL, NULL);
+	param.prio = PXAD_PRIO_LOWEST;
+	param.drcmr = -1UL;
+
+	lp->rxdma =
+		dma_request_slave_channel_compat(mask, pxad_filter_fn,
+						 &param, &dev->dev, "rx");
+	lp->txdma =
+		dma_request_slave_channel_compat(mask, pxad_filter_fn,
+						 &param, &dev->dev, "tx");
 	lp->rxdma_active = 0;
 	lp->txdma_active = 0;
 

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/staging/android/ion/ion.h
  *
@@ -157,9 +157,8 @@ struct ion_heap_ops {
  * @lock:		protects the free list
  * @waitqueue:		queue to wait on from deferred free thread
  * @task:		task struct of deferred free thread
- * @num_of_buffers	the number of currently allocated buffers
- * @num_of_alloc_bytes	the number of allocated bytes
- * @alloc_bytes_wm	the number of allocated bytes watermark
+ * @debug_show:		called when heap debug file is read to add any
+ *			heap specific debug info to output
  *
  * Represents a pool of memory from which buffers can be made.  In some
  * systems the only heap is regular system memory allocated via vmalloc.
@@ -180,13 +179,27 @@ struct ion_heap {
 	spinlock_t free_lock;
 	wait_queue_head_t waitqueue;
 	struct task_struct *task;
-	u64 num_of_buffers;
-	u64 num_of_alloc_bytes;
-	u64 alloc_bytes_wm;
 
-	/* protect heap statistics */
-	spinlock_t stat_lock;
+	int (*debug_show)(struct ion_heap *heap, struct seq_file *s,
+			  void *unused);
 };
+
+/**
+ * ion_buffer_cached - this ion buffer is cached
+ * @buffer:		buffer
+ *
+ * indicates whether this ion buffer is cached
+ */
+bool ion_buffer_cached(struct ion_buffer *buffer);
+
+/**
+ * ion_buffer_fault_user_mappings - fault in user mappings of this buffer
+ * @buffer:		buffer
+ *
+ * indicates whether userspace mappings of this buffer will be faulted
+ * in, this can affect how buffers are allocated from the heap.
+ */
+bool ion_buffer_fault_user_mappings(struct ion_buffer *buffer);
 
 /**
  * ion_device_add_heap - adds a heap to the ion device
@@ -298,6 +311,7 @@ size_t ion_heap_freelist_size(struct ion_heap *heap);
  * @gfp_mask:		gfp_mask to use from alloc
  * @order:		order of pages in the pool
  * @list:		plist node for list of pools
+ * @cached:		it's cached pool or not
  *
  * Allows you to keep a pool of pre allocated pages to use from your heap.
  * Keeping a pool of pages that is ready for dma, ie any cached mapping have
@@ -307,6 +321,7 @@ size_t ion_heap_freelist_size(struct ion_heap *heap);
 struct ion_page_pool {
 	int high_count;
 	int low_count;
+	bool cached;
 	struct list_head high_items;
 	struct list_head low_items;
 	struct mutex mutex;
@@ -315,7 +330,8 @@ struct ion_page_pool {
 	struct plist_node list;
 };
 
-struct ion_page_pool *ion_page_pool_create(gfp_t gfp_mask, unsigned int order);
+struct ion_page_pool *ion_page_pool_create(gfp_t gfp_mask, unsigned int order,
+					   bool cached);
 void ion_page_pool_destroy(struct ion_page_pool *pool);
 struct page *ion_page_pool_alloc(struct ion_page_pool *pool);
 void ion_page_pool_free(struct ion_page_pool *pool, struct page *page);

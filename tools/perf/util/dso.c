@@ -189,34 +189,28 @@ int dso__read_binary_type_filename(const struct dso *dso,
 	return ret;
 }
 
-enum {
-	COMP_ID__NONE = 0,
-};
-
 static const struct {
 	const char *fmt;
 	int (*decompress)(const char *input, int output);
-	bool (*is_compressed)(const char *input);
 } compressions[] = {
-	[COMP_ID__NONE] = { .fmt = NULL, },
 #ifdef HAVE_ZLIB_SUPPORT
-	{ "gz", gzip_decompress_to_file, gzip_is_compressed },
+	{ "gz", gzip_decompress_to_file },
 #endif
 #ifdef HAVE_LZMA_SUPPORT
-	{ "xz", lzma_decompress_to_file, lzma_is_compressed },
+	{ "xz", lzma_decompress_to_file },
 #endif
-	{ NULL, NULL, NULL },
+	{ NULL, NULL },
 };
 
-static int is_supported_compression(const char *ext)
+bool is_supported_compression(const char *ext)
 {
 	unsigned i;
 
-	for (i = 1; compressions[i].fmt; i++) {
+	for (i = 0; compressions[i].fmt; i++) {
 		if (!strcmp(ext, compressions[i].fmt))
-			return i;
+			return true;
 	}
-	return COMP_ID__NONE;
+	return false;
 }
 
 bool is_kernel_module(const char *pathname, int cpumode)
@@ -245,73 +239,80 @@ bool is_kernel_module(const char *pathname, int cpumode)
 	return m.kmod;
 }
 
+bool decompress_to_file(const char *ext, const char *filename, int output_fd)
+{
+	unsigned i;
+
+	for (i = 0; compressions[i].fmt; i++) {
+		if (!strcmp(ext, compressions[i].fmt))
+			return !compressions[i].decompress(filename,
+							   output_fd);
+	}
+	return false;
+}
+
 bool dso__needs_decompress(struct dso *dso)
 {
 	return dso->symtab_type == DSO_BINARY_TYPE__SYSTEM_PATH_KMODULE_COMP ||
 		dso->symtab_type == DSO_BINARY_TYPE__GUEST_KMODULE_COMP;
 }
 
-static int decompress_kmodule(struct dso *dso, const char *name,
-			      char *pathname, size_t len)
+static int decompress_kmodule(struct dso *dso, const char *name, char *tmpbuf)
 {
-	char tmpbuf[] = KMOD_DECOMP_NAME;
 	int fd = -1;
+	struct kmod_path m;
 
 	if (!dso__needs_decompress(dso))
 		return -1;
 
-	if (dso->comp == COMP_ID__NONE)
+	if (kmod_path__parse_ext(&m, dso->long_name))
 		return -1;
 
-	/*
-	 * We have proper compression id for DSO and yet the file
-	 * behind the 'name' can still be plain uncompressed object.
-	 *
-	 * The reason is behind the logic we open the DSO object files,
-	 * when we try all possible 'debug' objects until we find the
-	 * data. So even if the DSO is represented by 'krava.xz' module,
-	 * we can end up here opening ~/.debug/....23432432/debug' file
-	 * which is not compressed.
-	 *
-	 * To keep this transparent, we detect this and return the file
-	 * descriptor to the uncompressed file.
-	 */
-	if (!compressions[dso->comp].is_compressed(name))
-		return open(name, O_RDONLY);
+	if (!m.comp)
+		goto out;
 
 	fd = mkstemp(tmpbuf);
 	if (fd < 0) {
 		dso->load_errno = errno;
-		return -1;
+		goto out;
 	}
 
-	if (compressions[dso->comp].decompress(name, fd)) {
+	if (!decompress_to_file(m.ext, name, fd)) {
 		dso->load_errno = DSO_LOAD_ERRNO__DECOMPRESSION_FAILURE;
 		close(fd);
 		fd = -1;
 	}
 
-	if (!pathname || (fd < 0))
-		unlink(tmpbuf);
-
-	if (pathname && (fd >= 0))
-		strlcpy(pathname, tmpbuf, len);
-
+out:
+	free(m.ext);
 	return fd;
 }
 
 int dso__decompress_kmodule_fd(struct dso *dso, const char *name)
 {
-	return decompress_kmodule(dso, name, NULL, 0);
+	char tmpbuf[] = KMOD_DECOMP_NAME;
+	int fd;
+
+	fd = decompress_kmodule(dso, name, tmpbuf);
+	unlink(tmpbuf);
+	return fd;
 }
 
 int dso__decompress_kmodule_path(struct dso *dso, const char *name,
 				 char *pathname, size_t len)
 {
-	int fd = decompress_kmodule(dso, name, pathname, len);
+	char tmpbuf[] = KMOD_DECOMP_NAME;
+	int fd;
 
+	fd = decompress_kmodule(dso, name, tmpbuf);
+	if (fd < 0) {
+		unlink(tmpbuf);
+		return -1;
+	}
+
+	strncpy(pathname, tmpbuf, len);
 	close(fd);
-	return fd >= 0 ? 0 : -1;
+	return 0;
 }
 
 /*
@@ -331,7 +332,7 @@ int dso__decompress_kmodule_path(struct dso *dso, const char *name,
  * Returns 0 if there's no strdup error, -ENOMEM otherwise.
  */
 int __kmod_path__parse(struct kmod_path *m, const char *path,
-		       bool alloc_name)
+		       bool alloc_name, bool alloc_ext)
 {
 	const char *name = strrchr(path, '/');
 	const char *ext  = strrchr(path, '.');
@@ -353,8 +354,6 @@ int __kmod_path__parse(struct kmod_path *m, const char *path,
 		if ((strncmp(name, "[kernel.kallsyms]", 17) == 0) ||
 		    (strncmp(name, "[guest.kernel.kallsyms", 22) == 0) ||
 		    (strncmp(name, "[vdso]", 6) == 0) ||
-		    (strncmp(name, "[vdso32]", 8) == 0) ||
-		    (strncmp(name, "[vdsox32]", 9) == 0) ||
 		    (strncmp(name, "[vsyscall]", 10) == 0)) {
 			m->kmod = false;
 
@@ -371,9 +370,10 @@ int __kmod_path__parse(struct kmod_path *m, const char *path,
 		return 0;
 	}
 
-	m->comp = is_supported_compression(ext + 1);
-	if (m->comp > COMP_ID__NONE)
+	if (is_supported_compression(ext + 1)) {
+		m->comp = true;
 		ext -= 3;
+	}
 
 	/* Check .ko extension only if there's enough name left. */
 	if (ext > name)
@@ -391,6 +391,14 @@ int __kmod_path__parse(struct kmod_path *m, const char *path,
 		strxfrchar(m->name, '-', '_');
 	}
 
+	if (alloc_ext && m->comp) {
+		m->ext = strdup(ext + 4);
+		if (!m->ext) {
+			free((void *) m->name);
+			return -ENOMEM;
+		}
+	}
+
 	return 0;
 }
 
@@ -403,10 +411,8 @@ void dso__set_module_info(struct dso *dso, struct kmod_path *m,
 		dso->symtab_type = DSO_BINARY_TYPE__GUEST_KMODULE;
 
 	/* _KMODULE_COMP should be next to _KMODULE */
-	if (m->kmod && m->comp) {
+	if (m->kmod && m->comp)
 		dso->symtab_type++;
-		dso->comp = m->comp;
-	}
 
 	dso__set_short_name(dso, strdup(m->name), true);
 }
@@ -460,7 +466,6 @@ static int __open_dso(struct dso *dso, struct machine *machine)
 	int fd = -EINVAL;
 	char *root_dir = (char *)"";
 	char *name = malloc(PATH_MAX);
-	bool decomp = false;
 
 	if (!name)
 		return -ENOMEM;
@@ -484,13 +489,12 @@ static int __open_dso(struct dso *dso, struct machine *machine)
 			goto out;
 		}
 
-		decomp = true;
 		strcpy(name, newpath);
 	}
 
 	fd = do_open(name);
 
-	if (decomp)
+	if (dso__needs_decompress(dso))
 		unlink(name);
 
 out:
@@ -894,7 +898,7 @@ static ssize_t cached_read(struct dso *dso, struct machine *machine,
 	return r;
 }
 
-int dso__data_file_size(struct dso *dso, struct machine *machine)
+static int data_file_size(struct dso *dso, struct machine *machine)
 {
 	int ret = 0;
 	struct stat st;
@@ -943,7 +947,7 @@ out:
  */
 off_t dso__data_size(struct dso *dso, struct machine *machine)
 {
-	if (dso__data_file_size(dso, machine))
+	if (data_file_size(dso, machine))
 		return -1;
 
 	/* For now just estimate dso data size is close to file size */
@@ -953,7 +957,7 @@ off_t dso__data_size(struct dso *dso, struct machine *machine)
 static ssize_t data_read_offset(struct dso *dso, struct machine *machine,
 				u64 offset, u8 *data, ssize_t size)
 {
-	if (dso__data_file_size(dso, machine))
+	if (data_file_size(dso, machine))
 		return -1;
 
 	/* Check the offset sanity. */
@@ -1010,7 +1014,7 @@ struct map *dso__new_map(const char *name)
 	struct dso *dso = dso__new(name);
 
 	if (dso)
-		map = map__new2(0, dso);
+		map = map__new2(0, dso, MAP__FUNCTION);
 
 	return map;
 }
@@ -1172,19 +1176,19 @@ int dso__name_len(const struct dso *dso)
 	return dso->short_name_len;
 }
 
-bool dso__loaded(const struct dso *dso)
+bool dso__loaded(const struct dso *dso, enum map_type type)
 {
-	return dso->loaded;
+	return dso->loaded & (1 << type);
 }
 
-bool dso__sorted_by_name(const struct dso *dso)
+bool dso__sorted_by_name(const struct dso *dso, enum map_type type)
 {
-	return dso->sorted_by_name;
+	return dso->sorted_by_name & (1 << type);
 }
 
-void dso__set_sorted_by_name(struct dso *dso)
+void dso__set_sorted_by_name(struct dso *dso, enum map_type type)
 {
-	dso->sorted_by_name = true;
+	dso->sorted_by_name |= (1 << type);
 }
 
 struct dso *dso__new(const char *name)
@@ -1192,10 +1196,12 @@ struct dso *dso__new(const char *name)
 	struct dso *dso = calloc(1, sizeof(*dso) + strlen(name) + 1);
 
 	if (dso != NULL) {
+		int i;
 		strcpy(dso->name, name);
 		dso__set_long_name(dso, dso->name, false);
 		dso__set_short_name(dso, dso->name, false);
-		dso->symbols = dso->symbol_names = RB_ROOT;
+		for (i = 0; i < MAP__NR_TYPES; ++i)
+			dso->symbols[i] = dso->symbol_names[i] = RB_ROOT;
 		dso->data.cache = RB_ROOT;
 		dso->inlined_nodes = RB_ROOT;
 		dso->srclines = RB_ROOT;
@@ -1212,7 +1218,6 @@ struct dso *dso__new(const char *name)
 		dso->a2l_fails = 1;
 		dso->kernel = DSO_TYPE_USER;
 		dso->needs_swap = DSO_SWAP__UNSET;
-		dso->comp = COMP_ID__NONE;
 		RB_CLEAR_NODE(&dso->rb_node);
 		dso->root = NULL;
 		INIT_LIST_HEAD(&dso->node);
@@ -1226,6 +1231,8 @@ struct dso *dso__new(const char *name)
 
 void dso__delete(struct dso *dso)
 {
+	int i;
+
 	if (!RB_EMPTY_NODE(&dso->rb_node))
 		pr_err("DSO %s is still in rbtree when being deleted!\n",
 		       dso->long_name);
@@ -1233,7 +1240,8 @@ void dso__delete(struct dso *dso)
 	/* free inlines first, as they reference symbols */
 	inlines__tree_delete(&dso->inlined_nodes);
 	srcline__tree_delete(&dso->srclines);
-	symbols__delete(&dso->symbols);
+	for (i = 0; i < MAP__NR_TYPES; ++i)
+		symbols__delete(&dso->symbols[i]);
 
 	if (dso->short_name_allocated) {
 		zfree((char **)&dso->short_name);
@@ -1443,7 +1451,9 @@ size_t __dsos__fprintf(struct list_head *head, FILE *fp)
 	size_t ret = 0;
 
 	list_for_each_entry(pos, head, node) {
-		ret += dso__fprintf(pos, fp);
+		int i;
+		for (i = 0; i < MAP__NR_TYPES; ++i)
+			ret += dso__fprintf(pos, i, fp);
 	}
 
 	return ret;
@@ -1457,17 +1467,18 @@ size_t dso__fprintf_buildid(struct dso *dso, FILE *fp)
 	return fprintf(fp, "%s", sbuild_id);
 }
 
-size_t dso__fprintf(struct dso *dso, FILE *fp)
+size_t dso__fprintf(struct dso *dso, enum map_type type, FILE *fp)
 {
 	struct rb_node *nd;
 	size_t ret = fprintf(fp, "dso: %s (", dso->short_name);
 
 	if (dso->short_name != dso->long_name)
 		ret += fprintf(fp, "%s, ", dso->long_name);
-	ret += fprintf(fp, "%sloaded, ", dso__loaded(dso) ? "" : "NOT ");
+	ret += fprintf(fp, "%s, %sloaded, ", map_type__name[type],
+		       dso__loaded(dso, type) ? "" : "NOT ");
 	ret += dso__fprintf_buildid(dso, fp);
 	ret += fprintf(fp, ")\n");
-	for (nd = rb_first(&dso->symbols); nd; nd = rb_next(nd)) {
+	for (nd = rb_first(&dso->symbols[type]); nd; nd = rb_next(nd)) {
 		struct symbol *pos = rb_entry(nd, struct symbol, rb_node);
 		ret += symbol__fprintf(pos, fp);
 	}

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 # This validates that the kernel will fall back to using the fallback mechanism
 # to load firmware it can't find on disk itself. We must request a firmware
@@ -6,17 +6,31 @@
 # won't find so that we can do the load ourself manually.
 set -e
 
-TEST_REQS_FW_SYSFS_FALLBACK="yes"
-TEST_REQS_FW_SET_CUSTOM_PATH="no"
-TEST_DIR=$(dirname $0)
-source $TEST_DIR/fw_lib.sh
+modprobe test_firmware
 
-check_mods
-check_setup
-verify_reqs
-setup_tmp_file
+DIR=/sys/devices/virtual/misc/test_firmware
 
-trap "test_finish" EXIT
+# CONFIG_FW_LOADER_USER_HELPER has a sysfs class under /sys/class/firmware/
+# These days no one enables CONFIG_FW_LOADER_USER_HELPER so check for that
+# as an indicator for CONFIG_FW_LOADER_USER_HELPER.
+HAS_FW_LOADER_USER_HELPER=$(if [ -d /sys/class/firmware/ ]; then echo yes; else echo no; fi)
+
+if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
+       OLD_TIMEOUT=$(cat /sys/class/firmware/timeout)
+else
+	echo "usermode helper disabled so ignoring test"
+	exit 0
+fi
+
+FWPATH=$(mktemp -d)
+FW="$FWPATH/test-firmware.bin"
+
+test_finish()
+{
+	echo "$OLD_TIMEOUT" >/sys/class/firmware/timeout
+	rm -f "$FW"
+	rmdir "$FWPATH"
+}
 
 load_fw()
 {
@@ -74,7 +88,7 @@ load_fw_custom()
 {
 	if [ ! -e "$DIR"/trigger_custom_fallback ]; then
 		echo "$0: custom fallback trigger not present, ignoring test" >&2
-		exit $ksft_skip
+		return 1
 	fi
 
 	local name="$1"
@@ -107,7 +121,7 @@ load_fw_custom_cancel()
 {
 	if [ ! -e "$DIR"/trigger_custom_fallback ]; then
 		echo "$0: canceling custom fallback trigger not present, ignoring test" >&2
-		exit $ksft_skip
+		return 1
 	fi
 
 	local name="$1"
@@ -154,6 +168,12 @@ load_fw_fallback_with_child()
 	wait
 	return $RET
 }
+
+trap "test_finish" EXIT
+
+# This is an unlikely real-world firmware content. :)
+echo "ABCD0123" >"$FW"
+NAME=$(basename "$FW")
 
 test_syfs_timeout()
 {
@@ -238,10 +258,8 @@ run_sysfs_main_tests()
 
 run_sysfs_custom_load_tests()
 {
-	RANDOM_FILE_PATH=$(setup_random_file)
-	RANDOM_FILE="$(basename $RANDOM_FILE_PATH)"
-	if load_fw_custom "$RANDOM_FILE" "$RANDOM_FILE_PATH" ; then
-		if ! diff -q "$RANDOM_FILE_PATH" /dev/test_firmware >/dev/null ; then
+	if load_fw_custom "$NAME" "$FW" ; then
+		if ! diff -q "$FW" /dev/test_firmware >/dev/null ; then
 			echo "$0: firmware was not loaded" >&2
 			exit 1
 		else
@@ -249,10 +267,8 @@ run_sysfs_custom_load_tests()
 		fi
 	fi
 
-	RANDOM_FILE_PATH=$(setup_random_file)
-	RANDOM_FILE="$(basename $RANDOM_FILE_PATH)"
-	if load_fw_custom "$RANDOM_FILE" "$RANDOM_FILE_PATH" ; then
-		if ! diff -q "$RANDOM_FILE_PATH" /dev/test_firmware >/dev/null ; then
+	if load_fw_custom "$NAME" "$FW" ; then
+		if ! diff -q "$FW" /dev/test_firmware >/dev/null ; then
 			echo "$0: firmware was not loaded" >&2
 			exit 1
 		else
@@ -260,12 +276,8 @@ run_sysfs_custom_load_tests()
 		fi
 	fi
 
-	RANDOM_FILE_REAL="$RANDOM_FILE_PATH"
-	FAKE_RANDOM_FILE_PATH=$(setup_random_file_fake)
-	FAKE_RANDOM_FILE="$(basename $FAKE_RANDOM_FILE_PATH)"
-
-	if load_fw_custom_cancel "$FAKE_RANDOM_FILE" "$RANDOM_FILE_REAL" ; then
-		if diff -q "$RANDOM_FILE_PATH" /dev/test_firmware >/dev/null ; then
+	if load_fw_custom_cancel "nope-$NAME" "$FW" ; then
+		if diff -q "$FW" /dev/test_firmware >/dev/null ; then
 			echo "$0: firmware was expected to be cancelled" >&2
 			exit 1
 		else
@@ -274,10 +286,7 @@ run_sysfs_custom_load_tests()
 	fi
 }
 
-if [ "$HAS_FW_LOADER_USER_HELPER_FALLBACK" = "yes" ]; then
-	run_sysfs_main_tests
-fi
-
+run_sysfs_main_tests
 run_sysfs_custom_load_tests
 
 exit 0

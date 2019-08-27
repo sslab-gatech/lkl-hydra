@@ -95,7 +95,7 @@
 #define TEGRA210_CLK_CSITE 73
 /* 74 */
 /* 75 */
-#define TEGRA210_CLK_LA 76
+/* 76 */
 /* 77 */
 #define TEGRA210_CLK_SOC_THERM 78
 #define TEGRA210_CLK_DTV 79

@@ -22,8 +22,9 @@
 #include <linux/gpio.h>
 #include <linux/mfd/tps65910.h>
 
-#define COMP1					0
-#define COMP2					1
+#define COMP					0
+#define COMP1					1
+#define COMP2					2
 
 /* Comparator 1 voltage selection table in millivolts */
 static const u16 COMP_VSEL_TABLE[] = {
@@ -62,6 +63,9 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 	int ret;
 	u8 index = 0, val;
 
+	if (id == COMP)
+		return 0;
+
 	while (curr_voltage < tps_comp.uV_max) {
 		curr_voltage = tps_comp.vsel_table[index];
 		if (curr_voltage >= voltage)
@@ -74,7 +78,7 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 		return -EINVAL;
 
 	val = index << 1;
-	ret = tps65910_reg_write(tps65910, tps_comp.reg, val);
+	ret = tps65910->write(tps65910, tps_comp.reg, 1, &val);
 
 	return ret;
 }
@@ -82,10 +86,13 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 static int comp_threshold_get(struct tps65910 *tps65910, int id)
 {
 	struct comparator tps_comp = tps_comparators[id];
-	unsigned int val;
 	int ret;
+	u8 val;
 
-	ret = tps65910_reg_read(tps65910, tps_comp.reg, &val);
+	if (id == COMP)
+		return 0;
+
+	ret = tps65910->read(tps65910, tps_comp.reg, 1, &val);
 	if (ret < 0)
 		return ret;
 

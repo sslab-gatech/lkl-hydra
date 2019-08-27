@@ -88,7 +88,6 @@ struct orc_entry {
 	unsigned	sp_reg:4;
 	unsigned	bp_reg:4;
 	unsigned	type:2;
-	unsigned	end:1;
 } __packed;
 
 /*
@@ -102,7 +101,6 @@ struct unwind_hint {
 	s16		sp_offset;
 	u8		sp_reg;
 	u8		type;
-	u8		end;
 };
 #endif /* __ASSEMBLY__ */
 

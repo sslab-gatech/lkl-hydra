@@ -130,13 +130,9 @@ static bool bfq_update_next_in_service(struct bfq_sched_data *sd,
 	if (!change_without_lookup) /* lookup needed */
 		next_in_service = bfq_lookup_next_entity(sd, expiration);
 
-	if (next_in_service) {
-		bool new_budget_triggers_change =
-			bfq_update_parent_budget(next_in_service);
-
+	if (next_in_service)
 		parent_sched_may_change = !sd->next_in_service ||
-			new_budget_triggers_change;
-	}
+			bfq_update_parent_budget(next_in_service);
 
 	sd->next_in_service = next_in_service;
 
@@ -503,6 +499,9 @@ static void bfq_active_insert(struct bfq_service_tree *st,
 	if (bfqq)
 		list_add(&bfqq->bfqq_list, &bfqq->bfqd->active_list);
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
+	else /* bfq_group */
+		bfq_weights_tree_add(bfqd, entity, &bfqd->group_weights_tree);
+
 	if (bfqg != bfqd->root_group)
 		bfqg->active_entities++;
 #endif
@@ -602,6 +601,10 @@ static void bfq_active_extract(struct bfq_service_tree *st,
 	if (bfqq)
 		list_del(&bfqq->bfqq_list);
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
+	else /* bfq_group */
+		bfq_weights_tree_remove(bfqd, entity,
+					&bfqd->group_weights_tree);
+
 	if (bfqg != bfqd->root_group)
 		bfqg->active_entities--;
 #endif
@@ -788,23 +791,25 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
 		new_weight = entity->orig_weight *
 			     (bfqq ? bfqq->wr_coeff : 1);
 		/*
-		 * If the weight of the entity changes, and the entity is a
-		 * queue, remove the entity from its old weight counter (if
-		 * there is a counter associated with the entity).
+		 * If the weight of the entity changes, remove the entity
+		 * from its old weight counter (if there is a counter
+		 * associated with the entity), and add it to the counter
+		 * associated with its new weight.
 		 */
-		if (prev_weight != new_weight && bfqq) {
-			root = &bfqd->queue_weights_tree;
-			__bfq_weights_tree_remove(bfqd, bfqq, root);
+		if (prev_weight != new_weight) {
+			root = bfqq ? &bfqd->queue_weights_tree :
+				      &bfqd->group_weights_tree;
+			bfq_weights_tree_remove(bfqd, entity, root);
 		}
 		entity->weight = new_weight;
 		/*
-		 * Add the entity, if it is not a weight-raised queue,
-		 * to the counter associated with its new weight.
+		 * Add the entity to its weights tree only if it is
+		 * not associated with a weight-raised queue.
 		 */
-		if (prev_weight != new_weight && bfqq && bfqq->wr_coeff == 1) {
+		if (prev_weight != new_weight &&
+		    (bfqq ? bfqq->wr_coeff == 1 : 1))
 			/* If we get here, root has been initialized. */
-			bfq_weights_tree_add(bfqd, bfqq, root);
-		}
+			bfq_weights_tree_add(bfqd, entity, root);
 
 		new_st->wsum += entity->weight;
 
@@ -879,11 +884,15 @@ void bfq_bfqq_charge_time(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 			  unsigned long time_ms)
 {
 	struct bfq_entity *entity = &bfqq->entity;
-	unsigned long timeout_ms = jiffies_to_msecs(bfq_timeout);
-	unsigned long bounded_time_ms = min(time_ms, timeout_ms);
-	int serv_to_charge_for_time =
-		(bfqd->bfq_max_budget * bounded_time_ms) / timeout_ms;
-	int tot_serv_to_charge = max(serv_to_charge_for_time, entity->service);
+	int tot_serv_to_charge = entity->service;
+	unsigned int timeout_ms = jiffies_to_msecs(bfq_timeout);
+
+	if (time_ms > 0 && time_ms < timeout_ms)
+		tot_serv_to_charge =
+			(bfqd->bfq_max_budget * time_ms) / timeout_ms;
+
+	if (tot_serv_to_charge < entity->service)
+		tot_serv_to_charge = entity->service;
 
 	/* Increase budget to avoid inconsistencies */
 	if (tot_serv_to_charge > entity->budget)
@@ -962,7 +971,7 @@ static void bfq_update_fin_time_enqueue(struct bfq_entity *entity,
  * one of its children receives a new request.
  *
  * Basically, this function updates the timestamps of entity and
- * inserts entity into its active tree, after possibly extracting it
+ * inserts entity into its active tree, ater possibly extracting it
  * from its idle tree.
  */
 static void __bfq_activate_entity(struct bfq_entity *entity,
@@ -1005,19 +1014,6 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 
 		entity->on_st = true;
 	}
-
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
-	if (!bfq_entity_to_bfqq(entity)) { /* bfq_group */
-		struct bfq_group *bfqg =
-			container_of(entity, struct bfq_group, entity);
-		struct bfq_data *bfqd = bfqg->bfqd;
-
-		if (!entity->in_groups_with_pending_reqs) {
-			entity->in_groups_with_pending_reqs = true;
-			bfqd->num_groups_with_pending_reqs++;
-		}
-	}
-#endif
 
 	bfq_update_fin_time_enqueue(entity, st, backshifted);
 }
@@ -1154,14 +1150,15 @@ static void bfq_activate_requeue_entity(struct bfq_entity *entity,
 }
 
 /**
- * __bfq_deactivate_entity - update sched_data and service trees for
- * entity, so as to represent entity as inactive
- * @entity: the entity being deactivated.
+ * __bfq_deactivate_entity - deactivate an entity from its service tree.
+ * @entity: the entity to deactivate.
  * @ins_into_idle_tree: if false, the entity will not be put into the
  *			idle tree.
  *
- * If necessary and allowed, puts entity into the idle tree. NOTE:
- * entity may be on no tree if in service.
+ * Deactivates an entity, independently of its previous state.  Must
+ * be invoked only if entity is on a service tree. Extracts the entity
+ * from that tree, and if necessary and allowed, puts it into the idle
+ * tree.
  */
 bool __bfq_deactivate_entity(struct bfq_entity *entity, bool ins_into_idle_tree)
 {
@@ -1181,17 +1178,10 @@ bool __bfq_deactivate_entity(struct bfq_entity *entity, bool ins_into_idle_tree)
 	st = bfq_entity_service_tree(entity);
 	is_in_service = entity == sd->in_service_entity;
 
-	bfq_calc_finish(entity, entity->service);
-
-	if (is_in_service)
+	if (is_in_service) {
+		bfq_calc_finish(entity, entity->service);
 		sd->in_service_entity = NULL;
-	else
-		/*
-		 * Non in-service entity: nobody will take care of
-		 * resetting its service counter on expiration. Do it
-		 * now.
-		 */
-		entity->service = 0;
+	}
 
 	if (entity->tree == &st->active)
 		bfq_active_extract(st, entity);
@@ -1552,6 +1542,12 @@ struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 		sd->in_service_entity = entity;
 
 		/*
+		 * Reset the accumulator of the amount of service that
+		 * the entity is about to receive.
+		 */
+		entity->service = 0;
+
+		/*
 		 * If entity is no longer a candidate for next
 		 * service, then it must be extracted from its active
 		 * tree, so as to make sure that it won't be
@@ -1668,7 +1664,8 @@ void bfq_del_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	bfqd->busy_queues--;
 
 	if (!bfqq->dispatched)
-		bfq_weights_tree_remove(bfqd, bfqq);
+		bfq_weights_tree_remove(bfqd, &bfqq->entity,
+					&bfqd->queue_weights_tree);
 
 	if (bfqq->wr_coeff > 1)
 		bfqd->wr_busy_queues--;
@@ -1692,7 +1689,7 @@ void bfq_add_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 
 	if (!bfqq->dispatched)
 		if (bfqq->wr_coeff == 1)
-			bfq_weights_tree_add(bfqd, bfqq,
+			bfq_weights_tree_add(bfqd, &bfqq->entity,
 					     &bfqd->queue_weights_tree);
 
 	if (bfqq->wr_coeff > 1)

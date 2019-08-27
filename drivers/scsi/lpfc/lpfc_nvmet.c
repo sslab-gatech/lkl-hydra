@@ -1,8 +1,8 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channsel Host Bus Adapters.                               *
- * Copyright (C) 2017-2018 Broadcom. All Rights Reserved. The term *
- * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
+ * Copyright (C) 2017 Broadcom. All Rights Reserved. The term      *
+ * “Broadcom” refers to Broadcom Limited and/or its subsidiaries.  *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.broadcom.com                                                *
@@ -36,7 +36,7 @@
 #include <scsi/scsi_transport_fc.h>
 #include <scsi/fc/fc_fs.h>
 
-#include <linux/nvme.h>
+#include <../drivers/nvme/host/nvme.h>
 #include <linux/nvme-fc-driver.h>
 #include <linux/nvme-fc.h>
 
@@ -71,151 +71,6 @@ static int lpfc_nvmet_unsol_fcp_issue_abort(struct lpfc_hba *,
 static int lpfc_nvmet_unsol_ls_issue_abort(struct lpfc_hba *,
 					   struct lpfc_nvmet_rcv_ctx *,
 					   uint32_t, uint16_t);
-static void lpfc_nvmet_wqfull_flush(struct lpfc_hba *, struct lpfc_queue *,
-				    struct lpfc_nvmet_rcv_ctx *);
-
-static union lpfc_wqe128 lpfc_tsend_cmd_template;
-static union lpfc_wqe128 lpfc_treceive_cmd_template;
-static union lpfc_wqe128 lpfc_trsp_cmd_template;
-
-/* Setup WQE templates for NVME IOs */
-void
-lpfc_nvmet_cmd_template(void)
-{
-	union lpfc_wqe128 *wqe;
-
-	/* TSEND template */
-	wqe = &lpfc_tsend_cmd_template;
-	memset(wqe, 0, sizeof(union lpfc_wqe128));
-
-	/* Word 0, 1, 2 - BDE is variable */
-
-	/* Word 3 - payload_offset_len is zero */
-
-	/* Word 4 - relative_offset is variable */
-
-	/* Word 5 - is zero */
-
-	/* Word 6 - ctxt_tag, xri_tag is variable */
-
-	/* Word 7 - wqe_ar is variable */
-	bf_set(wqe_cmnd, &wqe->fcp_tsend.wqe_com, CMD_FCP_TSEND64_WQE);
-	bf_set(wqe_pu, &wqe->fcp_tsend.wqe_com, PARM_REL_OFF);
-	bf_set(wqe_class, &wqe->fcp_tsend.wqe_com, CLASS3);
-	bf_set(wqe_ct, &wqe->fcp_tsend.wqe_com, SLI4_CT_RPI);
-	bf_set(wqe_ar, &wqe->fcp_tsend.wqe_com, 1);
-
-	/* Word 8 - abort_tag is variable */
-
-	/* Word 9  - reqtag, rcvoxid is variable */
-
-	/* Word 10 - wqes, xc is variable */
-	bf_set(wqe_nvme, &wqe->fcp_tsend.wqe_com, 1);
-	bf_set(wqe_dbde, &wqe->fcp_tsend.wqe_com, 1);
-	bf_set(wqe_wqes, &wqe->fcp_tsend.wqe_com, 0);
-	bf_set(wqe_xc, &wqe->fcp_tsend.wqe_com, 1);
-	bf_set(wqe_iod, &wqe->fcp_tsend.wqe_com, LPFC_WQE_IOD_WRITE);
-	bf_set(wqe_lenloc, &wqe->fcp_tsend.wqe_com, LPFC_WQE_LENLOC_WORD12);
-
-	/* Word 11 - sup, irsp, irsplen is variable */
-	bf_set(wqe_cmd_type, &wqe->fcp_tsend.wqe_com, FCP_COMMAND_TSEND);
-	bf_set(wqe_cqid, &wqe->fcp_tsend.wqe_com, LPFC_WQE_CQ_ID_DEFAULT);
-	bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 0);
-	bf_set(wqe_irsp, &wqe->fcp_tsend.wqe_com, 0);
-	bf_set(wqe_irsplen, &wqe->fcp_tsend.wqe_com, 0);
-	bf_set(wqe_pbde, &wqe->fcp_tsend.wqe_com, 0);
-
-	/* Word 12 - fcp_data_len is variable */
-
-	/* Word 13, 14, 15 - PBDE is zero */
-
-	/* TRECEIVE template */
-	wqe = &lpfc_treceive_cmd_template;
-	memset(wqe, 0, sizeof(union lpfc_wqe128));
-
-	/* Word 0, 1, 2 - BDE is variable */
-
-	/* Word 3 */
-	wqe->fcp_treceive.payload_offset_len = TXRDY_PAYLOAD_LEN;
-
-	/* Word 4 - relative_offset is variable */
-
-	/* Word 5 - is zero */
-
-	/* Word 6 - ctxt_tag, xri_tag is variable */
-
-	/* Word 7 */
-	bf_set(wqe_cmnd, &wqe->fcp_treceive.wqe_com, CMD_FCP_TRECEIVE64_WQE);
-	bf_set(wqe_pu, &wqe->fcp_treceive.wqe_com, PARM_REL_OFF);
-	bf_set(wqe_class, &wqe->fcp_treceive.wqe_com, CLASS3);
-	bf_set(wqe_ct, &wqe->fcp_treceive.wqe_com, SLI4_CT_RPI);
-	bf_set(wqe_ar, &wqe->fcp_treceive.wqe_com, 0);
-
-	/* Word 8 - abort_tag is variable */
-
-	/* Word 9  - reqtag, rcvoxid is variable */
-
-	/* Word 10 - xc is variable */
-	bf_set(wqe_dbde, &wqe->fcp_treceive.wqe_com, 1);
-	bf_set(wqe_wqes, &wqe->fcp_treceive.wqe_com, 0);
-	bf_set(wqe_nvme, &wqe->fcp_treceive.wqe_com, 1);
-	bf_set(wqe_iod, &wqe->fcp_treceive.wqe_com, LPFC_WQE_IOD_READ);
-	bf_set(wqe_lenloc, &wqe->fcp_treceive.wqe_com, LPFC_WQE_LENLOC_WORD12);
-	bf_set(wqe_xc, &wqe->fcp_tsend.wqe_com, 1);
-
-	/* Word 11 - pbde is variable */
-	bf_set(wqe_cmd_type, &wqe->fcp_treceive.wqe_com, FCP_COMMAND_TRECEIVE);
-	bf_set(wqe_cqid, &wqe->fcp_treceive.wqe_com, LPFC_WQE_CQ_ID_DEFAULT);
-	bf_set(wqe_sup, &wqe->fcp_treceive.wqe_com, 0);
-	bf_set(wqe_irsp, &wqe->fcp_treceive.wqe_com, 0);
-	bf_set(wqe_irsplen, &wqe->fcp_treceive.wqe_com, 0);
-	bf_set(wqe_pbde, &wqe->fcp_treceive.wqe_com, 1);
-
-	/* Word 12 - fcp_data_len is variable */
-
-	/* Word 13, 14, 15 - PBDE is variable */
-
-	/* TRSP template */
-	wqe = &lpfc_trsp_cmd_template;
-	memset(wqe, 0, sizeof(union lpfc_wqe128));
-
-	/* Word 0, 1, 2 - BDE is variable */
-
-	/* Word 3 - response_len is variable */
-
-	/* Word 4, 5 - is zero */
-
-	/* Word 6 - ctxt_tag, xri_tag is variable */
-
-	/* Word 7 */
-	bf_set(wqe_cmnd, &wqe->fcp_trsp.wqe_com, CMD_FCP_TRSP64_WQE);
-	bf_set(wqe_pu, &wqe->fcp_trsp.wqe_com, PARM_UNUSED);
-	bf_set(wqe_class, &wqe->fcp_trsp.wqe_com, CLASS3);
-	bf_set(wqe_ct, &wqe->fcp_trsp.wqe_com, SLI4_CT_RPI);
-	bf_set(wqe_ag, &wqe->fcp_trsp.wqe_com, 1); /* wqe_ar */
-
-	/* Word 8 - abort_tag is variable */
-
-	/* Word 9  - reqtag is variable */
-
-	/* Word 10 wqes, xc is variable */
-	bf_set(wqe_dbde, &wqe->fcp_trsp.wqe_com, 1);
-	bf_set(wqe_nvme, &wqe->fcp_trsp.wqe_com, 1);
-	bf_set(wqe_wqes, &wqe->fcp_trsp.wqe_com, 0);
-	bf_set(wqe_xc, &wqe->fcp_trsp.wqe_com, 0);
-	bf_set(wqe_iod, &wqe->fcp_trsp.wqe_com, LPFC_WQE_IOD_NONE);
-	bf_set(wqe_lenloc, &wqe->fcp_trsp.wqe_com, LPFC_WQE_LENLOC_WORD3);
-
-	/* Word 11 irsp, irsplen is variable */
-	bf_set(wqe_cmd_type, &wqe->fcp_trsp.wqe_com, FCP_COMMAND_TRSP);
-	bf_set(wqe_cqid, &wqe->fcp_trsp.wqe_com, LPFC_WQE_CQ_ID_DEFAULT);
-	bf_set(wqe_sup, &wqe->fcp_trsp.wqe_com, 0);
-	bf_set(wqe_irsp, &wqe->fcp_trsp.wqe_com, 0);
-	bf_set(wqe_irsplen, &wqe->fcp_trsp.wqe_com, 0);
-	bf_set(wqe_pbde, &wqe->fcp_trsp.wqe_com, 0);
-
-	/* Word 12, 13, 14, 15 - is zero */
-}
 
 void
 lpfc_nvmet_defer_release(struct lpfc_hba *phba, struct lpfc_nvmet_rcv_ctx *ctxp)
@@ -275,7 +130,7 @@ lpfc_nvmet_xmt_ls_rsp_cmp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdwqe,
 	if (tgtp) {
 		if (status) {
 			atomic_inc(&tgtp->xmt_ls_rsp_error);
-			if (result == IOERR_ABORT_REQUESTED)
+			if (status == IOERR_ABORT_REQUESTED)
 				atomic_inc(&tgtp->xmt_ls_rsp_aborted);
 			if (bf_get(lpfc_wcqe_c_xb, wcqe))
 				atomic_inc(&tgtp->xmt_ls_rsp_xb_set);
@@ -402,7 +257,6 @@ lpfc_nvmet_ctxbuf_post(struct lpfc_hba *phba, struct lpfc_nvmet_ctxbuf *ctx_buf)
 
 		/* Process FCP command */
 		if (rc == 0) {
-			ctxp->rqb_buffer = NULL;
 			atomic_inc(&tgtp->rcv_fcp_cmd_out);
 			nvmebuf->hrq->rqbp->rqb_free_buffer(phba, nvmebuf);
 			return;
@@ -414,6 +268,8 @@ lpfc_nvmet_ctxbuf_post(struct lpfc_hba *phba, struct lpfc_nvmet_ctxbuf *ctx_buf)
 					 "NVMET RCV BUSY: xri x%x sz %d "
 					 "from %06x\n",
 					 oxid, size, sid);
+			/* defer repost rcv buffer till .defer_rcv callback */
+			ctxp->flag &= ~LPFC_NVMET_DEFER_RCV_REPOST;
 			atomic_inc(&tgtp->rcv_fcp_cmd_out);
 			return;
 		}
@@ -685,7 +541,7 @@ lpfc_nvmet_xmt_fcp_op_cmp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdwqe,
 		rsp->transferred_length = 0;
 		if (tgtp) {
 			atomic_inc(&tgtp->xmt_fcp_rsp_error);
-			if (result == IOERR_ABORT_REQUESTED)
+			if (status == IOERR_ABORT_REQUESTED)
 				atomic_inc(&tgtp->xmt_fcp_rsp_aborted);
 		}
 
@@ -885,10 +741,7 @@ lpfc_nvmet_xmt_fcp_op(struct nvmet_fc_target_port *tgtport,
 	struct lpfc_nvmet_rcv_ctx *ctxp =
 		container_of(rsp, struct lpfc_nvmet_rcv_ctx, ctx.fcp_req);
 	struct lpfc_hba *phba = ctxp->phba;
-	struct lpfc_queue *wq;
 	struct lpfc_iocbq *nvmewqeq;
-	struct lpfc_sli_ring *pring;
-	unsigned long iflags;
 	int rc;
 
 	if (phba->pport->load_flag & FC_UNLOADING) {
@@ -967,22 +820,6 @@ lpfc_nvmet_xmt_fcp_op(struct nvmet_fc_target_port *tgtport,
 		return 0;
 	}
 
-	if (rc == -EBUSY) {
-		/*
-		 * WQ was full, so queue nvmewqeq to be sent after
-		 * WQE release CQE
-		 */
-		ctxp->flag |= LPFC_NVMET_DEFER_WQFULL;
-		wq = phba->sli4_hba.nvme_wq[rsp->hwqid];
-		pring = wq->pring;
-		spin_lock_irqsave(&pring->ring_lock, iflags);
-		list_add_tail(&nvmewqeq->list, &wq->wqfull_list);
-		wq->q_flag |= HBA_NVMET_WQFULL;
-		spin_unlock_irqrestore(&pring->ring_lock, iflags);
-		atomic_inc(&lpfc_nvmep->defer_wqfull);
-		return 0;
-	}
-
 	/* Give back resources */
 	atomic_inc(&lpfc_nvmep->xmt_fcp_drop);
 	lpfc_printf_log(phba, KERN_ERR, LOG_NVME_IOERR,
@@ -1003,8 +840,7 @@ lpfc_nvmet_targetport_delete(struct nvmet_fc_target_port *targetport)
 	struct lpfc_nvmet_tgtport *tport = targetport->private;
 
 	/* release any threads waiting for the unreg to complete */
-	if (tport->phba->targetport)
-		complete(tport->tport_unreg_cmp);
+	complete(&tport->tport_unreg_done);
 }
 
 static void
@@ -1015,7 +851,6 @@ lpfc_nvmet_xmt_fcp_abort(struct nvmet_fc_target_port *tgtport,
 	struct lpfc_nvmet_rcv_ctx *ctxp =
 		container_of(req, struct lpfc_nvmet_rcv_ctx, ctx.fcp_req);
 	struct lpfc_hba *phba = ctxp->phba;
-	struct lpfc_queue *wq;
 	unsigned long flags;
 
 	if (phba->pport->load_flag & FC_UNLOADING)
@@ -1044,15 +879,6 @@ lpfc_nvmet_xmt_fcp_abort(struct nvmet_fc_target_port *tgtport,
 		return;
 	}
 	ctxp->flag |= LPFC_NVMET_ABORT_OP;
-
-	if (ctxp->flag & LPFC_NVMET_DEFER_WQFULL) {
-		lpfc_nvmet_unsol_fcp_issue_abort(phba, ctxp, ctxp->sid,
-						 ctxp->oxid);
-		wq = phba->sli4_hba.nvme_wq[ctxp->wqeq->hba_wqidx];
-		spin_unlock_irqrestore(&ctxp->ctxlock, flags);
-		lpfc_nvmet_wqfull_flush(phba, wq, ctxp);
-		return;
-	}
 
 	/* An state of LPFC_NVMET_STE_RCV means we have just received
 	 * the NVME command and have not started processing it.
@@ -1118,20 +944,13 @@ lpfc_nvmet_defer_rcv(struct nvmet_fc_target_port *tgtport,
 	lpfc_nvmeio_data(phba, "NVMET DEFERRCV: xri x%x sz %d CPU %02x\n",
 			 ctxp->oxid, ctxp->size, smp_processor_id());
 
-	if (!nvmebuf) {
-		lpfc_printf_log(phba, KERN_INFO, LOG_NVME_IOERR,
-				"6425 Defer rcv: no buffer xri x%x: "
-				"flg %x ste %x\n",
-				ctxp->oxid, ctxp->flag, ctxp->state);
-		return;
-	}
-
 	tgtp = phba->targetport->private;
-	if (tgtp)
-		atomic_inc(&tgtp->rcv_fcp_cmd_defer);
-
-	/* Free the nvmebuf since a new buffer already replaced it */
-	nvmebuf->hrq->rqbp->rqb_free_buffer(phba, nvmebuf);
+	atomic_inc(&tgtp->rcv_fcp_cmd_defer);
+	if (ctxp->flag & LPFC_NVMET_DEFER_RCV_REPOST)
+		lpfc_rq_buf_free(phba, &nvmebuf->hbuf); /* repost */
+	else
+		nvmebuf->hrq->rqbp->rqb_free_buffer(phba, nvmebuf);
+	ctxp->flag &= ~LPFC_NVMET_DEFER_RCV_REPOST;
 }
 
 static struct nvmet_fc_target_template lpfc_tgttemplate = {
@@ -1305,10 +1124,16 @@ lpfc_nvmet_setup_io_context(struct lpfc_hba *phba)
 		}
 		ctx_buf->iocbq->iocb_flag = LPFC_IO_NVMET;
 		nvmewqe = ctx_buf->iocbq;
-		wqe = &nvmewqe->wqe;
-
+		wqe = (union lpfc_wqe128 *)&nvmewqe->wqe;
 		/* Initialize WQE */
 		memset(wqe, 0, sizeof(union lpfc_wqe));
+		/* Word 7 */
+		bf_set(wqe_ct, &wqe->generic.wqe_com, SLI4_CT_RPI);
+		bf_set(wqe_class, &wqe->generic.wqe_com, CLASS3);
+		/* Word 10 */
+		bf_set(wqe_nvme, &wqe->fcp_tsend.wqe_com, 1);
+		bf_set(wqe_ebde_cnt, &wqe->generic.wqe_com, 0);
+		bf_set(wqe_qosd, &wqe->generic.wqe_com, 0);
 
 		ctx_buf->iocbq->context1 = NULL;
 		spin_lock(&phba->sli4_hba.sgl_list_lock);
@@ -1340,14 +1165,15 @@ lpfc_nvmet_setup_io_context(struct lpfc_hba *phba)
 			idx = 0;
 	}
 
-	for (i = 0; i < phba->sli4_hba.num_present_cpu; i++) {
-		for (j = 0; j < phba->cfg_nvmet_mrq; j++) {
-			infop = lpfc_get_ctx_list(phba, i, j);
+	infop = phba->sli4_hba.nvmet_ctx_info;
+	for (j = 0; j < phba->cfg_nvmet_mrq; j++) {
+		for (i = 0; i < phba->sli4_hba.num_present_cpu; i++) {
 			lpfc_printf_log(phba, KERN_INFO, LOG_NVME | LOG_INIT,
 					"6408 TOTAL NVMET ctx for CPU %d "
 					"MRQ %d: cnt %d nextcpu %p\n",
 					i, j, infop->nvmet_ctx_list_cnt,
 					infop->nvmet_ctx_next_cpu);
+			infop++;
 		}
 	}
 	return 0;
@@ -1373,10 +1199,17 @@ lpfc_nvmet_create_targetport(struct lpfc_hba *phba)
 	pinfo.port_name = wwn_to_u64(vport->fc_portname.u.wwn);
 	pinfo.port_id = vport->fc_myDID;
 
-	/* We need to tell the transport layer + 1 because it takes page
-	 * alignment into account. When space for the SGL is allocated we
-	 * allocate + 3, one for cmd, one for rsp and one for this alignment
+	/* Limit to LPFC_MAX_NVME_SEG_CNT.
+	 * For now need + 1 to get around NVME transport logic.
 	 */
+	if (phba->cfg_sg_seg_cnt > LPFC_MAX_NVME_SEG_CNT) {
+		lpfc_printf_log(phba, KERN_INFO, LOG_NVME | LOG_INIT,
+				"6400 Reducing sg segment cnt to %d\n",
+				LPFC_MAX_NVME_SEG_CNT);
+		phba->cfg_nvme_seg_cnt = LPFC_MAX_NVME_SEG_CNT;
+	} else {
+		phba->cfg_nvme_seg_cnt = phba->cfg_sg_seg_cnt;
+	}
 	lpfc_tgttemplate.max_sgl_segments = phba->cfg_nvme_seg_cnt + 1;
 	lpfc_tgttemplate.max_hw_queues = phba->cfg_nvme_io_channel;
 	lpfc_tgttemplate.target_features = NVMET_FCTGTFEAT_READDATA_RSP;
@@ -1447,9 +1280,6 @@ lpfc_nvmet_create_targetport(struct lpfc_hba *phba)
 		atomic_set(&tgtp->xmt_abort_sol, 0);
 		atomic_set(&tgtp->xmt_abort_rsp, 0);
 		atomic_set(&tgtp->xmt_abort_rsp_error, 0);
-		atomic_set(&tgtp->defer_ctx, 0);
-		atomic_set(&tgtp->defer_fod, 0);
-		atomic_set(&tgtp->defer_wqfull, 0);
 	}
 	return error;
 }
@@ -1605,107 +1435,19 @@ lpfc_nvmet_rcv_unsol_abort(struct lpfc_vport *vport,
 	return 0;
 }
 
-static void
-lpfc_nvmet_wqfull_flush(struct lpfc_hba *phba, struct lpfc_queue *wq,
-			struct lpfc_nvmet_rcv_ctx *ctxp)
-{
-	struct lpfc_sli_ring *pring;
-	struct lpfc_iocbq *nvmewqeq;
-	struct lpfc_iocbq *next_nvmewqeq;
-	unsigned long iflags;
-	struct lpfc_wcqe_complete wcqe;
-	struct lpfc_wcqe_complete *wcqep;
-
-	pring = wq->pring;
-	wcqep = &wcqe;
-
-	/* Fake an ABORT error code back to cmpl routine */
-	memset(wcqep, 0, sizeof(struct lpfc_wcqe_complete));
-	bf_set(lpfc_wcqe_c_status, wcqep, IOSTAT_LOCAL_REJECT);
-	wcqep->parameter = IOERR_ABORT_REQUESTED;
-
-	spin_lock_irqsave(&pring->ring_lock, iflags);
-	list_for_each_entry_safe(nvmewqeq, next_nvmewqeq,
-				 &wq->wqfull_list, list) {
-		if (ctxp) {
-			/* Checking for a specific IO to flush */
-			if (nvmewqeq->context2 == ctxp) {
-				list_del(&nvmewqeq->list);
-				spin_unlock_irqrestore(&pring->ring_lock,
-						       iflags);
-				lpfc_nvmet_xmt_fcp_op_cmp(phba, nvmewqeq,
-							  wcqep);
-				return;
-			}
-			continue;
-		} else {
-			/* Flush all IOs */
-			list_del(&nvmewqeq->list);
-			spin_unlock_irqrestore(&pring->ring_lock, iflags);
-			lpfc_nvmet_xmt_fcp_op_cmp(phba, nvmewqeq, wcqep);
-			spin_lock_irqsave(&pring->ring_lock, iflags);
-		}
-	}
-	if (!ctxp)
-		wq->q_flag &= ~HBA_NVMET_WQFULL;
-	spin_unlock_irqrestore(&pring->ring_lock, iflags);
-}
-
-void
-lpfc_nvmet_wqfull_process(struct lpfc_hba *phba,
-			  struct lpfc_queue *wq)
-{
-#if (IS_ENABLED(CONFIG_NVME_TARGET_FC))
-	struct lpfc_sli_ring *pring;
-	struct lpfc_iocbq *nvmewqeq;
-	unsigned long iflags;
-	int rc;
-
-	/*
-	 * Some WQE slots are available, so try to re-issue anything
-	 * on the WQ wqfull_list.
-	 */
-	pring = wq->pring;
-	spin_lock_irqsave(&pring->ring_lock, iflags);
-	while (!list_empty(&wq->wqfull_list)) {
-		list_remove_head(&wq->wqfull_list, nvmewqeq, struct lpfc_iocbq,
-				 list);
-		spin_unlock_irqrestore(&pring->ring_lock, iflags);
-		rc = lpfc_sli4_issue_wqe(phba, LPFC_FCP_RING, nvmewqeq);
-		spin_lock_irqsave(&pring->ring_lock, iflags);
-		if (rc == -EBUSY) {
-			/* WQ was full again, so put it back on the list */
-			list_add(&nvmewqeq->list, &wq->wqfull_list);
-			spin_unlock_irqrestore(&pring->ring_lock, iflags);
-			return;
-		}
-	}
-	wq->q_flag &= ~HBA_NVMET_WQFULL;
-	spin_unlock_irqrestore(&pring->ring_lock, iflags);
-
-#endif
-}
-
 void
 lpfc_nvmet_destroy_targetport(struct lpfc_hba *phba)
 {
 #if (IS_ENABLED(CONFIG_NVME_TARGET_FC))
 	struct lpfc_nvmet_tgtport *tgtp;
-	struct lpfc_queue *wq;
-	uint32_t qidx;
-	DECLARE_COMPLETION_ONSTACK(tport_unreg_cmp);
 
 	if (phba->nvmet_support == 0)
 		return;
 	if (phba->targetport) {
 		tgtp = (struct lpfc_nvmet_tgtport *)phba->targetport->private;
-		for (qidx = 0; qidx < phba->cfg_nvme_io_channel; qidx++) {
-			wq = phba->sli4_hba.nvme_wq[qidx];
-			lpfc_nvmet_wqfull_flush(phba, wq, NULL);
-		}
-		tgtp->tport_unreg_cmp = &tport_unreg_cmp;
+		init_completion(&tgtp->tport_unreg_done);
 		nvmet_fc_unregister_targetport(phba->targetport);
-		wait_for_completion_timeout(&tport_unreg_cmp, 5);
+		wait_for_completion_timeout(&tgtp->tport_unreg_done, 5);
 		lpfc_nvmet_cleanup_io_context(phba);
 	}
 	phba->targetport = NULL;
@@ -1736,12 +1478,9 @@ lpfc_nvmet_unsol_ls_buffer(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	uint32_t *payload;
 	uint32_t size, oxid, sid, rc;
 
-	fc_hdr = (struct fc_frame_header *)(nvmebuf->hbuf.virt);
-	oxid = be16_to_cpu(fc_hdr->fh_ox_id);
-
-	if (!phba->targetport) {
+	if (!nvmebuf || !phba->targetport) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_NVME_IOERR,
-				"6154 LS Drop IO x%x\n", oxid);
+				"6154 LS Drop IO\n");
 		oxid = 0;
 		size = 0;
 		sid = 0;
@@ -1751,7 +1490,9 @@ lpfc_nvmet_unsol_ls_buffer(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 
 	tgtp = (struct lpfc_nvmet_tgtport *)phba->targetport->private;
 	payload = (uint32_t *)(nvmebuf->dbuf.virt);
+	fc_hdr = (struct fc_frame_header *)(nvmebuf->hbuf.virt);
 	size = bf_get(lpfc_rcqe_length,  &nvmebuf->cq_event.cqe.rcqe_cmpl);
+	oxid = be16_to_cpu(fc_hdr->fh_ox_id);
 	sid = sli4_sid_from_fc_hdr(fc_hdr);
 
 	ctxp = kzalloc(sizeof(struct lpfc_nvmet_rcv_ctx), GFP_ATOMIC);
@@ -1764,7 +1505,8 @@ dropit:
 		lpfc_nvmeio_data(phba, "NVMET LS  DROP: "
 				 "xri x%x sz %d from %06x\n",
 				 oxid, size, sid);
-		lpfc_in_buf_free(phba, &nvmebuf->dbuf);
+		if (nvmebuf)
+			lpfc_in_buf_free(phba, &nvmebuf->dbuf);
 		return;
 	}
 	ctxp->phba = phba;
@@ -1807,7 +1549,8 @@ dropit:
 			ctxp->oxid, rc);
 
 	/* We assume a rcv'ed cmd ALWAYs fits into 1 buffer */
-	lpfc_in_buf_free(phba, &nvmebuf->dbuf);
+	if (nvmebuf)
+		lpfc_in_buf_free(phba, &nvmebuf->dbuf);
 
 	atomic_inc(&tgtp->xmt_ls_abort);
 	lpfc_nvmet_unsol_ls_issue_abort(phba, ctxp, sid, oxid);
@@ -1951,8 +1694,6 @@ lpfc_nvmet_unsol_fcp_buffer(struct lpfc_hba *phba,
 	lpfc_nvmeio_data(phba, "NVMET FCP  RCV: xri x%x sz %d CPU %02x\n",
 			 oxid, size, smp_processor_id());
 
-	tgtp = (struct lpfc_nvmet_tgtport *)phba->targetport->private;
-
 	if (!ctx_buf) {
 		/* Queue this NVME IO to process later */
 		spin_lock_irqsave(&phba->sli4_hba.nvmet_io_wait_lock, iflag);
@@ -1968,11 +1709,10 @@ lpfc_nvmet_unsol_fcp_buffer(struct lpfc_hba *phba,
 		lpfc_post_rq_buffer(
 			phba, phba->sli4_hba.nvmet_mrq_hdr[qno],
 			phba->sli4_hba.nvmet_mrq_data[qno], 1, qno);
-
-		atomic_inc(&tgtp->defer_ctx);
 		return;
 	}
 
+	tgtp = (struct lpfc_nvmet_tgtport *)phba->targetport->private;
 	payload = (uint32_t *)(nvmebuf->dbuf.virt);
 	sid = sli4_sid_from_fc_hdr(fc_hdr);
 
@@ -2036,20 +1776,12 @@ lpfc_nvmet_unsol_fcp_buffer(struct lpfc_hba *phba,
 
 	/* Processing of FCP command is deferred */
 	if (rc == -EOVERFLOW) {
-		/*
-		 * Post a brand new DMA buffer to RQ and defer
-		 * freeing rcv buffer till .defer_rcv callback
-		 */
-		qno = nvmebuf->idx;
-		lpfc_post_rq_buffer(
-			phba, phba->sli4_hba.nvmet_mrq_hdr[qno],
-			phba->sli4_hba.nvmet_mrq_data[qno], 1, qno);
-
 		lpfc_nvmeio_data(phba,
 				 "NVMET RCV BUSY: xri x%x sz %d from %06x\n",
 				 oxid, size, sid);
+		/* defer reposting rcv buffer till .defer_rcv callback */
+		ctxp->flag |= LPFC_NVMET_DEFER_RCV_REPOST;
 		atomic_inc(&tgtp->rcv_fcp_cmd_out);
-		atomic_inc(&tgtp->defer_fod);
 		return;
 	}
 	ctxp->rqb_buffer = nvmebuf;
@@ -2165,7 +1897,7 @@ lpfc_nvmet_prep_ls_wqe(struct lpfc_hba *phba,
 {
 	struct lpfc_nodelist *ndlp;
 	struct lpfc_iocbq *nvmewqe;
-	union lpfc_wqe128 *wqe;
+	union lpfc_wqe *wqe;
 
 	if (!lpfc_is_link_up(phba)) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_NVME_DISC,
@@ -2291,11 +2023,9 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 	struct lpfc_iocbq *nvmewqe;
 	struct scatterlist *sgel;
 	union lpfc_wqe128 *wqe;
-	struct ulp_bde64 *bde;
 	uint32_t *txrdy;
 	dma_addr_t physaddr;
 	int i, cnt;
-	int do_pbde;
 	int xc = 1;
 
 	if (!lpfc_is_link_up(phba)) {
@@ -2348,7 +2078,7 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 	if (((ctxp->state == LPFC_NVMET_STE_RCV) &&
 	    (ctxp->entry_cnt == 1)) ||
 	    (ctxp->state == LPFC_NVMET_STE_DATA)) {
-		wqe = &nvmewqe->wqe;
+		wqe = (union lpfc_wqe128 *)&nvmewqe->wqe;
 	} else {
 		lpfc_printf_log(phba, KERN_ERR, LOG_NVME_IOERR,
 				"6111 Wrong state NVMET FCP: %d  cnt %d\n",
@@ -2360,11 +2090,6 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 	switch (rsp->op) {
 	case NVMET_FCOP_READDATA:
 	case NVMET_FCOP_READDATA_RSP:
-		/* From the tsend template, initialize words 7 - 11 */
-		memcpy(&wqe->words[7],
-		       &lpfc_tsend_cmd_template.words[7],
-		       sizeof(uint32_t) * 5);
-
 		/* Words 0 - 2 : The first sg segment */
 		sgel = &rsp->sg[0];
 		physaddr = sg_dma_address(sgel);
@@ -2381,7 +2106,6 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		wqe->fcp_tsend.relative_offset = ctxp->offset;
 
 		/* Word 5 */
-		wqe->fcp_tsend.reserved = 0;
 
 		/* Word 6 */
 		bf_set(wqe_ctxt_tag, &wqe->fcp_tsend.wqe_com,
@@ -2389,7 +2113,9 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		bf_set(wqe_xri_tag, &wqe->fcp_tsend.wqe_com,
 		       nvmewqe->sli4_xritag);
 
-		/* Word 7 - set ar later */
+		/* Word 7 */
+		bf_set(wqe_pu, &wqe->fcp_tsend.wqe_com, 1);
+		bf_set(wqe_cmnd, &wqe->fcp_tsend.wqe_com, CMD_FCP_TSEND64_WQE);
 
 		/* Word 8 */
 		wqe->fcp_tsend.wqe_com.abort_tag = nvmewqe->iotag;
@@ -2398,12 +2124,23 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		bf_set(wqe_reqtag, &wqe->fcp_tsend.wqe_com, nvmewqe->iotag);
 		bf_set(wqe_rcvoxid, &wqe->fcp_tsend.wqe_com, ctxp->oxid);
 
-		/* Word 10 - set wqes later, in template xc=1 */
-		if (!xc)
-			bf_set(wqe_xc, &wqe->fcp_tsend.wqe_com, 0);
+		/* Word 10 */
+		bf_set(wqe_nvme, &wqe->fcp_tsend.wqe_com, 1);
+		bf_set(wqe_dbde, &wqe->fcp_tsend.wqe_com, 1);
+		bf_set(wqe_iod, &wqe->fcp_tsend.wqe_com, LPFC_WQE_IOD_WRITE);
+		bf_set(wqe_lenloc, &wqe->fcp_tsend.wqe_com,
+		       LPFC_WQE_LENLOC_WORD12);
+		bf_set(wqe_ebde_cnt, &wqe->fcp_tsend.wqe_com, 0);
+		bf_set(wqe_xc, &wqe->fcp_tsend.wqe_com, xc);
+		bf_set(wqe_nvme, &wqe->fcp_tsend.wqe_com, 1);
+		if (phba->cfg_nvme_oas)
+			bf_set(wqe_oas, &wqe->fcp_tsend.wqe_com, 1);
 
-		/* Word 11 - set sup, irsp, irsplen later */
-		do_pbde = 0;
+		/* Word 11 */
+		bf_set(wqe_cqid, &wqe->fcp_tsend.wqe_com,
+		       LPFC_WQE_CQ_ID_DEFAULT);
+		bf_set(wqe_cmd_type, &wqe->fcp_tsend.wqe_com,
+		       FCP_COMMAND_TSEND);
 
 		/* Word 12 */
 		wqe->fcp_tsend.fcp_data_len = rsp->transfer_length;
@@ -2425,14 +2162,15 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		sgl++;
 		if (rsp->op == NVMET_FCOP_READDATA_RSP) {
 			atomic_inc(&tgtp->xmt_fcp_read_rsp);
-
-			/* In template ar=1 wqes=0 sup=0 irsp=0 irsplen=0 */
-
-			if (rsp->rsplen == LPFC_NVMET_SUCCESS_LEN) {
-				if (ndlp->nlp_flag & NLP_SUPPRESS_RSP)
-					bf_set(wqe_sup,
-					       &wqe->fcp_tsend.wqe_com, 1);
+			bf_set(wqe_ar, &wqe->fcp_tsend.wqe_com, 1);
+			if ((ndlp->nlp_flag & NLP_SUPPRESS_RSP) &&
+			    (rsp->rsplen == 12)) {
+				bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 1);
+				bf_set(wqe_wqes, &wqe->fcp_tsend.wqe_com, 0);
+				bf_set(wqe_irsp, &wqe->fcp_tsend.wqe_com, 0);
+				bf_set(wqe_irsplen, &wqe->fcp_tsend.wqe_com, 0);
 			} else {
+				bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 0);
 				bf_set(wqe_wqes, &wqe->fcp_tsend.wqe_com, 1);
 				bf_set(wqe_irsp, &wqe->fcp_tsend.wqe_com, 1);
 				bf_set(wqe_irsplen, &wqe->fcp_tsend.wqe_com,
@@ -2443,17 +2181,15 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		} else {
 			atomic_inc(&tgtp->xmt_fcp_read);
 
-			/* In template ar=1 wqes=0 sup=0 irsp=0 irsplen=0 */
+			bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 0);
+			bf_set(wqe_wqes, &wqe->fcp_tsend.wqe_com, 0);
+			bf_set(wqe_irsp, &wqe->fcp_tsend.wqe_com, 0);
 			bf_set(wqe_ar, &wqe->fcp_tsend.wqe_com, 0);
+			bf_set(wqe_irsplen, &wqe->fcp_tsend.wqe_com, 0);
 		}
 		break;
 
 	case NVMET_FCOP_WRITEDATA:
-		/* From the treceive template, initialize words 3 - 11 */
-		memcpy(&wqe->words[3],
-		       &lpfc_treceive_cmd_template.words[3],
-		       sizeof(uint32_t) * 9);
-
 		/* Words 0 - 2 : The first sg segment */
 		txrdy = dma_pool_alloc(phba->txrdy_payload_pool,
 				       GFP_KERNEL, &physaddr);
@@ -2472,8 +2208,13 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		wqe->fcp_treceive.bde.addrHigh =
 			cpu_to_le32(putPaddrHigh(physaddr));
 
+		/* Word 3 */
+		wqe->fcp_treceive.payload_offset_len = TXRDY_PAYLOAD_LEN;
+
 		/* Word 4 */
 		wqe->fcp_treceive.relative_offset = ctxp->offset;
+
+		/* Word 5 */
 
 		/* Word 6 */
 		bf_set(wqe_ctxt_tag, &wqe->fcp_treceive.wqe_com,
@@ -2482,6 +2223,10 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		       nvmewqe->sli4_xritag);
 
 		/* Word 7 */
+		bf_set(wqe_pu, &wqe->fcp_treceive.wqe_com, 1);
+		bf_set(wqe_ar, &wqe->fcp_treceive.wqe_com, 0);
+		bf_set(wqe_cmnd, &wqe->fcp_treceive.wqe_com,
+		       CMD_FCP_TRECEIVE64_WQE);
 
 		/* Word 8 */
 		wqe->fcp_treceive.wqe_com.abort_tag = nvmewqe->iotag;
@@ -2490,17 +2235,26 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		bf_set(wqe_reqtag, &wqe->fcp_treceive.wqe_com, nvmewqe->iotag);
 		bf_set(wqe_rcvoxid, &wqe->fcp_treceive.wqe_com, ctxp->oxid);
 
-		/* Word 10 - in template xc=1 */
-		if (!xc)
-			bf_set(wqe_xc, &wqe->fcp_treceive.wqe_com, 0);
+		/* Word 10 */
+		bf_set(wqe_nvme, &wqe->fcp_treceive.wqe_com, 1);
+		bf_set(wqe_dbde, &wqe->fcp_treceive.wqe_com, 1);
+		bf_set(wqe_iod, &wqe->fcp_treceive.wqe_com, LPFC_WQE_IOD_READ);
+		bf_set(wqe_lenloc, &wqe->fcp_treceive.wqe_com,
+		       LPFC_WQE_LENLOC_WORD12);
+		bf_set(wqe_xc, &wqe->fcp_treceive.wqe_com, xc);
+		bf_set(wqe_wqes, &wqe->fcp_treceive.wqe_com, 0);
+		bf_set(wqe_irsp, &wqe->fcp_treceive.wqe_com, 0);
+		bf_set(wqe_irsplen, &wqe->fcp_treceive.wqe_com, 0);
+		bf_set(wqe_nvme, &wqe->fcp_treceive.wqe_com, 1);
+		if (phba->cfg_nvme_oas)
+			bf_set(wqe_oas, &wqe->fcp_treceive.wqe_com, 1);
 
-		/* Word 11 - set pbde later */
-		if (phba->cfg_enable_pbde) {
-			do_pbde = 1;
-		} else {
-			bf_set(wqe_pbde, &wqe->fcp_treceive.wqe_com, 0);
-			do_pbde = 0;
-		}
+		/* Word 11 */
+		bf_set(wqe_cqid, &wqe->fcp_treceive.wqe_com,
+		       LPFC_WQE_CQ_ID_DEFAULT);
+		bf_set(wqe_cmd_type, &wqe->fcp_treceive.wqe_com,
+		       FCP_COMMAND_TRECEIVE);
+		bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 0);
 
 		/* Word 12 */
 		wqe->fcp_tsend.fcp_data_len = rsp->transfer_length;
@@ -2528,11 +2282,6 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		break;
 
 	case NVMET_FCOP_RSP:
-		/* From the treceive template, initialize words 4 - 11 */
-		memcpy(&wqe->words[4],
-		       &lpfc_trsp_cmd_template.words[4],
-		       sizeof(uint32_t) * 8);
-
 		/* Words 0 - 2 */
 		physaddr = rsp->rspdma;
 		wqe->fcp_trsp.bde.tus.f.bdeFlags = BUFF_TYPE_BDE_64;
@@ -2545,6 +2294,12 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		/* Word 3 */
 		wqe->fcp_trsp.response_len = rsp->rsplen;
 
+		/* Word 4 */
+		wqe->fcp_trsp.rsvd_4_5[0] = 0;
+
+
+		/* Word 5 */
+
 		/* Word 6 */
 		bf_set(wqe_ctxt_tag, &wqe->fcp_trsp.wqe_com,
 		       phba->sli4_hba.rpi_ids[ndlp->nlp_rpi]);
@@ -2552,6 +2307,9 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		       nvmewqe->sli4_xritag);
 
 		/* Word 7 */
+		bf_set(wqe_pu, &wqe->fcp_trsp.wqe_com, 0);
+		bf_set(wqe_ag, &wqe->fcp_trsp.wqe_com, 1);
+		bf_set(wqe_cmnd, &wqe->fcp_trsp.wqe_com, CMD_FCP_TRSP64_WQE);
 
 		/* Word 8 */
 		wqe->fcp_trsp.wqe_com.abort_tag = nvmewqe->iotag;
@@ -2561,23 +2319,35 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 		bf_set(wqe_rcvoxid, &wqe->fcp_trsp.wqe_com, ctxp->oxid);
 
 		/* Word 10 */
-		if (xc)
-			bf_set(wqe_xc, &wqe->fcp_trsp.wqe_com, 1);
+		bf_set(wqe_nvme, &wqe->fcp_trsp.wqe_com, 1);
+		bf_set(wqe_dbde, &wqe->fcp_trsp.wqe_com, 0);
+		bf_set(wqe_iod, &wqe->fcp_trsp.wqe_com, LPFC_WQE_IOD_WRITE);
+		bf_set(wqe_lenloc, &wqe->fcp_trsp.wqe_com,
+		       LPFC_WQE_LENLOC_WORD3);
+		bf_set(wqe_xc, &wqe->fcp_trsp.wqe_com, xc);
+		bf_set(wqe_nvme, &wqe->fcp_trsp.wqe_com, 1);
+		if (phba->cfg_nvme_oas)
+			bf_set(wqe_oas, &wqe->fcp_trsp.wqe_com, 1);
 
 		/* Word 11 */
-		/* In template wqes=0 irsp=0 irsplen=0 - good response */
-		if (rsp->rsplen != LPFC_NVMET_SUCCESS_LEN) {
-			/* Bad response - embed it */
+		bf_set(wqe_cqid, &wqe->fcp_trsp.wqe_com,
+		       LPFC_WQE_CQ_ID_DEFAULT);
+		bf_set(wqe_cmd_type, &wqe->fcp_trsp.wqe_com,
+		       FCP_COMMAND_TRSP);
+		bf_set(wqe_sup, &wqe->fcp_tsend.wqe_com, 0);
+
+		if (rsp->rsplen == LPFC_NVMET_SUCCESS_LEN) {
+			/* Good response - all zero's on wire */
+			bf_set(wqe_wqes, &wqe->fcp_trsp.wqe_com, 0);
+			bf_set(wqe_irsp, &wqe->fcp_trsp.wqe_com, 0);
+			bf_set(wqe_irsplen, &wqe->fcp_trsp.wqe_com, 0);
+		} else {
 			bf_set(wqe_wqes, &wqe->fcp_trsp.wqe_com, 1);
 			bf_set(wqe_irsp, &wqe->fcp_trsp.wqe_com, 1);
 			bf_set(wqe_irsplen, &wqe->fcp_trsp.wqe_com,
 			       ((rsp->rsplen >> 2) - 1));
 			memcpy(&wqe->words[16], rsp->rspaddr, rsp->rsplen);
 		}
-		do_pbde = 0;
-
-		/* Word 12 */
-		wqe->fcp_trsp.rsvd_12_15[0] = 0;
 
 		/* Use rspbuf, NOT sg list */
 		rsp->sg_cnt = 0;
@@ -2610,20 +2380,6 @@ lpfc_nvmet_prep_fcp_wqe(struct lpfc_hba *phba,
 			bf_set(lpfc_sli4_sge_last, sgl, 1);
 		sgl->word2 = cpu_to_le32(sgl->word2);
 		sgl->sge_len = cpu_to_le32(cnt);
-		if (i == 0) {
-			bde = (struct ulp_bde64 *)&wqe->words[13];
-			if (do_pbde) {
-				/* Words 13-15  (PBDE) */
-				bde->addrLow = sgl->addr_lo;
-				bde->addrHigh = sgl->addr_hi;
-				bde->tus.f.bdeSize =
-					le32_to_cpu(sgl->sge_len);
-				bde->tus.f.bdeFlags = BUFF_TYPE_BDE_64;
-				bde->tus.w = cpu_to_le32(bde->tus.w);
-			} else {
-				memset(bde, 0, sizeof(struct ulp_bde64));
-			}
-		}
 		sgl++;
 		ctxp->offset += cnt;
 	}
@@ -2841,7 +2597,7 @@ lpfc_nvmet_unsol_issue_abort(struct lpfc_hba *phba,
 {
 	struct lpfc_nvmet_tgtport *tgtp;
 	struct lpfc_iocbq *abts_wqeq;
-	union lpfc_wqe128 *wqe_abts;
+	union lpfc_wqe *wqe_abts;
 	struct lpfc_nodelist *ndlp;
 
 	lpfc_printf_log(phba, KERN_INFO, LOG_NVME_ABTS,
@@ -2936,7 +2692,7 @@ lpfc_nvmet_sol_fcp_issue_abort(struct lpfc_hba *phba,
 {
 	struct lpfc_nvmet_tgtport *tgtp;
 	struct lpfc_iocbq *abts_wqeq;
-	union lpfc_wqe128 *abts_wqe;
+	union lpfc_wqe *abts_wqe;
 	struct lpfc_nodelist *ndlp;
 	unsigned long flags;
 	int rc;
@@ -3111,17 +2867,11 @@ lpfc_nvmet_unsol_fcp_issue_abort(struct lpfc_hba *phba,
 	}
 
 aerr:
-	spin_lock_irqsave(&ctxp->ctxlock, flags);
-	if (ctxp->flag & LPFC_NVMET_CTX_RLS)
-		list_del(&ctxp->list);
-	ctxp->flag &= ~(LPFC_NVMET_ABORT_OP | LPFC_NVMET_CTX_RLS);
-	spin_unlock_irqrestore(&ctxp->ctxlock, flags);
-
+	ctxp->flag &= ~LPFC_NVMET_ABORT_OP;
 	atomic_inc(&tgtp->xmt_abort_rsp_error);
 	lpfc_printf_log(phba, KERN_ERR, LOG_NVME_ABTS,
 			"6135 Failed to Issue ABTS for oxid x%x. Status x%x\n",
 			ctxp->oxid, rc);
-	lpfc_nvmet_ctxbuf_post(phba, ctxp->ctxbuf);
 	return 1;
 }
 
@@ -3132,7 +2882,7 @@ lpfc_nvmet_unsol_ls_issue_abort(struct lpfc_hba *phba,
 {
 	struct lpfc_nvmet_tgtport *tgtp;
 	struct lpfc_iocbq *abts_wqeq;
-	union lpfc_wqe128 *wqe_abts;
+	union lpfc_wqe *wqe_abts;
 	unsigned long flags;
 	int rc;
 

@@ -404,7 +404,7 @@ void dn_rt_cache_flush(int delay)
 
 	if (delay <= 0) {
 		spin_unlock_bh(&dn_rt_flush_lock);
-		dn_run_flush(NULL);
+		dn_run_flush(0);
 		return;
 	}
 
@@ -1852,6 +1852,20 @@ static const struct seq_operations dn_rt_cache_seq_ops = {
 	.stop	= dn_rt_cache_seq_stop,
 	.show	= dn_rt_cache_seq_show,
 };
+
+static int dn_rt_cache_seq_open(struct inode *inode, struct file *file)
+{
+	return seq_open_private(file, &dn_rt_cache_seq_ops,
+			sizeof(struct dn_rt_cache_iter_state));
+}
+
+static const struct file_operations dn_rt_cache_seq_fops = {
+	.open	 = dn_rt_cache_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = seq_release_private,
+};
+
 #endif /* CONFIG_PROC_FS */
 
 void __init dn_route_init(void)
@@ -1866,7 +1880,7 @@ void __init dn_route_init(void)
 	dn_route_timer.expires = jiffies + decnet_dst_gc_interval * HZ;
 	add_timer(&dn_route_timer);
 
-	goal = totalram_pages() >> (26 - PAGE_SHIFT);
+	goal = totalram_pages >> (26 - PAGE_SHIFT);
 
 	for(order = 0; (1UL << order) < goal; order++)
 		/* NOTHING */;
@@ -1904,9 +1918,8 @@ void __init dn_route_init(void)
 
 	dn_dst_ops.gc_thresh = (dn_rt_hash_mask + 1);
 
-	proc_create_seq_private("decnet_cache", 0444, init_net.proc_net,
-			&dn_rt_cache_seq_ops,
-			sizeof(struct dn_rt_cache_iter_state), NULL);
+	proc_create("decnet_cache", S_IRUGO, init_net.proc_net,
+		    &dn_rt_cache_seq_fops);
 
 #ifdef CONFIG_DECNET_ROUTER
 	rtnl_register_module(THIS_MODULE, PF_DECnet, RTM_GETROUTE,
@@ -1920,8 +1933,9 @@ void __init dn_route_init(void)
 void __exit dn_route_cleanup(void)
 {
 	del_timer(&dn_route_timer);
-	dn_run_flush(NULL);
+	dn_run_flush(0);
 
 	remove_proc_entry("decnet_cache", init_net.proc_net);
 	dst_entries_destroy(&dn_dst_ops);
 }
+

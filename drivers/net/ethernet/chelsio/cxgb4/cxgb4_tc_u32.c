@@ -93,13 +93,14 @@ static int fill_action_fields(struct adapter *adap,
 	unsigned int num_actions = 0;
 	const struct tc_action *a;
 	struct tcf_exts *exts;
-	int i;
+	LIST_HEAD(actions);
 
 	exts = cls->knode.exts;
 	if (!tcf_exts_has_actions(exts))
 		return -EINVAL;
 
-	tcf_exts_for_each_action(i, a, exts) {
+	tcf_exts_to_list(exts, &actions);
+	list_for_each_entry(a, &actions, list) {
 		/* Don't allow more than one action per rule. */
 		if (num_actions)
 			return -EINVAL;
@@ -456,8 +457,7 @@ struct cxgb4_tc_u32_table *cxgb4_init_tc_u32(struct adapter *adap)
 		unsigned int bmap_size;
 
 		bmap_size = BITS_TO_LONGS(max_tids);
-		link->tid_map = kvcalloc(bmap_size, sizeof(unsigned long),
-					 GFP_KERNEL);
+		link->tid_map = kvzalloc(sizeof(unsigned long) * bmap_size, GFP_KERNEL);
 		if (!link->tid_map)
 			goto out_no_mem;
 		bitmap_zero(link->tid_map, max_tids);

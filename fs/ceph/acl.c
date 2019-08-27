@@ -45,7 +45,6 @@ static inline void ceph_set_cached_acl(struct inode *inode,
 struct posix_acl *ceph_get_acl(struct inode *inode, int type)
 {
 	int size;
-	unsigned int retry_cnt = 0;
 	const char *name;
 	char *value = NULL;
 	struct posix_acl *acl;
@@ -61,7 +60,6 @@ struct posix_acl *ceph_get_acl(struct inode *inode, int type)
 		BUG();
 	}
 
-retry:
 	size = __ceph_getxattr(inode, name, "", 0);
 	if (size > 0) {
 		value = kzalloc(size, GFP_NOFS);
@@ -70,22 +68,12 @@ retry:
 		size = __ceph_getxattr(inode, name, value, size);
 	}
 
-	if (size == -ERANGE && retry_cnt < 10) {
-		retry_cnt++;
-		kfree(value);
-		value = NULL;
-		goto retry;
-	}
-
-	if (size > 0) {
+	if (size > 0)
 		acl = posix_acl_from_xattr(&init_user_ns, value, size);
-	} else if (size == -ENODATA || size == 0) {
+	else if (size == -ERANGE || size == -ENODATA || size == 0)
 		acl = NULL;
-	} else {
-		pr_err_ratelimited("get acl %llx.%llx failed, err=%d\n",
-				   ceph_vinop(inode), size);
+	else
 		acl = ERR_PTR(-EIO);
-	}
 
 	kfree(value);
 
@@ -101,13 +89,7 @@ int ceph_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 	const char *name = NULL;
 	char *value = NULL;
 	struct iattr newattrs;
-	struct timespec64 old_ctime = inode->i_ctime;
 	umode_t new_mode = inode->i_mode, old_mode = inode->i_mode;
-
-	if (ceph_snap(inode) != CEPH_NOSNAP) {
-		ret = -EROFS;
-		goto out;
-	}
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -143,10 +125,15 @@ int ceph_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 			goto out_free;
 	}
 
+	if (ceph_snap(inode) != CEPH_NOSNAP) {
+		ret = -EROFS;
+		goto out_free;
+	}
+
 	if (new_mode != old_mode) {
 		newattrs.ia_ctime = current_time(inode);
 		newattrs.ia_mode = new_mode;
-		newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
+		newattrs.ia_valid = ATTR_MODE;
 		ret = __ceph_setattr(inode, &newattrs);
 		if (ret)
 			goto out_free;
@@ -155,9 +142,8 @@ int ceph_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 	ret = __ceph_setxattr(inode, name, value, size, 0);
 	if (ret) {
 		if (new_mode != old_mode) {
-			newattrs.ia_ctime = old_ctime;
 			newattrs.ia_mode = old_mode;
-			newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
+			newattrs.ia_valid = ATTR_MODE;
 			__ceph_setattr(inode, &newattrs);
 		}
 		goto out_free;
@@ -185,10 +171,10 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 		return err;
 
 	if (acl) {
-		err = posix_acl_equiv_mode(acl, mode);
-		if (err < 0)
+		int ret = posix_acl_equiv_mode(acl, mode);
+		if (ret < 0)
 			goto out_err;
-		if (err == 0) {
+		if (ret == 0) {
 			posix_acl_release(acl);
 			acl = NULL;
 		}
@@ -206,9 +192,10 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 	tmp_buf = kmalloc(max(val_size1, val_size2), GFP_KERNEL);
 	if (!tmp_buf)
 		goto out_err;
-	pagelist = ceph_pagelist_alloc(GFP_KERNEL);
+	pagelist = kmalloc(sizeof(struct ceph_pagelist), GFP_KERNEL);
 	if (!pagelist)
 		goto out_err;
+	ceph_pagelist_init(pagelist);
 
 	err = ceph_pagelist_reserve(pagelist, PAGE_SIZE);
 	if (err)

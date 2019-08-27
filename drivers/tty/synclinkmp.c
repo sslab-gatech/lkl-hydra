@@ -1259,7 +1259,8 @@ static int ioctl(struct tty_struct *tty,
 	if (sanity_check(info, tty->name, "ioctl"))
 		return -ENODEV;
 
-	if (cmd != TIOCMIWAIT) {
+	if ((cmd != TIOCGSERIAL) && (cmd != TIOCSSERIAL) &&
+	    (cmd != TIOCMIWAIT)) {
 		if (tty_io_error(tty))
 		    return -EIO;
 	}
@@ -1419,6 +1420,19 @@ static int synclinkmp_proc_show(struct seq_file *m, void *v)
 	}
 	return 0;
 }
+
+static int synclinkmp_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, synclinkmp_proc_show, NULL);
+}
+
+static const struct file_operations synclinkmp_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= synclinkmp_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /* Return the count of bytes in transmit buffer
  */
@@ -3885,7 +3899,7 @@ static const struct tty_operations ops = {
 	.tiocmget = tiocmget,
 	.tiocmset = tiocmset,
 	.get_icount = get_icount,
-	.proc_show = synclinkmp_proc_show,
+	.proc_fops = &synclinkmp_proc_fops,
 };
 
 

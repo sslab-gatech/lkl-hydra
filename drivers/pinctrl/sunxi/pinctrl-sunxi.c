@@ -12,12 +12,12 @@
 
 #include <linux/io.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/gpio/driver.h>
 #include <linux/irqdomain.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/export.h>
 #include <linux/of.h>
-#include <linux/of_clk.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
@@ -26,7 +26,6 @@
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/regulator/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -278,7 +277,7 @@ static unsigned long *sunxi_pctrl_build_pin_config(struct device_node *node,
 	if (!configlen)
 		return NULL;
 
-	pinconfig = kcalloc(configlen, sizeof(*pinconfig), GFP_KERNEL);
+	pinconfig = kzalloc(configlen * sizeof(*pinconfig), GFP_KERNEL);
 	if (!pinconfig)
 		return ERR_PTR(-ENOMEM);
 
@@ -333,15 +332,15 @@ static int sunxi_pctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 	function = sunxi_pctrl_parse_function_prop(node);
 	if (!function) {
-		dev_err(pctl->dev, "missing function property in node %pOFn\n",
-			node);
+		dev_err(pctl->dev, "missing function property in node %s\n",
+			node->name);
 		return -EINVAL;
 	}
 
 	pin_prop = sunxi_pctrl_find_pins_prop(node, &npins);
 	if (!pin_prop) {
-		dev_err(pctl->dev, "missing pins property in node %pOFn\n",
-			node);
+		dev_err(pctl->dev, "missing pins property in node %s\n",
+			node->name);
 		return -EINVAL;
 	}
 
@@ -353,7 +352,7 @@ static int sunxi_pctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 	 * any configuration.
 	 */
 	nmaps = npins * 2;
-	*map = kmalloc_array(nmaps, sizeof(struct pinctrl_map), GFP_KERNEL);
+	*map = kmalloc(nmaps * sizeof(struct pinctrl_map), GFP_KERNEL);
 	if (!*map)
 		return -ENOMEM;
 
@@ -694,74 +693,12 @@ sunxi_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static int sunxi_pmx_request(struct pinctrl_dev *pctldev, unsigned offset)
-{
-	struct sunxi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
-	unsigned short bank = offset / PINS_PER_BANK;
-	unsigned short bank_offset = bank - pctl->desc->pin_base /
-					    PINS_PER_BANK;
-	struct sunxi_pinctrl_regulator *s_reg = &pctl->regulators[bank_offset];
-	struct regulator *reg = s_reg->regulator;
-	char supply[16];
-	int ret;
-
-	if (reg) {
-		refcount_inc(&s_reg->refcount);
-		return 0;
-	}
-
-	snprintf(supply, sizeof(supply), "vcc-p%c", 'a' + bank);
-	reg = regulator_get(pctl->dev, supply);
-	if (IS_ERR(reg)) {
-		dev_err(pctl->dev, "Couldn't get bank P%c regulator\n",
-			'A' + bank);
-		return PTR_ERR(reg);
-	}
-
-	ret = regulator_enable(reg);
-	if (ret) {
-		dev_err(pctl->dev,
-			"Couldn't enable bank P%c regulator\n", 'A' + bank);
-		goto out;
-	}
-
-	s_reg->regulator = reg;
-	refcount_set(&s_reg->refcount, 1);
-
-	return 0;
-
-out:
-	regulator_put(s_reg->regulator);
-
-	return ret;
-}
-
-static int sunxi_pmx_free(struct pinctrl_dev *pctldev, unsigned offset)
-{
-	struct sunxi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
-	unsigned short bank = offset / PINS_PER_BANK;
-	unsigned short bank_offset = bank - pctl->desc->pin_base /
-					    PINS_PER_BANK;
-	struct sunxi_pinctrl_regulator *s_reg = &pctl->regulators[bank_offset];
-
-	if (!refcount_dec_and_test(&s_reg->refcount))
-		return 0;
-
-	regulator_disable(s_reg->regulator);
-	regulator_put(s_reg->regulator);
-	s_reg->regulator = NULL;
-
-	return 0;
-}
-
 static const struct pinmux_ops sunxi_pmx_ops = {
 	.get_functions_count	= sunxi_pmx_get_funcs_cnt,
 	.get_function_name	= sunxi_pmx_get_func_name,
 	.get_function_groups	= sunxi_pmx_get_func_groups,
 	.set_mux		= sunxi_pmx_set_mux,
 	.gpio_set_direction	= sunxi_pmx_gpio_set_direction,
-	.request		= sunxi_pmx_request,
-	.free			= sunxi_pmx_free,
 	.strict			= true,
 };
 
@@ -898,7 +835,7 @@ static void sunxi_pinctrl_irq_release_resources(struct irq_data *d)
 static int sunxi_pinctrl_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_cfg_reg(pctl->desc, d->hwirq);
+	u32 reg = sunxi_irq_cfg_reg(d->hwirq, pctl->desc->irq_bank_base);
 	u8 index = sunxi_irq_cfg_offset(d->hwirq);
 	unsigned long flags;
 	u32 regval;
@@ -945,7 +882,8 @@ static int sunxi_pinctrl_irq_set_type(struct irq_data *d, unsigned int type)
 static void sunxi_pinctrl_irq_ack(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 status_reg = sunxi_irq_status_reg(pctl->desc, d->hwirq);
+	u32 status_reg = sunxi_irq_status_reg(d->hwirq,
+					      pctl->desc->irq_bank_base);
 	u8 status_idx = sunxi_irq_status_offset(d->hwirq);
 
 	/* Clear the IRQ */
@@ -955,7 +893,7 @@ static void sunxi_pinctrl_irq_ack(struct irq_data *d)
 static void sunxi_pinctrl_irq_mask(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_ctrl_reg(pctl->desc, d->hwirq);
+	u32 reg = sunxi_irq_ctrl_reg(d->hwirq, pctl->desc->irq_bank_base);
 	u8 idx = sunxi_irq_ctrl_offset(d->hwirq);
 	unsigned long flags;
 	u32 val;
@@ -972,7 +910,7 @@ static void sunxi_pinctrl_irq_mask(struct irq_data *d)
 static void sunxi_pinctrl_irq_unmask(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_ctrl_reg(pctl->desc, d->hwirq);
+	u32 reg = sunxi_irq_ctrl_reg(d->hwirq, pctl->desc->irq_bank_base);
 	u8 idx = sunxi_irq_ctrl_offset(d->hwirq);
 	unsigned long flags;
 	u32 val;
@@ -1064,7 +1002,7 @@ static void sunxi_pinctrl_irq_handler(struct irq_desc *desc)
 	if (bank == pctl->desc->irq_banks)
 		return;
 
-	reg = sunxi_irq_status_reg_from_bank(pctl->desc, bank);
+	reg = sunxi_irq_status_reg_from_bank(bank, pctl->desc->irq_bank_base);
 	val = readl(pctl->membase + reg);
 
 	if (val) {
@@ -1105,7 +1043,6 @@ static int sunxi_pinctrl_add_function(struct sunxi_pinctrl *pctl,
 static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 {
 	struct sunxi_pinctrl *pctl = platform_get_drvdata(pdev);
-	void *ptr;
 	int i;
 
 	/*
@@ -1119,8 +1056,8 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 	 * this means that the number of pins is the maximum group
 	 * number we will ever see.
 	 */
-	pctl->groups = devm_kcalloc(&pdev->dev,
-				    pctl->desc->npins, sizeof(*pctl->groups),
+	pctl->groups = devm_kzalloc(&pdev->dev,
+				    pctl->desc->npins * sizeof(*pctl->groups),
 				    GFP_KERNEL);
 	if (!pctl->groups)
 		return -ENOMEM;
@@ -1143,9 +1080,9 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 	 * We suppose that we won't have any more functions than pins,
 	 * we'll reallocate that later anyway
 	 */
-	pctl->functions = kcalloc(pctl->ngroups,
-				  sizeof(*pctl->functions),
-				  GFP_KERNEL);
+	pctl->functions = devm_kzalloc(&pdev->dev,
+				       pctl->ngroups * sizeof(*pctl->functions),
+				       GFP_KERNEL);
 	if (!pctl->functions)
 		return -ENOMEM;
 
@@ -1172,15 +1109,13 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 	}
 
 	/* And now allocated and fill the array for real */
-	ptr = krealloc(pctl->functions,
-		       pctl->nfunctions * sizeof(*pctl->functions),
-		       GFP_KERNEL);
-	if (!ptr) {
+	pctl->functions = krealloc(pctl->functions,
+				   pctl->nfunctions * sizeof(*pctl->functions),
+				   GFP_KERNEL);
+	if (!pctl->functions) {
 		kfree(pctl->functions);
-		pctl->functions = NULL;
 		return -ENOMEM;
 	}
-	pctl->functions = ptr;
 
 	for (i = 0; i < pctl->desc->npins; i++) {
 		const struct sunxi_desc_pin *pin = pctl->desc->pins + i;
@@ -1198,21 +1133,16 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 
 			func_item = sunxi_pinctrl_find_function_by_name(pctl,
 									func->name);
-			if (!func_item) {
-				kfree(pctl->functions);
+			if (!func_item)
 				return -EINVAL;
-			}
 
 			if (!func_item->groups) {
 				func_item->groups =
-					devm_kcalloc(&pdev->dev,
-						     func_item->ngroups,
-						     sizeof(*func_item->groups),
+					devm_kzalloc(&pdev->dev,
+						     func_item->ngroups * sizeof(*func_item->groups),
 						     GFP_KERNEL);
-				if (!func_item->groups) {
-					kfree(pctl->functions);
+				if (!func_item->groups)
 					return -ENOMEM;
-				}
 			}
 
 			func_grp = func_item->groups;
@@ -1304,7 +1234,8 @@ static int sunxi_pinctrl_setup_debounce(struct sunxi_pinctrl *pctl,
 
 		writel(src | div << 4,
 		       pctl->membase +
-		       sunxi_irq_debounce_reg_from_bank(pctl->desc, i));
+		       sunxi_irq_debounce_reg_from_bank(i,
+							pctl->desc->irq_bank_base));
 	}
 
 	return 0;
@@ -1352,8 +1283,8 @@ int sunxi_pinctrl_init_with_variant(struct platform_device *pdev,
 		return ret;
 	}
 
-	pins = devm_kcalloc(&pdev->dev,
-			    pctl->desc->npins, sizeof(*pins),
+	pins = devm_kzalloc(&pdev->dev,
+			    pctl->desc->npins * sizeof(*pins),
 			    GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
@@ -1432,8 +1363,7 @@ int sunxi_pinctrl_init_with_variant(struct platform_device *pdev,
 			goto gpiochip_error;
 	}
 
-	ret = of_clk_get_parent_count(node);
-	clk = devm_clk_get(&pdev->dev, ret == 1 ? NULL : "apb");
+	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		ret = PTR_ERR(clk);
 		goto gpiochip_error;
@@ -1480,11 +1410,11 @@ int sunxi_pinctrl_init_with_variant(struct platform_device *pdev,
 
 	for (i = 0; i < pctl->desc->irq_banks; i++) {
 		/* Mask and clear all IRQs before registering a handler */
-		writel(0, pctl->membase +
-			  sunxi_irq_ctrl_reg_from_bank(pctl->desc, i));
+		writel(0, pctl->membase + sunxi_irq_ctrl_reg_from_bank(i,
+						pctl->desc->irq_bank_base));
 		writel(0xffffffff,
-		       pctl->membase +
-		       sunxi_irq_status_reg_from_bank(pctl->desc, i));
+		       pctl->membase + sunxi_irq_status_reg_from_bank(i,
+						pctl->desc->irq_bank_base));
 
 		irq_set_chained_handler_and_data(pctl->irq[i],
 						 sunxi_pinctrl_irq_handler,

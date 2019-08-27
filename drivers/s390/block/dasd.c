@@ -41,15 +41,6 @@
 
 #define DASD_DIAG_MOD		"dasd_diag_mod"
 
-static unsigned int queue_depth = 32;
-static unsigned int nr_hw_queues = 4;
-
-module_param(queue_depth, uint, 0444);
-MODULE_PARM_DESC(queue_depth, "Default queue depth for new DASD devices");
-
-module_param(nr_hw_queues, uint, 0444);
-MODULE_PARM_DESC(nr_hw_queues, "Default number of hardware queues for new DASD devices");
-
 /*
  * SECTION: exported variables of dasd.c
  */
@@ -73,8 +64,8 @@ static int  dasd_alloc_queue(struct dasd_block *);
 static void dasd_setup_queue(struct dasd_block *);
 static void dasd_free_queue(struct dasd_block *);
 static int dasd_flush_block_queue(struct dasd_block *);
-static void dasd_device_tasklet(unsigned long);
-static void dasd_block_tasklet(unsigned long);
+static void dasd_device_tasklet(struct dasd_device *);
+static void dasd_block_tasklet(struct dasd_block *);
 static void do_kick_device(struct work_struct *);
 static void do_restore_device(struct work_struct *);
 static void do_reload_device(struct work_struct *);
@@ -125,7 +116,8 @@ struct dasd_device *dasd_alloc_device(void)
 	dasd_init_chunklist(&device->erp_chunks, device->erp_mem, PAGE_SIZE);
 	spin_lock_init(&device->mem_lock);
 	atomic_set(&device->tasklet_scheduled, 0);
-	tasklet_init(&device->tasklet, dasd_device_tasklet,
+	tasklet_init(&device->tasklet,
+		     (void (*)(unsigned long)) dasd_device_tasklet,
 		     (unsigned long) device);
 	INIT_LIST_HEAD(&device->ccw_queue);
 	timer_setup(&device->timer, dasd_device_timeout, 0);
@@ -165,7 +157,8 @@ struct dasd_block *dasd_alloc_block(void)
 	atomic_set(&block->open_count, -1);
 
 	atomic_set(&block->tasklet_scheduled, 0);
-	tasklet_init(&block->tasklet, dasd_block_tasklet,
+	tasklet_init(&block->tasklet,
+		     (void (*)(unsigned long)) dasd_block_tasklet,
 		     (unsigned long) block);
 	INIT_LIST_HEAD(&block->ccw_queue);
 	spin_lock_init(&block->queue_lock);
@@ -1192,7 +1185,20 @@ static int dasd_hosts_show(struct seq_file *m, void *v)
 	return rc;
 }
 
-DEFINE_SHOW_ATTRIBUTE(dasd_hosts);
+static int dasd_hosts_open(struct inode *inode, struct file *file)
+{
+	struct dasd_device *device = inode->i_private;
+
+	return single_open(file, dasd_hosts_show, device);
+}
+
+static const struct file_operations dasd_hosts_fops = {
+	.owner		= THIS_MODULE,
+	.open		= dasd_hosts_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static void dasd_hosts_exit(struct dasd_device *device)
 {
@@ -1216,37 +1222,80 @@ static void dasd_hosts_init(struct dentry *base_dentry,
 		device->hosts_dentry = pde;
 }
 
-struct dasd_ccw_req *dasd_smalloc_request(int magic, int cplength, int datasize,
-					  struct dasd_device *device,
-					  struct dasd_ccw_req *cqr)
+/*
+ * Allocate memory for a channel program with 'cplength' channel
+ * command words and 'datasize' additional space. There are two
+ * variantes: 1) dasd_kmalloc_request uses kmalloc to get the needed
+ * memory and 2) dasd_smalloc_request uses the static ccw memory
+ * that gets allocated for each device.
+ */
+struct dasd_ccw_req *dasd_kmalloc_request(int magic, int cplength,
+					  int datasize,
+					  struct dasd_device *device)
+{
+	struct dasd_ccw_req *cqr;
+
+	/* Sanity checks */
+	BUG_ON(datasize > PAGE_SIZE ||
+	     (cplength*sizeof(struct ccw1)) > PAGE_SIZE);
+
+	cqr = kzalloc(sizeof(struct dasd_ccw_req), GFP_ATOMIC);
+	if (cqr == NULL)
+		return ERR_PTR(-ENOMEM);
+	cqr->cpaddr = NULL;
+	if (cplength > 0) {
+		cqr->cpaddr = kcalloc(cplength, sizeof(struct ccw1),
+				      GFP_ATOMIC | GFP_DMA);
+		if (cqr->cpaddr == NULL) {
+			kfree(cqr);
+			return ERR_PTR(-ENOMEM);
+		}
+	}
+	cqr->data = NULL;
+	if (datasize > 0) {
+		cqr->data = kzalloc(datasize, GFP_ATOMIC | GFP_DMA);
+		if (cqr->data == NULL) {
+			kfree(cqr->cpaddr);
+			kfree(cqr);
+			return ERR_PTR(-ENOMEM);
+		}
+	}
+	cqr->magic =  magic;
+	set_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
+	dasd_get_device(device);
+	return cqr;
+}
+EXPORT_SYMBOL(dasd_kmalloc_request);
+
+struct dasd_ccw_req *dasd_smalloc_request(int magic, int cplength,
+					  int datasize,
+					  struct dasd_device *device)
 {
 	unsigned long flags;
-	char *data, *chunk;
-	int size = 0;
+	struct dasd_ccw_req *cqr;
+	char *data;
+	int size;
 
+	size = (sizeof(struct dasd_ccw_req) + 7L) & -8L;
 	if (cplength > 0)
 		size += cplength * sizeof(struct ccw1);
 	if (datasize > 0)
 		size += datasize;
-	if (!cqr)
-		size += (sizeof(*cqr) + 7L) & -8L;
-
 	spin_lock_irqsave(&device->mem_lock, flags);
-	data = chunk = dasd_alloc_chunk(&device->ccw_chunks, size);
+	cqr = (struct dasd_ccw_req *)
+		dasd_alloc_chunk(&device->ccw_chunks, size);
 	spin_unlock_irqrestore(&device->mem_lock, flags);
-	if (!chunk)
+	if (cqr == NULL)
 		return ERR_PTR(-ENOMEM);
-	if (!cqr) {
-		cqr = (void *) data;
-		data += (sizeof(*cqr) + 7L) & -8L;
-	}
-	memset(cqr, 0, sizeof(*cqr));
-	cqr->mem_chunk = chunk;
+	memset(cqr, 0, sizeof(struct dasd_ccw_req));
+	data = (char *) cqr + ((sizeof(struct dasd_ccw_req) + 7L) & -8L);
+	cqr->cpaddr = NULL;
 	if (cplength > 0) {
-		cqr->cpaddr = data;
-		data += cplength * sizeof(struct ccw1);
-		memset(cqr->cpaddr, 0, cplength * sizeof(struct ccw1));
+		cqr->cpaddr = (struct ccw1 *) data;
+		data += cplength*sizeof(struct ccw1);
+		memset(cqr->cpaddr, 0, cplength*sizeof(struct ccw1));
 	}
+	cqr->data = NULL;
 	if (datasize > 0) {
 		cqr->data = data;
  		memset(cqr->data, 0, datasize);
@@ -1258,12 +1307,33 @@ struct dasd_ccw_req *dasd_smalloc_request(int magic, int cplength, int datasize,
 }
 EXPORT_SYMBOL(dasd_smalloc_request);
 
+/*
+ * Free memory of a channel program. This function needs to free all the
+ * idal lists that might have been created by dasd_set_cda and the
+ * struct dasd_ccw_req itself.
+ */
+void dasd_kfree_request(struct dasd_ccw_req *cqr, struct dasd_device *device)
+{
+	struct ccw1 *ccw;
+
+	/* Clear any idals used for the request. */
+	ccw = cqr->cpaddr;
+	do {
+		clear_normalized_cda(ccw);
+	} while (ccw++->flags & (CCW_FLAG_CC | CCW_FLAG_DC));
+	kfree(cqr->cpaddr);
+	kfree(cqr->data);
+	kfree(cqr);
+	dasd_put_device(device);
+}
+EXPORT_SYMBOL(dasd_kfree_request);
+
 void dasd_sfree_request(struct dasd_ccw_req *cqr, struct dasd_device *device)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&device->mem_lock, flags);
-	dasd_free_chunk(&device->ccw_chunks, cqr->mem_chunk);
+	dasd_free_chunk(&device->ccw_chunks, cqr);
 	spin_unlock_irqrestore(&device->mem_lock, flags);
 	dasd_put_device(device);
 }
@@ -1815,33 +1885,6 @@ static void __dasd_device_process_ccw_queue(struct dasd_device *device,
 	}
 }
 
-static void __dasd_process_cqr(struct dasd_device *device,
-			       struct dasd_ccw_req *cqr)
-{
-	char errorstring[ERRORLENGTH];
-
-	switch (cqr->status) {
-	case DASD_CQR_SUCCESS:
-		cqr->status = DASD_CQR_DONE;
-		break;
-	case DASD_CQR_ERROR:
-		cqr->status = DASD_CQR_NEED_ERP;
-		break;
-	case DASD_CQR_CLEARED:
-		cqr->status = DASD_CQR_TERMINATED;
-		break;
-	default:
-		/* internal error 12 - wrong cqr status*/
-		snprintf(errorstring, ERRORLENGTH, "12 %p %x02", cqr, cqr->status);
-		dev_err(&device->cdev->dev,
-			"An error occurred in the DASD device driver, "
-			"reason=%s\n", errorstring);
-		BUG();
-	}
-	if (cqr->callback)
-		cqr->callback(cqr, cqr->callback_data);
-}
-
 /*
  * the cqrs from the final queue are returned to the upper layer
  * by setting a dasd_block state and calling the callback function
@@ -1852,18 +1895,40 @@ static void __dasd_device_process_final_queue(struct dasd_device *device,
 	struct list_head *l, *n;
 	struct dasd_ccw_req *cqr;
 	struct dasd_block *block;
+	void (*callback)(struct dasd_ccw_req *, void *data);
+	void *callback_data;
+	char errorstring[ERRORLENGTH];
 
 	list_for_each_safe(l, n, final_queue) {
 		cqr = list_entry(l, struct dasd_ccw_req, devlist);
 		list_del_init(&cqr->devlist);
 		block = cqr->block;
-		if (!block) {
-			__dasd_process_cqr(device, cqr);
-		} else {
+		callback = cqr->callback;
+		callback_data = cqr->callback_data;
+		if (block)
 			spin_lock_bh(&block->queue_lock);
-			__dasd_process_cqr(device, cqr);
-			spin_unlock_bh(&block->queue_lock);
+		switch (cqr->status) {
+		case DASD_CQR_SUCCESS:
+			cqr->status = DASD_CQR_DONE;
+			break;
+		case DASD_CQR_ERROR:
+			cqr->status = DASD_CQR_NEED_ERP;
+			break;
+		case DASD_CQR_CLEARED:
+			cqr->status = DASD_CQR_TERMINATED;
+			break;
+		default:
+			/* internal error 12 - wrong cqr status*/
+			snprintf(errorstring, ERRORLENGTH, "12 %p %x02", cqr, cqr->status);
+			dev_err(&device->cdev->dev,
+				"An error occurred in the DASD device driver, "
+				"reason=%s\n", errorstring);
+			BUG();
 		}
+		if (cqr->callback != NULL)
+			(callback)(cqr, callback_data);
+		if (block)
+			spin_unlock_bh(&block->queue_lock);
 	}
 }
 
@@ -2049,9 +2114,8 @@ EXPORT_SYMBOL_GPL(dasd_flush_device_queue);
 /*
  * Acquire the device lock and process queues for the device.
  */
-static void dasd_device_tasklet(unsigned long data)
+static void dasd_device_tasklet(struct dasd_device *device)
 {
-	struct dasd_device *device = (struct dasd_device *) data;
 	struct list_head final_queue;
 
 	atomic_set (&device->tasklet_scheduled, 0);
@@ -2505,11 +2569,14 @@ EXPORT_SYMBOL(dasd_sleep_on_immediatly);
  * Cancellation of a request is an asynchronous operation! The calling
  * function has to wait until the request is properly returned via callback.
  */
-static int __dasd_cancel_req(struct dasd_ccw_req *cqr)
+int dasd_cancel_req(struct dasd_ccw_req *cqr)
 {
 	struct dasd_device *device = cqr->startdev;
-	int rc = 0;
+	unsigned long flags;
+	int rc;
 
+	rc = 0;
+	spin_lock_irqsave(get_ccwdev_lock(device->cdev), flags);
 	switch (cqr->status) {
 	case DASD_CQR_QUEUED:
 		/* request was not started - just set to cleared */
@@ -2529,21 +2596,11 @@ static int __dasd_cancel_req(struct dasd_ccw_req *cqr)
 	default: /* already finished or clear pending - do nothing */
 		break;
 	}
+	spin_unlock_irqrestore(get_ccwdev_lock(device->cdev), flags);
 	dasd_schedule_device_bh(device);
 	return rc;
 }
-
-int dasd_cancel_req(struct dasd_ccw_req *cqr)
-{
-	struct dasd_device *device = cqr->startdev;
-	unsigned long flags;
-	int rc;
-
-	spin_lock_irqsave(get_ccwdev_lock(device->cdev), flags);
-	rc = __dasd_cancel_req(cqr);
-	spin_unlock_irqrestore(get_ccwdev_lock(device->cdev), flags);
-	return rc;
-}
+EXPORT_SYMBOL(dasd_cancel_req);
 
 /*
  * SECTION: Operations of the dasd_block layer.
@@ -2769,9 +2826,8 @@ static void __dasd_block_start_head(struct dasd_block *block)
  * block layer request queue, creates ccw requests, enqueues them on
  * a dasd_device and processes ccw requests that have been returned.
  */
-static void dasd_block_tasklet(unsigned long data)
+static void dasd_block_tasklet(struct dasd_block *block)
 {
-	struct dasd_block *block = (struct dasd_block *) data;
 	struct list_head final_queue;
 	struct list_head *l, *n;
 	struct dasd_ccw_req *cqr;
@@ -2978,7 +3034,7 @@ static blk_status_t do_dasd_request(struct blk_mq_hw_ctx *hctx,
 	cqr->callback_data = req;
 	cqr->status = DASD_CQR_FILLED;
 	cqr->dq = dq;
-
+	req->completion_data = cqr;
 	blk_mq_start_request(req);
 	spin_lock(&block->queue_lock);
 	list_add_tail(&cqr->blocklist, &block->ccw_queue);
@@ -2997,20 +3053,19 @@ out:
  *
  * Return values:
  * BLK_EH_RESET_TIMER if the request should be left running
- * BLK_EH_DONE if the request is handled or terminated
+ * BLK_EH_NOT_HANDLED if the request is handled or terminated
  *		      by the driver.
  */
 enum blk_eh_timer_return dasd_times_out(struct request *req, bool reserved)
 {
+	struct dasd_ccw_req *cqr = req->completion_data;
 	struct dasd_block *block = req->q->queuedata;
 	struct dasd_device *device;
-	struct dasd_ccw_req *cqr;
 	unsigned long flags;
 	int rc = 0;
 
-	cqr = blk_mq_rq_to_pdu(req);
 	if (!cqr)
-		return BLK_EH_DONE;
+		return BLK_EH_NOT_HANDLED;
 
 	spin_lock_irqsave(&cqr->dq->lock, flags);
 	device = cqr->startdev ? cqr->startdev : block->base;
@@ -3027,10 +3082,12 @@ enum blk_eh_timer_return dasd_times_out(struct request *req, bool reserved)
 	cqr->retries = -1;
 	cqr->intrc = -ETIMEDOUT;
 	if (cqr->status >= DASD_CQR_QUEUED) {
-		rc = __dasd_cancel_req(cqr);
+		spin_unlock(get_ccwdev_lock(device->cdev));
+		rc = dasd_cancel_req(cqr);
 	} else if (cqr->status == DASD_CQR_FILLED ||
 		   cqr->status == DASD_CQR_NEED_ERP) {
 		cqr->status = DASD_CQR_TERMINATED;
+		spin_unlock(get_ccwdev_lock(device->cdev));
 	} else if (cqr->status == DASD_CQR_IN_ERP) {
 		struct dasd_ccw_req *searchcqr, *nextcqr, *tmpcqr;
 
@@ -3045,7 +3102,9 @@ enum blk_eh_timer_return dasd_times_out(struct request *req, bool reserved)
 			searchcqr->retries = -1;
 			searchcqr->intrc = -ETIMEDOUT;
 			if (searchcqr->status >= DASD_CQR_QUEUED) {
-				rc = __dasd_cancel_req(searchcqr);
+				spin_unlock(get_ccwdev_lock(device->cdev));
+				rc = dasd_cancel_req(searchcqr);
+				spin_lock(get_ccwdev_lock(device->cdev));
 			} else if ((searchcqr->status == DASD_CQR_FILLED) ||
 				   (searchcqr->status == DASD_CQR_NEED_ERP)) {
 				searchcqr->status = DASD_CQR_TERMINATED;
@@ -3059,13 +3118,13 @@ enum blk_eh_timer_return dasd_times_out(struct request *req, bool reserved)
 			}
 			break;
 		}
+		spin_unlock(get_ccwdev_lock(device->cdev));
 	}
-	spin_unlock(get_ccwdev_lock(device->cdev));
 	dasd_schedule_block_bh(block);
 	spin_unlock(&block->queue_lock);
 	spin_unlock_irqrestore(&cqr->dq->lock, flags);
 
-	return rc ? BLK_EH_RESET_TIMER : BLK_EH_DONE;
+	return rc ? BLK_EH_RESET_TIMER : BLK_EH_NOT_HANDLED;
 }
 
 static int dasd_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
@@ -3110,11 +3169,9 @@ static int dasd_alloc_queue(struct dasd_block *block)
 	int rc;
 
 	block->tag_set.ops = &dasd_mq_ops;
-	block->tag_set.cmd_size = sizeof(struct dasd_ccw_req);
-	block->tag_set.nr_hw_queues = nr_hw_queues;
-	block->tag_set.queue_depth = queue_depth;
+	block->tag_set.nr_hw_queues = DASD_NR_HW_QUEUES;
+	block->tag_set.queue_depth = DASD_MAX_LCU_DEV * DASD_REQ_PER_DEV;
 	block->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
-	block->tag_set.numa_node = NUMA_NO_NODE;
 
 	rc = blk_mq_alloc_tag_set(&block->tag_set);
 	if (rc)
@@ -3151,7 +3208,7 @@ static void dasd_setup_queue(struct dasd_block *block)
 	} else {
 		max = block->base->discipline->max_blocks << block->s2b_shift;
 	}
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, q);
+	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
 	q->limits.max_dev_sectors = max;
 	blk_queue_logical_block_size(q, logical_block_size);
 	blk_queue_max_hw_sectors(q, max);
@@ -3174,7 +3231,7 @@ static void dasd_setup_queue(struct dasd_block *block)
 
 		blk_queue_max_discard_sectors(q, max_discard_sectors);
 		blk_queue_max_write_zeroes_sectors(q, max_discard_sectors);
-		blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
+		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, q);
 	}
 }
 
@@ -3296,8 +3353,10 @@ dasd_exit(void)
 	dasd_proc_exit();
 #endif
 	dasd_eer_exit();
-	kmem_cache_destroy(dasd_page_cache);
-	dasd_page_cache = NULL;
+        if (dasd_page_cache != NULL) {
+		kmem_cache_destroy(dasd_page_cache);
+		dasd_page_cache = NULL;
+	}
 	dasd_gendisk_exit();
 	dasd_devmap_exit();
 	if (dasd_debug_area != NULL) {
@@ -3859,13 +3918,8 @@ static int dasd_generic_requeue_all_requests(struct dasd_device *device)
 			cqr = refers;
 		}
 
-		/*
-		 * _dasd_requeue_request already checked for a valid
-		 * blockdevice, no need to check again
-		 * all erp requests (cqr->refers) have a cqr->block
-		 * pointer copy from the original cqr
-		 */
-		list_del_init(&cqr->blocklist);
+		if (cqr->block)
+			list_del_init(&cqr->blocklist);
 		cqr->block->base->discipline->free_cp(
 			cqr, (struct request *) cqr->callback_data);
 	}
@@ -3973,8 +4027,7 @@ static struct dasd_ccw_req *dasd_generic_build_rdc(struct dasd_device *device,
 	struct ccw1 *ccw;
 	unsigned long *idaw;
 
-	cqr = dasd_smalloc_request(magic, 1 /* RDC */, rdc_buffer_size, device,
-				   NULL);
+	cqr = dasd_smalloc_request(magic, 1 /* RDC */, rdc_buffer_size, device);
 
 	if (IS_ERR(cqr)) {
 		/* internal error 13 - Allocating the RDC request failed*/

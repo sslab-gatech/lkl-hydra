@@ -37,17 +37,15 @@ static const struct nla_policy sample_policy[TCA_SAMPLE_MAX + 1] = {
 
 static int tcf_sample_init(struct net *net, struct nlattr *nla,
 			   struct nlattr *est, struct tc_action **a, int ovr,
-			   int bind, bool rtnl_held,
-			   struct netlink_ext_ack *extack)
+			   int bind)
 {
 	struct tc_action_net *tn = net_generic(net, sample_net_id);
 	struct nlattr *tb[TCA_SAMPLE_MAX + 1];
 	struct psample_group *psample_group;
 	struct tc_sample *parm;
-	u32 psample_group_num;
 	struct tcf_sample *s;
 	bool exists = false;
-	int ret, err;
+	int ret;
 
 	if (!nla)
 		return -EINVAL;
@@ -60,46 +58,38 @@ static int tcf_sample_init(struct net *net, struct nlattr *nla,
 
 	parm = nla_data(tb[TCA_SAMPLE_PARMS]);
 
-	err = tcf_idr_check_alloc(tn, &parm->index, a, bind);
-	if (err < 0)
-		return err;
-	exists = err;
+	exists = tcf_idr_check(tn, parm->index, a, bind);
 	if (exists && bind)
 		return 0;
 
 	if (!exists) {
 		ret = tcf_idr_create(tn, parm->index, est, a,
-				     &act_sample_ops, bind, true);
-		if (ret) {
-			tcf_idr_cleanup(tn, parm->index);
+				     &act_sample_ops, bind, false);
+		if (ret)
 			return ret;
-		}
 		ret = ACT_P_CREATED;
-	} else if (!ovr) {
+	} else {
 		tcf_idr_release(*a, bind);
-		return -EEXIST;
+		if (!ovr)
+			return -EEXIST;
 	}
-
-	psample_group_num = nla_get_u32(tb[TCA_SAMPLE_PSAMPLE_GROUP]);
-	psample_group = psample_group_get(net, psample_group_num);
-	if (!psample_group) {
-		tcf_idr_release(*a, bind);
-		return -ENOMEM;
-	}
-
 	s = to_sample(*a);
 
-	spin_lock_bh(&s->tcf_lock);
 	s->tcf_action = parm->action;
 	s->rate = nla_get_u32(tb[TCA_SAMPLE_RATE]);
-	s->psample_group_num = psample_group_num;
+	s->psample_group_num = nla_get_u32(tb[TCA_SAMPLE_PSAMPLE_GROUP]);
+	psample_group = psample_group_get(net, s->psample_group_num);
+	if (!psample_group) {
+		if (ret == ACT_P_CREATED)
+			tcf_idr_release(*a, bind);
+		return -ENOMEM;
+	}
 	RCU_INIT_POINTER(s->psample_group, psample_group);
 
 	if (tb[TCA_SAMPLE_TRUNC_SIZE]) {
 		s->truncate = true;
 		s->trunc_size = nla_get_u32(tb[TCA_SAMPLE_TRUNC_SIZE]);
 	}
-	spin_unlock_bh(&s->tcf_lock);
 
 	if (ret == ACT_P_CREATED)
 		tcf_idr_insert(tn, *a);
@@ -111,8 +101,7 @@ static void tcf_sample_cleanup(struct tc_action *a)
 	struct tcf_sample *s = to_sample(a);
 	struct psample_group *psample_group;
 
-	/* last reference to action, no need to lock */
-	psample_group = rcu_dereference_protected(s->psample_group, 1);
+	psample_group = rtnl_dereference(s->psample_group);
 	RCU_INIT_POINTER(s->psample_group, NULL);
 	if (psample_group)
 		psample_group_put(psample_group);
@@ -147,7 +136,8 @@ static int tcf_sample_act(struct sk_buff *skb, const struct tc_action *a,
 	bstats_cpu_update(this_cpu_ptr(s->common.cpu_bstats), skb);
 	retval = READ_ONCE(s->tcf_action);
 
-	psample_group = rcu_dereference_bh(s->psample_group);
+	rcu_read_lock();
+	psample_group = rcu_dereference(s->psample_group);
 
 	/* randomly sample packets according to rate */
 	if (psample_group && (prandom_u32() % s->rate == 0)) {
@@ -171,6 +161,7 @@ static int tcf_sample_act(struct sk_buff *skb, const struct tc_action *a,
 			skb_pull(skb, skb->mac_len);
 	}
 
+	rcu_read_unlock();
 	return retval;
 }
 
@@ -181,13 +172,12 @@ static int tcf_sample_dump(struct sk_buff *skb, struct tc_action *a,
 	struct tcf_sample *s = to_sample(a);
 	struct tc_sample opt = {
 		.index      = s->tcf_index,
-		.refcnt     = refcount_read(&s->tcf_refcnt) - ref,
-		.bindcnt    = atomic_read(&s->tcf_bindcnt) - bind,
+		.action     = s->tcf_action,
+		.refcnt     = s->tcf_refcnt - ref,
+		.bindcnt    = s->tcf_bindcnt - bind,
 	};
 	struct tcf_t t;
 
-	spin_lock_bh(&s->tcf_lock);
-	opt.action = s->tcf_action;
 	if (nla_put(skb, TCA_SAMPLE_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
 
@@ -204,24 +194,20 @@ static int tcf_sample_dump(struct sk_buff *skb, struct tc_action *a,
 
 	if (nla_put_u32(skb, TCA_SAMPLE_PSAMPLE_GROUP, s->psample_group_num))
 		goto nla_put_failure;
-	spin_unlock_bh(&s->tcf_lock);
-
 	return skb->len;
 
 nla_put_failure:
-	spin_unlock_bh(&s->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -1;
 }
 
 static int tcf_sample_walker(struct net *net, struct sk_buff *skb,
 			     struct netlink_callback *cb, int type,
-			     const struct tc_action_ops *ops,
-			     struct netlink_ext_ack *extack)
+			     const struct tc_action_ops *ops)
 {
 	struct tc_action_net *tn = net_generic(net, sample_net_id);
 
-	return tcf_generic_walker(tn, skb, cb, type, ops, extack);
+	return tcf_generic_walker(tn, skb, cb, type, ops);
 }
 
 static int tcf_sample_search(struct net *net, struct tc_action **a, u32 index)

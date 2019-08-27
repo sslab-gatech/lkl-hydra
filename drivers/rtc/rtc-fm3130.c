@@ -136,7 +136,8 @@ static int fm3130_get_time(struct device *dev, struct rtc_time *t)
 		t->tm_hour, t->tm_mday,
 		t->tm_mon, t->tm_year, t->tm_wday);
 
-	return 0;
+	/* initial clock setting can be undefined */
+	return rtc_valid_tm(t);
 }
 
 

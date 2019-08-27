@@ -655,11 +655,10 @@ int tomoyo_socket_listen_permission(struct socket *sock)
 		return 0;
 	{
 		const int error = sock->ops->getname(sock, (struct sockaddr *)
-						     &addr, 0);
+						     &addr, &addr_len, 0);
 
-		if (error < 0)
+		if (error)
 			return error;
-		addr_len = error;
 	}
 	address.protocol = type;
 	address.operation = TOMOYO_NETWORK_LISTEN;

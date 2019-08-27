@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Freescale imx6sx pinctrl driver
-//
-// Author: Anson Huang <Anson.Huang@freescale.com>
-// Copyright (C) 2014 Freescale Semiconductor, Inc.
+/*
+ * Freescale imx6sx pinctrl driver
+ *
+ * Author: Anson Huang <Anson.Huang@freescale.com>
+ * Copyright (C) 2014 Freescale Semiconductor, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
 
 #include <linux/err.h>
 #include <linux/init.h>

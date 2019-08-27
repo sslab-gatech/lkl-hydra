@@ -210,8 +210,6 @@ int __i915_subtests(const char *caller,
 			return -EINTR;
 
 		pr_debug(DRIVER_NAME ": Running %s/%s\n", caller, st->name);
-		GEM_TRACE("Running %s/%s\n", caller, st->name);
-
 		err = st->func(data);
 		if (err && err != -EINTR) {
 			pr_err(DRIVER_NAME "/%s: %s failed with error %d\n",

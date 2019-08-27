@@ -1,7 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2016  Realtek Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -2874,8 +2885,12 @@ static void halbtc8822b2ant_action_a2dp(struct btc_coexist *btcoexist)
 							     NORMAL_EXEC, 5);
 
 		} else {
-			halbtc8822b2ant_coex_table_with_type(btcoexist,
-							     NORMAL_EXEC, 10);
+			if (wifi_turbo)
+				halbtc8822b2ant_coex_table_with_type(
+					btcoexist, NORMAL_EXEC, 10);
+			else
+				halbtc8822b2ant_coex_table_with_type(
+					btcoexist, NORMAL_EXEC, 10);
 
 			halbtc8822b2ant_ps_tdma(btcoexist, NORMAL_EXEC, true,
 						109);

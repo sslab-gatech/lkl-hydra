@@ -380,7 +380,7 @@ struct eventfd_ctx *eventfd_ctx_fileget(struct file *file)
 }
 EXPORT_SYMBOL_GPL(eventfd_ctx_fileget);
 
-static int do_eventfd(unsigned int count, int flags)
+SYSCALL_DEFINE2(eventfd2, unsigned int, count, int, flags)
 {
 	struct eventfd_ctx *ctx;
 	int fd;
@@ -409,13 +409,8 @@ static int do_eventfd(unsigned int count, int flags)
 	return fd;
 }
 
-SYSCALL_DEFINE2(eventfd2, unsigned int, count, int, flags)
-{
-	return do_eventfd(count, flags);
-}
-
 SYSCALL_DEFINE1(eventfd, unsigned int, count)
 {
-	return do_eventfd(count, 0);
+	return sys_eventfd2(count, 0);
 }
 

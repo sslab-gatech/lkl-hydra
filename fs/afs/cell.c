@@ -15,20 +15,17 @@
 #include <linux/dns_resolver.h>
 #include <linux/sched.h>
 #include <linux/inet.h>
-#include <linux/namei.h>
 #include <keys/rxrpc-type.h>
 #include "internal.h"
 
-static unsigned __read_mostly afs_cell_gc_delay = 10;
-static unsigned __read_mostly afs_cell_min_ttl = 10 * 60;
-static unsigned __read_mostly afs_cell_max_ttl = 24 * 60 * 60;
+unsigned __read_mostly afs_cell_gc_delay = 10;
 
 static void afs_manage_cell(struct work_struct *);
 
 static void afs_dec_cells_outstanding(struct afs_net *net)
 {
 	if (atomic_dec_and_test(&net->cells_outstanding))
-		wake_up_var(&net->cells_outstanding);
+		wake_up_atomic_t(&net->cells_outstanding);
 }
 
 /*
@@ -78,7 +75,7 @@ struct afs_cell *afs_lookup_cell_rcu(struct afs_net *net,
 			cell = rcu_dereference_raw(net->ws_cell);
 			if (cell) {
 				afs_get_cell(cell);
-				break;
+				continue;
 			}
 			ret = -EDESTADDRREQ;
 			continue;
@@ -121,7 +118,7 @@ struct afs_cell *afs_lookup_cell_rcu(struct afs_net *net,
  */
 static struct afs_cell *afs_alloc_cell(struct afs_net *net,
 				       const char *name, unsigned int namelen,
-				       const char *addresses)
+				       const char *vllist)
 {
 	struct afs_cell *cell;
 	int i, ret;
@@ -133,10 +130,8 @@ static struct afs_cell *afs_alloc_cell(struct afs_net *net,
 		_leave(" = -ENAMETOOLONG");
 		return ERR_PTR(-ENAMETOOLONG);
 	}
-	if (namelen == 5 && memcmp(name, "@cell", 5) == 0)
-		return ERR_PTR(-EINVAL);
 
-	_enter("%*.*s,%s", namelen, namelen, name, addresses);
+	_enter("%*.*s,%s", namelen, namelen, name, vllist);
 
 	cell = kzalloc(sizeof(struct afs_cell), GFP_KERNEL);
 	if (!cell) {
@@ -155,27 +150,23 @@ static struct afs_cell *afs_alloc_cell(struct afs_net *net,
 		       (1 << AFS_CELL_FL_NO_LOOKUP_YET));
 	INIT_LIST_HEAD(&cell->proc_volumes);
 	rwlock_init(&cell->proc_lock);
-	rwlock_init(&cell->vl_servers_lock);
+	rwlock_init(&cell->vl_addrs_lock);
 
 	/* Fill in the VL server list if we were given a list of addresses to
 	 * use.
 	 */
-	if (addresses) {
-		struct afs_vlserver_list *vllist;
+	if (vllist) {
+		struct afs_addr_list *alist;
 
-		vllist = afs_parse_text_addrs(net,
-					      addresses, strlen(addresses), ':',
-					      VL_SERVICE, AFS_VL_PORT);
-		if (IS_ERR(vllist)) {
-			ret = PTR_ERR(vllist);
+		alist = afs_parse_text_addrs(vllist, strlen(vllist), ':',
+					     VL_SERVICE, AFS_VL_PORT);
+		if (IS_ERR(alist)) {
+			ret = PTR_ERR(alist);
 			goto parse_failed;
 		}
 
-		rcu_assign_pointer(cell->vl_servers, vllist);
+		rcu_assign_pointer(cell->vl_addrs, alist);
 		cell->dns_expiry = TIME64_MAX;
-		__clear_bit(AFS_CELL_FL_NO_LOOKUP_YET, &cell->flags);
-	} else {
-		cell->dns_expiry = ktime_get_real_seconds();
 	}
 
 	_leave(" = %p", cell);
@@ -343,13 +334,13 @@ int afs_cell_init(struct afs_net *net, const char *rootcell)
 		return PTR_ERR(new_root);
 	}
 
-	if (!test_and_set_bit(AFS_CELL_FL_NO_GC, &new_root->flags))
-		afs_get_cell(new_root);
+	set_bit(AFS_CELL_FL_NO_GC, &new_root->flags);
+	afs_get_cell(new_root);
 
 	/* install the new cell */
 	write_seqlock(&net->cells_lock);
-	old_root = rcu_access_pointer(net->ws_cell);
-	rcu_assign_pointer(net->ws_cell, new_root);
+	old_root = net->ws_cell;
+	net->ws_cell = new_root;
 	write_sequnlock(&net->cells_lock);
 
 	afs_put_cell(net, old_root);
@@ -362,40 +353,26 @@ int afs_cell_init(struct afs_net *net, const char *rootcell)
  */
 static void afs_update_cell(struct afs_cell *cell)
 {
-	struct afs_vlserver_list *vllist, *old;
-	unsigned int min_ttl = READ_ONCE(afs_cell_min_ttl);
-	unsigned int max_ttl = READ_ONCE(afs_cell_max_ttl);
-	time64_t now, expiry = 0;
+	struct afs_addr_list *alist, *old;
+	time64_t now, expiry;
 
 	_enter("%s", cell->name);
 
-	vllist = afs_dns_query(cell, &expiry);
-
-	now = ktime_get_real_seconds();
-	if (min_ttl > max_ttl)
-		max_ttl = min_ttl;
-	if (expiry < now + min_ttl)
-		expiry = now + min_ttl;
-	else if (expiry > now + max_ttl)
-		expiry = now + max_ttl;
-
-	if (IS_ERR(vllist)) {
-		switch (PTR_ERR(vllist)) {
+	alist = afs_dns_query(cell, &expiry);
+	if (IS_ERR(alist)) {
+		switch (PTR_ERR(alist)) {
 		case -ENODATA:
-		case -EDESTADDRREQ:
-			/* The DNS said that the cell does not exist or there
-			 * weren't any addresses to be had.
-			 */
+			/* The DNS said that the cell does not exist */
 			set_bit(AFS_CELL_FL_NOT_FOUND, &cell->flags);
 			clear_bit(AFS_CELL_FL_DNS_FAIL, &cell->flags);
-			cell->dns_expiry = expiry;
+			cell->dns_expiry = ktime_get_real_seconds() + 61;
 			break;
 
 		case -EAGAIN:
 		case -ECONNREFUSED:
 		default:
 			set_bit(AFS_CELL_FL_DNS_FAIL, &cell->flags);
-			cell->dns_expiry = now + 10;
+			cell->dns_expiry = ktime_get_real_seconds() + 10;
 			break;
 		}
 
@@ -407,12 +384,12 @@ static void afs_update_cell(struct afs_cell *cell)
 		/* Exclusion on changing vl_addrs is achieved by a
 		 * non-reentrant work item.
 		 */
-		old = rcu_dereference_protected(cell->vl_servers, true);
-		rcu_assign_pointer(cell->vl_servers, vllist);
+		old = rcu_dereference_protected(cell->vl_addrs, true);
+		rcu_assign_pointer(cell->vl_addrs, alist);
 		cell->dns_expiry = expiry;
 
 		if (old)
-			afs_put_vlserverlist(cell->net, old);
+			afs_put_addrlist(old);
 	}
 
 	if (test_and_clear_bit(AFS_CELL_FL_NO_LOOKUP_YET, &cell->flags))
@@ -434,7 +411,7 @@ static void afs_cell_destroy(struct rcu_head *rcu)
 
 	ASSERTCMP(atomic_read(&cell->usage), ==, 0);
 
-	afs_put_vlserverlist(cell->net, rcu_access_pointer(cell->vl_servers));
+	afs_put_addrlist(cell->vl_addrs);
 	key_put(cell->anonymous_key);
 	kfree(cell);
 
@@ -534,8 +511,6 @@ static int afs_alloc_anon_key(struct afs_cell *cell)
  */
 static int afs_activate_cell(struct afs_net *net, struct afs_cell *cell)
 {
-	struct hlist_node **p;
-	struct afs_cell *pcell;
 	int ret;
 
 	if (!cell->anonymous_key) {
@@ -547,29 +522,14 @@ static int afs_activate_cell(struct afs_net *net, struct afs_cell *cell)
 #ifdef CONFIG_AFS_FSCACHE
 	cell->cache = fscache_acquire_cookie(afs_cache_netfs.primary_index,
 					     &afs_cell_cache_index_def,
-					     cell->name, strlen(cell->name),
-					     NULL, 0,
-					     cell, 0, true);
+					     cell, true);
 #endif
-	ret = afs_proc_cell_setup(cell);
+	ret = afs_proc_cell_setup(net, cell);
 	if (ret < 0)
 		return ret;
-
-	mutex_lock(&net->proc_cells_lock);
-	for (p = &net->proc_cells.first; *p; p = &(*p)->next) {
-		pcell = hlist_entry(*p, struct afs_cell, proc_link);
-		if (strcmp(cell->name, pcell->name) < 0)
-			break;
-	}
-
-	cell->proc_link.pprev = p;
-	cell->proc_link.next = *p;
-	rcu_assign_pointer(*p, &cell->proc_link.next);
-	if (cell->proc_link.next)
-		cell->proc_link.next->pprev = &cell->proc_link.next;
-
-	afs_dynroot_mkdir(net, cell);
-	mutex_unlock(&net->proc_cells_lock);
+	spin_lock(&net->proc_cells_lock);
+	list_add_tail(&cell->proc_link, &net->proc_cells);
+	spin_unlock(&net->proc_cells_lock);
 	return 0;
 }
 
@@ -580,15 +540,14 @@ static void afs_deactivate_cell(struct afs_net *net, struct afs_cell *cell)
 {
 	_enter("%s", cell->name);
 
-	afs_proc_cell_remove(cell);
+	afs_proc_cell_remove(net, cell);
 
-	mutex_lock(&net->proc_cells_lock);
-	hlist_del_rcu(&cell->proc_link);
-	afs_dynroot_rmdir(net, cell);
-	mutex_unlock(&net->proc_cells_lock);
+	spin_lock(&net->proc_cells_lock);
+	list_del_init(&cell->proc_link);
+	spin_unlock(&net->proc_cells_lock);
 
 #ifdef CONFIG_AFS_FSCACHE
-	fscache_relinquish_cookie(cell->cache, NULL, false);
+	fscache_relinquish_cookie(cell->cache, 0);
 	cell->cache = NULL;
 #endif
 
@@ -792,8 +751,8 @@ void afs_cell_purge(struct afs_net *net)
 	_enter("");
 
 	write_seqlock(&net->cells_lock);
-	ws = rcu_access_pointer(net->ws_cell);
-	RCU_INIT_POINTER(net->ws_cell, NULL);
+	ws = net->ws_cell;
+	net->ws_cell = NULL;
 	write_sequnlock(&net->cells_lock);
 	afs_put_cell(net, ws);
 
@@ -805,7 +764,7 @@ void afs_cell_purge(struct afs_net *net)
 	afs_queue_cell_manager(net);
 
 	_debug("wait");
-	wait_var_event(&net->cells_outstanding,
-		       !atomic_read(&net->cells_outstanding));
+	wait_on_atomic_t(&net->cells_outstanding, atomic_t_wait,
+			 TASK_UNINTERRUPTIBLE);
 	_leave("");
 }

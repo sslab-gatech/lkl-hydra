@@ -248,7 +248,7 @@ void print_usage(void)
 		"Capture, convert and output data from IIO device buffer\n"
 		"  -a         Auto-activate all available channels\n"
 		"  -A         Force-activate ALL channels\n"
-		"  -c <n>     Do n conversions, or loop forever if n < 0\n"
+		"  -c <n>     Do n conversions\n"
 		"  -e         Disable wait for event (new data)\n"
 		"  -g         Use trigger-less mode\n"
 		"  -l <n>     Set buffer length to n samples\n"
@@ -330,14 +330,11 @@ static const struct option longopts[] = {
 
 int main(int argc, char **argv)
 {
-	long long num_loops = 2;
+	unsigned long num_loops = 2;
 	unsigned long timedelay = 1000000;
 	unsigned long buf_len = 128;
 
-	ssize_t i;
-	unsigned long long j;
-	unsigned long toread;
-	int ret, c;
+	int ret, c, i, j, toread;
 	int fp = -1;
 
 	int num_channels = 0;
@@ -369,7 +366,7 @@ int main(int argc, char **argv)
 			break;	
 		case 'c':
 			errno = 0;
-			num_loops = strtoll(optarg, &dummy, 10);
+			num_loops = strtoul(optarg, &dummy, 10);
 			if (errno) {
 				ret = -errno;
 				goto error;
@@ -637,7 +634,7 @@ int main(int argc, char **argv)
 		goto error;
 	}
 
-	for (j = 0; j < num_loops || num_loops < 0; j++) {
+	for (j = 0; j < num_loops; j++) {
 		if (!noevents) {
 			struct pollfd pfd = {
 				.fd = fp,

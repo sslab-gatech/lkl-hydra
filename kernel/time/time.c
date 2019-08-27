@@ -1,11 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
+ *  linux/kernel/time.c
+ *
  *  Copyright (C) 1991, 1992  Linus Torvalds
  *
- *  This file contains the interface functions for the various time related
- *  system calls: time, stime, gettimeofday, settimeofday, adjtime
- *
- * Modification history:
+ *  This file contains the interface functions for the various
+ *  time related system calls: time, stime, gettimeofday, settimeofday,
+ *			       adjtime
+ */
+/*
+ * Modification history kernel/time.c
  *
  * 1993-09-02    Philip Gladstone
  *      Created file with time related functions from sched/core.c and adjtimex()
@@ -25,7 +28,6 @@
  */
 
 #include <linux/export.h>
-#include <linux/kernel.h>
 #include <linux/timex.h>
 #include <linux/capability.h>
 #include <linux/timekeeper_internal.h>
@@ -61,7 +63,7 @@ EXPORT_SYMBOL(sys_tz);
  */
 SYSCALL_DEFINE1(time, time_t __user *, tloc)
 {
-	time_t i = (time_t)ktime_get_real_seconds();
+	time_t i = get_seconds();
 
 	if (tloc) {
 		if (put_user(i,tloc))
@@ -101,12 +103,14 @@ SYSCALL_DEFINE1(stime, time_t __user *, tptr)
 #ifdef CONFIG_COMPAT
 #ifdef __ARCH_WANT_COMPAT_SYS_TIME
 
-/* old_time32_t is a 32 bit "long" and needs to get converted. */
-COMPAT_SYSCALL_DEFINE1(time, old_time32_t __user *, tloc)
+/* compat_time_t is a 32 bit "long" and needs to get converted. */
+COMPAT_SYSCALL_DEFINE1(time, compat_time_t __user *, tloc)
 {
-	old_time32_t i;
+	struct timeval tv;
+	compat_time_t i;
 
-	i = (old_time32_t)ktime_get_real_seconds();
+	do_gettimeofday(&tv);
+	i = tv.tv_sec;
 
 	if (tloc) {
 		if (put_user(i,tloc))
@@ -116,7 +120,7 @@ COMPAT_SYSCALL_DEFINE1(time, old_time32_t __user *, tloc)
 	return i;
 }
 
-COMPAT_SYSCALL_DEFINE1(stime, old_time32_t __user *, tptr)
+COMPAT_SYSCALL_DEFINE1(stime, compat_time_t __user *, tptr)
 {
 	struct timespec64 tv;
 	int err;
@@ -141,11 +145,9 @@ SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
 		struct timezone __user *, tz)
 {
 	if (likely(tv != NULL)) {
-		struct timespec64 ts;
-
-		ktime_get_real_ts64(&ts);
-		if (put_user(ts.tv_sec, &tv->tv_sec) ||
-		    put_user(ts.tv_nsec / 1000, &tv->tv_usec))
+		struct timeval ktv;
+		do_gettimeofday(&ktv);
+		if (copy_to_user(tv, &ktv, sizeof(ktv)))
 			return -EFAULT;
 	}
 	if (unlikely(tz != NULL)) {
@@ -222,15 +224,14 @@ SYSCALL_DEFINE2(settimeofday, struct timeval __user *, tv,
 }
 
 #ifdef CONFIG_COMPAT
-COMPAT_SYSCALL_DEFINE2(gettimeofday, struct old_timeval32 __user *, tv,
+COMPAT_SYSCALL_DEFINE2(gettimeofday, struct compat_timeval __user *, tv,
 		       struct timezone __user *, tz)
 {
 	if (tv) {
-		struct timespec64 ts;
+		struct timeval ktv;
 
-		ktime_get_real_ts64(&ts);
-		if (put_user(ts.tv_sec, &tv->tv_sec) ||
-		    put_user(ts.tv_nsec / 1000, &tv->tv_usec))
+		do_gettimeofday(&ktv);
+		if (compat_put_timeval(&ktv, tv))
 			return -EFAULT;
 	}
 	if (tz) {
@@ -241,7 +242,7 @@ COMPAT_SYSCALL_DEFINE2(gettimeofday, struct old_timeval32 __user *, tv,
 	return 0;
 }
 
-COMPAT_SYSCALL_DEFINE2(settimeofday, struct old_timeval32 __user *, tv,
+COMPAT_SYSCALL_DEFINE2(settimeofday, struct compat_timeval __user *, tv,
 		       struct timezone __user *, tz)
 {
 	struct timespec64 new_ts;
@@ -313,10 +314,9 @@ unsigned int jiffies_to_msecs(const unsigned long j)
 	return (j + (HZ / MSEC_PER_SEC) - 1)/(HZ / MSEC_PER_SEC);
 #else
 # if BITS_PER_LONG == 32
-	return (HZ_TO_MSEC_MUL32 * j + (1ULL << HZ_TO_MSEC_SHR32) - 1) >>
-	       HZ_TO_MSEC_SHR32;
+	return (HZ_TO_MSEC_MUL32 * j) >> HZ_TO_MSEC_SHR32;
 # else
-	return DIV_ROUND_UP(j * HZ_TO_MSEC_NUM, HZ_TO_MSEC_DEN);
+	return (j * HZ_TO_MSEC_NUM) / HZ_TO_MSEC_DEN;
 # endif
 #endif
 }
@@ -341,6 +341,30 @@ unsigned int jiffies_to_usecs(const unsigned long j)
 #endif
 }
 EXPORT_SYMBOL(jiffies_to_usecs);
+
+/**
+ * timespec_trunc - Truncate timespec to a granularity
+ * @t: Timespec
+ * @gran: Granularity in ns.
+ *
+ * Truncate a timespec to a granularity. Always rounds down. gran must
+ * not be 0 nor greater than a second (NSEC_PER_SEC, or 10^9 ns).
+ */
+struct timespec timespec_trunc(struct timespec t, unsigned gran)
+{
+	/* Avoid division in the common cases 1 ns and 1 s. */
+	if (gran == 1) {
+		/* nothing */
+	} else if (gran == NSEC_PER_SEC) {
+		t.tv_nsec = 0;
+	} else if (gran > 1 && gran < NSEC_PER_SEC) {
+		t.tv_nsec -= t.tv_nsec % gran;
+	} else {
+		WARN(1, "illegal file time granularity: %u", gran);
+	}
+	return t;
+}
+EXPORT_SYMBOL(timespec_trunc);
 
 /*
  * mktime64 - Converts date to seconds.
@@ -383,6 +407,43 @@ time64_t mktime64(const unsigned int year0, const unsigned int mon0,
 }
 EXPORT_SYMBOL(mktime64);
 
+#if __BITS_PER_LONG == 32
+/**
+ * set_normalized_timespec - set timespec sec and nsec parts and normalize
+ *
+ * @ts:		pointer to timespec variable to be set
+ * @sec:	seconds to set
+ * @nsec:	nanoseconds to set
+ *
+ * Set seconds and nanoseconds field of a timespec variable and
+ * normalize to the timespec storage format
+ *
+ * Note: The tv_nsec part is always in the range of
+ *	0 <= tv_nsec < NSEC_PER_SEC
+ * For negative values only the tv_sec field is negative !
+ */
+void set_normalized_timespec(struct timespec *ts, time_t sec, s64 nsec)
+{
+	while (nsec >= NSEC_PER_SEC) {
+		/*
+		 * The following asm() prevents the compiler from
+		 * optimising this loop into a modulo operation. See
+		 * also __iter_div_u64_rem() in include/linux/time.h
+		 */
+		asm("" : "+rm"(nsec));
+		nsec -= NSEC_PER_SEC;
+		++sec;
+	}
+	while (nsec < 0) {
+		asm("" : "+rm"(nsec));
+		nsec += NSEC_PER_SEC;
+		--sec;
+	}
+	ts->tv_sec = sec;
+	ts->tv_nsec = nsec;
+}
+EXPORT_SYMBOL(set_normalized_timespec);
+
 /**
  * ns_to_timespec - Convert nanoseconds to timespec
  * @nsec:       the nanoseconds value to be converted
@@ -407,6 +468,7 @@ struct timespec ns_to_timespec(const s64 nsec)
 	return ts;
 }
 EXPORT_SYMBOL(ns_to_timespec);
+#endif
 
 /**
  * ns_to_timeval - Convert nanoseconds to timeval
@@ -425,18 +487,6 @@ struct timeval ns_to_timeval(const s64 nsec)
 	return tv;
 }
 EXPORT_SYMBOL(ns_to_timeval);
-
-struct __kernel_old_timeval ns_to_kernel_old_timeval(const s64 nsec)
-{
-	struct timespec64 ts = ns_to_timespec64(nsec);
-	struct __kernel_old_timeval tv;
-
-	tv.tv_sec = ts.tv_sec;
-	tv.tv_usec = (suseconds_t)ts.tv_nsec / 1000;
-
-	return tv;
-}
-EXPORT_SYMBOL(ns_to_kernel_old_timeval);
 
 /**
  * set_normalized_timespec - set timespec sec and nsec parts and normalize
@@ -791,9 +841,9 @@ struct timespec64 timespec64_add_safe(const struct timespec64 lhs,
 }
 
 int get_timespec64(struct timespec64 *ts,
-		   const struct __kernel_timespec __user *uts)
+		   const struct timespec __user *uts)
 {
-	struct __kernel_timespec kts;
+	struct timespec kts;
 	int ret;
 
 	ret = copy_from_user(&kts, uts, sizeof(kts));
@@ -801,11 +851,6 @@ int get_timespec64(struct timespec64 *ts,
 		return -EFAULT;
 
 	ts->tv_sec = kts.tv_sec;
-
-	/* Zero out the padding for 32 bit systems or in compat mode */
-	if (IS_ENABLED(CONFIG_64BIT_TIME) && in_compat_syscall())
-		kts.tv_nsec &= 0xFFFFFFFFUL;
-
 	ts->tv_nsec = kts.tv_nsec;
 
 	return 0;
@@ -813,63 +858,18 @@ int get_timespec64(struct timespec64 *ts,
 EXPORT_SYMBOL_GPL(get_timespec64);
 
 int put_timespec64(const struct timespec64 *ts,
-		   struct __kernel_timespec __user *uts)
+		   struct timespec __user *uts)
 {
-	struct __kernel_timespec kts = {
+	struct timespec kts = {
 		.tv_sec = ts->tv_sec,
 		.tv_nsec = ts->tv_nsec
 	};
-
 	return copy_to_user(uts, &kts, sizeof(kts)) ? -EFAULT : 0;
 }
 EXPORT_SYMBOL_GPL(put_timespec64);
 
-static int __get_old_timespec32(struct timespec64 *ts64,
-				   const struct old_timespec32 __user *cts)
-{
-	struct old_timespec32 ts;
-	int ret;
-
-	ret = copy_from_user(&ts, cts, sizeof(ts));
-	if (ret)
-		return -EFAULT;
-
-	ts64->tv_sec = ts.tv_sec;
-	ts64->tv_nsec = ts.tv_nsec;
-
-	return 0;
-}
-
-static int __put_old_timespec32(const struct timespec64 *ts64,
-				   struct old_timespec32 __user *cts)
-{
-	struct old_timespec32 ts = {
-		.tv_sec = ts64->tv_sec,
-		.tv_nsec = ts64->tv_nsec
-	};
-	return copy_to_user(cts, &ts, sizeof(ts)) ? -EFAULT : 0;
-}
-
-int get_old_timespec32(struct timespec64 *ts, const void __user *uts)
-{
-	if (COMPAT_USE_64BIT_TIME)
-		return copy_from_user(ts, uts, sizeof(*ts)) ? -EFAULT : 0;
-	else
-		return __get_old_timespec32(ts, uts);
-}
-EXPORT_SYMBOL_GPL(get_old_timespec32);
-
-int put_old_timespec32(const struct timespec64 *ts, void __user *uts)
-{
-	if (COMPAT_USE_64BIT_TIME)
-		return copy_to_user(uts, ts, sizeof(*ts)) ? -EFAULT : 0;
-	else
-		return __put_old_timespec32(ts, uts);
-}
-EXPORT_SYMBOL_GPL(put_old_timespec32);
-
 int get_itimerspec64(struct itimerspec64 *it,
-			const struct __kernel_itimerspec __user *uit)
+			const struct itimerspec __user *uit)
 {
 	int ret;
 
@@ -884,7 +884,7 @@ int get_itimerspec64(struct itimerspec64 *it,
 EXPORT_SYMBOL_GPL(get_itimerspec64);
 
 int put_itimerspec64(const struct itimerspec64 *it,
-			struct __kernel_itimerspec __user *uit)
+			struct itimerspec __user *uit)
 {
 	int ret;
 
@@ -897,24 +897,3 @@ int put_itimerspec64(const struct itimerspec64 *it,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(put_itimerspec64);
-
-int get_old_itimerspec32(struct itimerspec64 *its,
-			const struct old_itimerspec32 __user *uits)
-{
-
-	if (__get_old_timespec32(&its->it_interval, &uits->it_interval) ||
-	    __get_old_timespec32(&its->it_value, &uits->it_value))
-		return -EFAULT;
-	return 0;
-}
-EXPORT_SYMBOL_GPL(get_old_itimerspec32);
-
-int put_old_itimerspec32(const struct itimerspec64 *its,
-			struct old_itimerspec32 __user *uits)
-{
-	if (__put_old_timespec32(&its->it_interval, &uits->it_interval) ||
-	    __put_old_timespec32(&its->it_value, &uits->it_value))
-		return -EFAULT;
-	return 0;
-}
-EXPORT_SYMBOL_GPL(put_old_itimerspec32);

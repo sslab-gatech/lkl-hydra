@@ -305,3 +305,19 @@ EXPORT_SYMBOL(snd_sbmixer_add_ctl);
 EXPORT_SYMBOL(snd_sbmixer_suspend);
 EXPORT_SYMBOL(snd_sbmixer_resume);
 #endif
+
+/*
+ *  INIT part
+ */
+
+static int __init alsa_sb_common_init(void)
+{
+	return 0;
+}
+
+static void __exit alsa_sb_common_exit(void)
+{
+}
+
+module_init(alsa_sb_common_init)
+module_exit(alsa_sb_common_exit)

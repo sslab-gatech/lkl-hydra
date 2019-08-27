@@ -42,15 +42,6 @@ tmp2	.req	r5
 	.endm
 
 /*
- * Wait for main oscillator selection is done
- */
-	.macro wait_moscsels
-1:	ldr	tmp1, [pmc, #AT91_PMC_SR]
-	tst	tmp1, #AT91_PMC_MOSCSELS
-	beq	1b
-	.endm
-
-/*
  * Wait until PLLA has locked.
  */
 	.macro wait_pllalock
@@ -121,20 +112,19 @@ ENTRY(at91_pm_suspend_in_sram)
 	bl	at91_sramc_self_refresh
 
 	ldr	r0, .pm_mode
-	cmp	r0, #AT91_PM_STANDBY
-	beq	standby
+	cmp	r0, #AT91_PM_SLOW_CLOCK
+	beq	slow_clock
 	cmp	r0, #AT91_PM_BACKUP
 	beq	backup_mode
 
-	bl	at91_ulp_mode
-	b	exit_suspend
-
-standby:
 	/* Wait for interrupt */
 	ldr	pmc, .pmc_base
 	at91_cpu_idle
 	b	exit_suspend
 
+slow_clock:
+	bl	at91_slowck_mode
+	b	exit_suspend
 backup_mode:
 	bl	at91_backup_mode
 	b	exit_suspend
@@ -149,14 +139,6 @@ exit_suspend:
 ENDPROC(at91_pm_suspend_in_sram)
 
 ENTRY(at91_backup_mode)
-	/* Switch the master clock source to slow clock. */
-	ldr	pmc, .pmc_base
-	ldr	tmp1, [pmc, #AT91_PMC_MCKR]
-	bic	tmp1, tmp1, #AT91_PMC_CSS
-	str	tmp1, [pmc, #AT91_PMC_MCKR]
-
-	wait_mckrdy
-
 	/*BUMEN*/
 	ldr	r0, .sfr
 	mov	tmp1, #0x1
@@ -169,102 +151,7 @@ ENTRY(at91_backup_mode)
 	str	tmp1, [r0, #0]
 ENDPROC(at91_backup_mode)
 
-.macro at91_pm_ulp0_mode
-	ldr	pmc, .pmc_base
-
-	/* Turn off the crystal oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	bic	tmp1, tmp1, #AT91_PMC_MOSCEN
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	/* Wait for interrupt */
-	at91_cpu_idle
-
-	/* Turn on the crystal oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	orr	tmp1, tmp1, #AT91_PMC_MOSCEN
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	wait_moscrdy
-.endm
-
-/**
- * Note: This procedure only applies on the platform which uses
- * the external crystal oscillator as a main clock source.
- */
-.macro at91_pm_ulp1_mode
-	ldr	pmc, .pmc_base
-
-	/* Switch the main clock source to 12-MHz RC oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	bic	tmp1, tmp1, #AT91_PMC_MOSCSEL
-	bic	tmp1, tmp1, #AT91_PMC_KEY_MASK
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	wait_moscsels
-
-	/* Disable the crystal oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	bic	tmp1, tmp1, #AT91_PMC_MOSCEN
-	bic	tmp1, tmp1, #AT91_PMC_KEY_MASK
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	/* Switch the master clock source to main clock */
-	ldr	tmp1, [pmc, #AT91_PMC_MCKR]
-	bic	tmp1, tmp1, #AT91_PMC_CSS
-	orr	tmp1, tmp1, #AT91_PMC_CSS_MAIN
-	str	tmp1, [pmc, #AT91_PMC_MCKR]
-
-	wait_mckrdy
-
-	/* Enter the ULP1 mode by set WAITMODE bit in CKGR_MOR */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	orr	tmp1, tmp1, #AT91_PMC_WAITMODE
-	bic	tmp1, tmp1, #AT91_PMC_KEY_MASK
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	wait_mckrdy
-
-	/* Enable the crystal oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	orr	tmp1, tmp1, #AT91_PMC_MOSCEN
-	bic	tmp1, tmp1, #AT91_PMC_KEY_MASK
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	wait_moscrdy
-
-	/* Switch the master clock source to slow clock */
-	ldr	tmp1, [pmc, #AT91_PMC_MCKR]
-	bic	tmp1, tmp1, #AT91_PMC_CSS
-	str	tmp1, [pmc, #AT91_PMC_MCKR]
-
-	wait_mckrdy
-
-	/* Switch main clock source to crystal oscillator */
-	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
-	orr	tmp1, tmp1, #AT91_PMC_MOSCSEL
-	bic	tmp1, tmp1, #AT91_PMC_KEY_MASK
-	orr	tmp1, tmp1, #AT91_PMC_KEY
-	str	tmp1, [pmc, #AT91_CKGR_MOR]
-
-	wait_moscsels
-
-	/* Switch the master clock source to main clock */
-	ldr	tmp1, [pmc, #AT91_PMC_MCKR]
-	bic	tmp1, tmp1, #AT91_PMC_CSS
-	orr	tmp1, tmp1, #AT91_PMC_CSS_MAIN
-	str	tmp1, [pmc, #AT91_PMC_MCKR]
-
-	wait_mckrdy
-.endm
-
-ENTRY(at91_ulp_mode)
+ENTRY(at91_slowck_mode)
 	ldr	pmc, .pmc_base
 
 	/* Save Master clock setting */
@@ -287,19 +174,22 @@ ENTRY(at91_ulp_mode)
 	orr	tmp1, tmp1, #(1 << 29)		/* bit 29 always set */
 	str	tmp1, [pmc, #AT91_CKGR_PLLAR]
 
-	ldr	r0, .pm_mode
-	cmp	r0, #AT91_PM_ULP1
-	beq	ulp1_mode
+	/* Turn off the main oscillator */
+	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
+	bic	tmp1, tmp1, #AT91_PMC_MOSCEN
+	orr	tmp1, tmp1, #AT91_PMC_KEY
+	str	tmp1, [pmc, #AT91_CKGR_MOR]
 
-	at91_pm_ulp0_mode
-	b	ulp_exit
+	/* Wait for interrupt */
+	at91_cpu_idle
 
-ulp1_mode:
-	at91_pm_ulp1_mode
-	b	ulp_exit
+	/* Turn on the main oscillator */
+	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
+	orr	tmp1, tmp1, #AT91_PMC_MOSCEN
+	orr	tmp1, tmp1, #AT91_PMC_KEY
+	str	tmp1, [pmc, #AT91_CKGR_MOR]
 
-ulp_exit:
-	ldr	pmc, .pmc_base
+	wait_moscrdy
 
 	/* Restore PLLA setting */
 	ldr	tmp1, .saved_pllar
@@ -322,7 +212,7 @@ ulp_exit:
 	wait_mckrdy
 
 	mov	pc, lr
-ENDPROC(at91_ulp_mode)
+ENDPROC(at91_slowck_mode)
 
 /*
  * void at91_sramc_self_refresh(unsigned int is_active)

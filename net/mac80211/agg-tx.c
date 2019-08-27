@@ -8,7 +8,6 @@
  * Copyright 2007, Michael Wu <flamingice@sourmilk.net>
  * Copyright 2007-2010, Intel Corporation
  * Copyright(c) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2019 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -366,8 +365,6 @@ int ___ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
 
 	set_bit(HT_AGG_STATE_STOPPING, &tid_tx->state);
 
-	ieee80211_agg_stop_txq(sta, tid);
-
 	spin_unlock_bh(&sta->lock);
 
 	ht_dbg(sta->sdata, "Tx BA session stop requested for %pM tid %u\n",
@@ -465,7 +462,6 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 		.timeout = 0,
 	};
 	int ret;
-	u16 buf_size;
 
 	tid_tx = rcu_dereference_protected_tid_tx(sta, tid);
 
@@ -514,22 +510,11 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 	sta->ampdu_mlme.addba_req_num[tid]++;
 	spin_unlock_bh(&sta->lock);
 
-	if (sta->sta.he_cap.has_he) {
-		buf_size = local->hw.max_tx_aggregation_subframes;
-	} else {
-		/*
-		 * We really should use what the driver told us it will
-		 * transmit as the maximum, but certain APs (e.g. the
-		 * LinkSys WRT120N with FW v1.0.07 build 002 Jun 18 2012)
-		 * will crash when we use a lower number.
-		 */
-		buf_size = IEEE80211_MAX_AMPDU_BUF_HT;
-	}
-
 	/* send AddBA request */
 	ieee80211_send_addba_request(sdata, sta->sta.addr, tid,
 				     tid_tx->dialog_token, params.ssn,
-				     buf_size, tid_tx->timeout);
+				     IEEE80211_MAX_AMPDU_BUF,
+				     tid_tx->timeout);
 }
 
 /*
@@ -919,7 +904,8 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 {
 	struct tid_ampdu_tx *tid_tx;
 	struct ieee80211_txq *txq;
-	u16 capab, tid, buf_size;
+	u16 capab, tid;
+	u8 buf_size;
 	bool amsdu;
 
 	capab = le16_to_cpu(mgmt->u.action.u.addba_resp.capab);
@@ -983,9 +969,6 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 			ieee80211_agg_tx_operational(local, sta, tid);
 
 		sta->ampdu_mlme.addba_req_num[tid] = 0;
-
-		tid_tx->timeout =
-			le16_to_cpu(mgmt->u.action.u.addba_resp.timeout);
 
 		if (tid_tx->timeout) {
 			mod_timer(&tid_tx->session_timer,

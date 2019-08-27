@@ -151,7 +151,7 @@ int mei_reset(struct mei_device *dev)
 
 	mei_hbm_reset(dev);
 
-	memset(dev->rd_msg_hdr, 0, sizeof(dev->rd_msg_hdr));
+	dev->rd_msg_hdr = 0;
 
 	if (ret) {
 		dev_err(dev->dev, "hw_reset failed ret = %d\n", ret);
@@ -383,7 +383,6 @@ void mei_device_init(struct mei_device *dev,
 	INIT_LIST_HEAD(&dev->write_waiting_list);
 	INIT_LIST_HEAD(&dev->ctrl_wr_list);
 	INIT_LIST_HEAD(&dev->ctrl_rd_list);
-	dev->tx_queue_limit = MEI_TX_QUEUE_LIMIT_DEFAULT;
 
 	INIT_DELAYED_WORK(&dev->timer_work, mei_timer);
 	INIT_WORK(&dev->reset_work, mei_reset_work);

@@ -117,16 +117,9 @@
  * 64-bit, this is above 4GB to leave the entire 32-bit address
  * space open for things that want to use the area for 32-bit pointers.
  */
-#ifdef CONFIG_ARM64_FORCE_52BIT
 #define ELF_ET_DYN_BASE		(2 * TASK_SIZE_64 / 3)
-#else
-#define ELF_ET_DYN_BASE		(2 * DEFAULT_MAP_WINDOW_64 / 3)
-#endif /* CONFIG_ARM64_FORCE_52BIT */
 
 #ifndef __ASSEMBLY__
-
-#include <linux/bug.h>
-#include <asm/processor.h> /* for signal_minsigstksz, used by ARCH_DLINFO */
 
 typedef unsigned long elf_greg_t;
 
@@ -155,16 +148,6 @@ typedef struct user_fpsimd_state elf_fpregset_t;
 do {									\
 	NEW_AUX_ENT(AT_SYSINFO_EHDR,					\
 		    (elf_addr_t)current->mm->context.vdso);		\
-									\
-	/*								\
-	 * Should always be nonzero unless there's a kernel bug.	\
-	 * If we haven't determined a sensible value to give to		\
-	 * userspace, omit the entry:					\
-	 */								\
-	if (likely(signal_minsigstksz))					\
-		NEW_AUX_ENT(AT_MINSIGSTKSZ, signal_minsigstksz);	\
-	else								\
-		NEW_AUX_ENT(AT_IGNORE, 0);				\
 } while (0)
 
 #define ARCH_HAS_SETUP_ADDITIONAL_PAGES

@@ -17,7 +17,6 @@
 #include <sys/resource.h>
 #include "libbpf.h"
 #include "bpf_load.h"
-#include "trace_helpers.h"
 
 #define PRINT_RAW_ADDR 0
 

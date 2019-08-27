@@ -178,8 +178,11 @@ static struct mv_usb_platform_data ttc_usb_pdata = {
 #endif
 #endif
 
-#if IS_ENABLED(CONFIG_MTD_NAND_MARVELL)
-static struct pxa3xx_nand_platform_data dkb_nand_info = {};
+#if IS_ENABLED(CONFIG_MTD_NAND_PXA3xx)
+static struct pxa3xx_nand_platform_data dkb_nand_info = {
+	.enable_arbiter = 1,
+	.num_cs = 1,
+};
 #endif
 
 #if IS_ENABLED(CONFIG_MMP_DISP)
@@ -272,7 +275,7 @@ static void __init ttc_dkb_init(void)
 
 	/* on-chip devices */
 	pxa910_add_uart(1);
-#if IS_ENABLED(CONFIG_MTD_NAND_MARVELL)
+#if IS_ENABLED(CONFIG_MTD_NAND_PXA3xx)
 	pxa910_add_nand(&dkb_nand_info);
 #endif
 
@@ -281,11 +284,6 @@ static void __init ttc_dkb_init(void)
 	platform_device_add_data(&pxa910_device_gpio, &pxa910_gpio_pdata,
 				 sizeof(struct pxa_gpio_platform_data));
 	platform_add_devices(ARRAY_AND_SIZE(ttc_dkb_devices));
-
-#if IS_ENABLED(CONFIG_USB_SUPPORT)
-#if IS_ENABLED(CONFIG_PHY_PXA_USB)
-	platform_device_register(&pxa168_device_usb_phy);
-#endif
 
 #if IS_ENABLED(CONFIG_USB_MV_UDC)
 	pxa168_device_u2o.dev.platform_data = &ttc_usb_pdata;
@@ -300,7 +298,6 @@ static void __init ttc_dkb_init(void)
 #if IS_ENABLED(CONFIG_USB_MV_OTG)
 	pxa168_device_u2ootg.dev.platform_data = &ttc_usb_pdata;
 	platform_device_register(&pxa168_device_u2ootg);
-#endif
 #endif
 
 #if IS_ENABLED(CONFIG_MMP_DISP)

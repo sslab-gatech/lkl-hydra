@@ -85,7 +85,7 @@ static int max6902_read_time(struct device *dev, struct rtc_time *dt)
 	dt->tm_year += century;
 	dt->tm_year -= 1900;
 
-	return 0;
+	return rtc_valid_tm(dt);
 }
 
 static int max6902_set_time(struct device *dev, struct rtc_time *dt)

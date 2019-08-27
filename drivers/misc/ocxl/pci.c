@@ -519,7 +519,7 @@ static struct ocxl_fn *init_function(struct pci_dev *dev)
 	rc = device_register(&fn->dev);
 	if (rc) {
 		deconfigure_function(fn);
-		put_device(&fn->dev);
+		device_unregister(&fn->dev);
 		return ERR_PTR(rc);
 	}
 	return fn;

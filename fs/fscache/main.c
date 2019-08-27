@@ -16,7 +16,6 @@
 #include <linux/completion.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
-#define CREATE_TRACE_POINTS
 #include "internal.h"
 
 MODULE_DESCRIPTION("FS Cache Manager");
@@ -143,7 +142,9 @@ static int __init fscache_init(void)
 
 	fscache_cookie_jar = kmem_cache_create("fscache_cookie_jar",
 					       sizeof(struct fscache_cookie),
-					       0, 0, NULL);
+					       0,
+					       0,
+					       fscache_cookie_init_once);
 	if (!fscache_cookie_jar) {
 		pr_notice("Failed to allocate a cookie jar\n");
 		ret = -ENOMEM;

@@ -9,7 +9,7 @@ variable block sizes, is extent based, and makes extensive use of
 Btrees (directories, extents, free space) to aid both performance
 and scalability.
 
-Refer to the documentation at https://xfs.wiki.kernel.org/
+Refer to the documentation at http://oss.sgi.com/projects/xfs/
 for further details.  This implementation is on-disk compatible
 with the IRIX version of XFS.
 
@@ -223,6 +223,8 @@ Deprecated Mount Options
 
   Name				Removal Schedule
   ----				----------------
+  barrier			no earlier than v4.15
+  nobarrier			no earlier than v4.15
 
 
 Removed Mount Options
@@ -234,8 +236,6 @@ Removed Mount Options
   ihashsize			v4.0
   irixsgid			v4.0
   osyncisdsync/osyncisosync	v4.0
-  barrier			v4.19
-  nobarrier			v4.19
 
 
 sysctls
@@ -417,7 +417,7 @@ level directory:
 	filesystem from ever unmounting fully in the case of "retry forever"
 	handler configurations.
 
-	Note: there is no guarantee that fail_at_unmount can be set while an
+	Note: there is no guarantee that fail_at_unmount can be set whilst an
 	unmount is in progress. It is possible that the sysfs entries are
 	removed by the unmounting filesystem before a "retry forever" error
 	handler configuration causes unmount to hang, and hence the filesystem

@@ -146,6 +146,8 @@ struct nouveau_drm {
 
 	/* TTM interface support */
 	struct {
+		struct drm_global_reference mem_global_ref;
+		struct ttm_bo_global_ref bo_global_ref;
 		struct ttm_bo_device bdev;
 		atomic_t validate_sequence;
 		int (*move)(struct nouveau_channel *,
@@ -168,12 +170,6 @@ struct nouveau_drm {
 	/* synchronisation */
 	void *fence;
 
-	/* Global channel management. */
-	struct {
-		int nr;
-		u64 context_base;
-	} chan;
-
 	/* context for accelerated drm-internal operations */
 	struct nouveau_channel *cechan;
 	struct nouveau_channel *channel;
@@ -192,6 +188,8 @@ struct nouveau_drm {
 	/* modesetting */
 	struct nvbios vbios;
 	struct nouveau_display *display;
+	struct backlight_device *backlight;
+	struct list_head bl_connectors;
 	struct work_struct hpd_work;
 	struct work_struct fbcon_work;
 	int fbcon_new_state;
@@ -210,6 +208,7 @@ struct nouveau_drm {
 	bool have_disp_power_ref;
 
 	struct dev_pm_domain vga_pm_domain;
+	struct pci_dev *hdmi_device;
 };
 
 static inline struct nouveau_drm *
@@ -240,12 +239,10 @@ void nouveau_drm_device_remove(struct drm_device *dev);
 	struct nouveau_cli *_cli = (c);                                        \
 	dev_##l(_cli->drm->dev->dev, "%s: "f, _cli->name, ##a);                \
 } while(0)
-
 #define NV_FATAL(drm,f,a...) NV_PRINTK(crit, &(drm)->client, f, ##a)
 #define NV_ERROR(drm,f,a...) NV_PRINTK(err, &(drm)->client, f, ##a)
 #define NV_WARN(drm,f,a...) NV_PRINTK(warn, &(drm)->client, f, ##a)
 #define NV_INFO(drm,f,a...) NV_PRINTK(info, &(drm)->client, f, ##a)
-
 #define NV_DEBUG(drm,f,a...) do {                                              \
 	if (unlikely(drm_debug & DRM_UT_DRIVER))                               \
 		NV_PRINTK(info, &(drm)->client, f, ##a);                       \
@@ -254,12 +251,6 @@ void nouveau_drm_device_remove(struct drm_device *dev);
 	if (unlikely(drm_debug & DRM_UT_ATOMIC))                               \
 		NV_PRINTK(info, &(drm)->client, f, ##a);                       \
 } while(0)
-
-#define NV_PRINTK_ONCE(l,c,f,a...) NV_PRINTK(l##_once,c,f, ##a)
-
-#define NV_ERROR_ONCE(drm,f,a...) NV_PRINTK_ONCE(err, &(drm)->client, f, ##a)
-#define NV_WARN_ONCE(drm,f,a...) NV_PRINTK_ONCE(warn, &(drm)->client, f, ##a)
-#define NV_INFO_ONCE(drm,f,a...) NV_PRINTK_ONCE(info, &(drm)->client, f, ##a)
 
 extern int nouveau_modeset;
 

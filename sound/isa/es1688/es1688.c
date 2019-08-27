@@ -260,6 +260,7 @@ static int snd_es968_pnp_detect(struct pnp_card_link *pcard,
 	struct snd_card *card;
 	static unsigned int dev;
 	int error;
+	struct snd_es1688 *chip;
 
 	if (snd_es968_pnp_is_probed)
 		return -EBUSY;
@@ -275,6 +276,7 @@ static int snd_es968_pnp_detect(struct pnp_card_link *pcard,
 			     sizeof(struct snd_es1688), &card);
 	if (error < 0)
 		return error;
+	chip = card->private_data;
 
 	error = snd_card_es968_pnp(card, dev, pcard, pid);
 	if (error < 0) {

@@ -137,7 +137,7 @@ static struct resource rtc_iores = {
 	.flags = IORESOURCE_IO | IORESOURCE_BUSY,
 };
 
-time64_t __init maple_get_boot_time(void)
+unsigned long __init maple_get_boot_time(void)
 {
 	struct rtc_time tm;
 	struct device_node *rtcs;
@@ -170,6 +170,7 @@ time64_t __init maple_get_boot_time(void)
 	request_resource(&ioport_resource, &rtc_iores);
 
 	maple_get_rtc_time(&tm);
-	return rtc_tm_to_time64(&tm);
+	return mktime(tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+		      tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 

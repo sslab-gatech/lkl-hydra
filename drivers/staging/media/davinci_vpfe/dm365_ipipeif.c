@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2012 Texas Instruments Inc
  *
@@ -10,6 +9,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  * Contributors:
  *      Manjunath Hadli <manjunath.hadli@ti.com>
@@ -63,17 +66,17 @@ ipipeif_get_pack_mode(u32 in_pix_fmt)
 	}
 }
 
-static inline u32 ipipeif_read(void __iomem *addr, u32 offset)
+static inline u32 ipipeif_read(void *addr, u32 offset)
 {
 	return readl(addr + offset);
 }
 
-static inline void ipipeif_write(u32 val, void __iomem *addr, u32 offset)
+static inline void ipipeif_write(u32 val, void *addr, u32 offset)
 {
 	writel(val, addr + offset);
 }
 
-static void ipipeif_config_dpc(void __iomem *addr, struct ipipeif_dpc *dpc)
+static void ipipeif_config_dpc(void *addr, struct ipipeif_dpc *dpc)
 {
 	u32 val = 0;
 
@@ -188,7 +191,7 @@ static int ipipeif_hw_setup(struct v4l2_subdev *sd)
 	struct ipipeif_params params = ipipeif->config;
 	enum ipipeif_input_source ipipeif_source;
 	u32 isif_port_if;
-	void __iomem *ipipeif_base_addr;
+	void *ipipeif_base_addr;
 	unsigned int val;
 	int data_shift;
 	int pack_mode;
@@ -307,7 +310,6 @@ static int ipipeif_hw_setup(struct v4l2_subdev *sd)
 			ipipeif_write(val, ipipeif_base_addr, IPIPEIF_CFG2);
 			break;
 		}
-		/* fall through */
 
 	case IPIPEIF_SDRAM_YUV:
 		/* Set clock divider */
@@ -416,7 +418,7 @@ ipipeif_set_config(struct v4l2_subdev *sd, struct ipipeif_params *config)
 }
 
 static int
-ipipeif_get_config(struct v4l2_subdev *sd, void *arg)
+ipipeif_get_config(struct v4l2_subdev *sd, void __user *arg)
 {
 	struct vpfe_ipipeif_device *ipipeif = v4l2_get_subdevdata(sd);
 	struct ipipeif_params *config = arg;
@@ -505,7 +507,7 @@ static int ipipeif_s_ctrl(struct v4l2_ctrl *ctrl)
 void vpfe_ipipeif_enable(struct vpfe_device *vpfe_dev)
 {
 	struct vpfe_ipipeif_device *ipipeif = &vpfe_dev->vpfe_ipipeif;
-	void __iomem *ipipeif_base_addr = ipipeif->ipipeif_base_addr;
+	void *ipipeif_base_addr = ipipeif->ipipeif_base_addr;
 	unsigned char val;
 
 	if (ipipeif->input != IPIPEIF_INPUT_MEMORY)
@@ -792,7 +794,7 @@ static int
 ipipeif_video_in_queue(struct vpfe_device *vpfe_dev, unsigned long addr)
 {
 	struct vpfe_ipipeif_device *ipipeif = &vpfe_dev->vpfe_ipipeif;
-	void __iomem *ipipeif_base_addr = ipipeif->ipipeif_base_addr;
+	void *ipipeif_base_addr = ipipeif->ipipeif_base_addr;
 	unsigned int adofs;
 	u32 val;
 
@@ -1018,7 +1020,7 @@ int vpfe_ipipeif_init(struct vpfe_ipipeif_device *ipipeif,
 	v4l2_subdev_init(sd, &ipipeif_v4l2_ops);
 
 	sd->internal_ops = &ipipeif_v4l2_internal_ops;
-	strscpy(sd->name, "DAVINCI IPIPEIF", sizeof(sd->name));
+	strlcpy(sd->name, "DAVINCI IPIPEIF", sizeof(sd->name));
 	sd->grp_id = 1 << 16;	/* group ID for davinci subdevs */
 
 	v4l2_set_subdevdata(sd, ipipeif);

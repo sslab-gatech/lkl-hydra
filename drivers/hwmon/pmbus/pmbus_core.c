@@ -2015,10 +2015,7 @@ static int pmbus_init_common(struct i2c_client *client, struct pmbus_data *data,
 	if (ret >= 0 && (ret & PB_CAPABILITY_ERROR_CHECK))
 		client->flags |= I2C_CLIENT_PEC;
 
-	if (data->info->pages)
-		pmbus_clear_faults(client);
-	else
-		pmbus_clear_fault_page(client, -1);
+	pmbus_clear_faults(client);
 
 	if (info->identify) {
 		ret = (*info->identify)(client, info);
@@ -2179,8 +2176,8 @@ static int pmbus_init_debugfs(struct i2c_client *client,
 	}
 
 	/* Allocate the max possible entries we need. */
-	entries = devm_kcalloc(data->dev,
-			       data->info->pages * 10, sizeof(*entries),
+	entries = devm_kzalloc(data->dev,
+			       sizeof(*entries) * (data->info->pages * 10),
 			       GFP_KERNEL);
 	if (!entries)
 		return -ENOMEM;

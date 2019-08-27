@@ -29,6 +29,7 @@ enum mdio_mutex_lock_class {
 struct mdio_device {
 	struct device dev;
 
+	const struct dev_pm_ops *pm_ops;
 	struct mii_bus *bus;
 	char modalias[MDIO_NAME_SIZE];
 

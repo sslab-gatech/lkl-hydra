@@ -167,8 +167,6 @@ struct knav_dma_desc {
 void *knav_dma_open_channel(struct device *dev, const char *name,
 				struct knav_dma_cfg *config);
 void knav_dma_close_channel(void *channel);
-int knav_dma_get_flow(void *channel);
-bool knav_dma_device_ready(void);
 #else
 static inline void *knav_dma_open_channel(struct device *dev, const char *name,
 				struct knav_dma_cfg *config)
@@ -177,16 +175,6 @@ static inline void *knav_dma_open_channel(struct device *dev, const char *name,
 }
 static inline void knav_dma_close_channel(void *channel)
 {}
-
-static inline int knav_dma_get_flow(void *channel)
-{
-	return -EINVAL;
-}
-
-static inline bool knav_dma_device_ready(void)
-{
-	return false;
-}
 
 #endif
 

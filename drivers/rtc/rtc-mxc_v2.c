@@ -8,7 +8,6 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 
@@ -166,6 +165,11 @@ static int mxc_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	time64_t time = rtc_tm_to_time64(tm);
 	int ret;
 
+	if (time > U32_MAX) {
+		dev_err(dev, "RTC exceeded by %llus\n", time - U32_MAX);
+		return -EINVAL;
+	}
+
 	ret = mxc_rtc_lock(pdata);
 	if (ret)
 		return ret;
@@ -194,7 +198,7 @@ static int mxc_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (ret)
 		return ret;
 
-	rtc_time64_to_tm(readl(ioaddr + SRTC_LPSAR), &alrm->time);
+	rtc_time_to_tm(readl(ioaddr + SRTC_LPSAR), &alrm->time);
 	alrm->pending = !!(readl(ioaddr + SRTC_LPSR) & SRTC_LPSR_ALP);
 	return mxc_rtc_unlock(pdata);
 }
@@ -244,6 +248,11 @@ static int mxc_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (ret)
 		return ret;
 
+	if (time > U32_MAX) {
+		dev_err(dev, "Hopefully I am out of service by then :-(\n");
+		return -EINVAL;
+	}
+
 	writel((u32)time, pdata->ioaddr + SRTC_LPSAR);
 
 	/* clear alarm interrupt status bit */
@@ -264,7 +273,7 @@ static const struct rtc_class_ops mxc_rtc_ops = {
 	.alarm_irq_enable = mxc_rtc_alarm_irq_enable,
 };
 
-static int mxc_rtc_wait_for_flag(void __iomem *ioaddr, int flag)
+static int mxc_rtc_wait_for_flag(void *__iomem ioaddr, int flag)
 {
 	unsigned int timeout = REG_READ_TIMEOUT;
 
@@ -334,13 +343,6 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
-	if (IS_ERR(pdata->rtc))
-		return PTR_ERR(pdata->rtc);
-
-	pdata->rtc->ops = &mxc_rtc_ops;
-	pdata->rtc->range_max = U32_MAX;
-
 	clk_disable(pdata->clk);
 	platform_set_drvdata(pdev, pdata);
 	ret =
@@ -352,11 +354,15 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = rtc_register_device(pdata->rtc);
-	if (ret < 0)
+	pdata->rtc =
+	    devm_rtc_device_register(&pdev->dev, pdev->name, &mxc_rtc_ops,
+				     THIS_MODULE);
+	if (IS_ERR(pdata->rtc)) {
 		clk_unprepare(pdata->clk);
+		return PTR_ERR(pdata->rtc);
+	}
 
-	return ret;
+	return 0;
 }
 
 static int mxc_rtc_remove(struct platform_device *pdev)

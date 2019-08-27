@@ -20,8 +20,6 @@
  *
  */
 
-#include <linux/pm_runtime.h>
-
 #include "../wlcore/debugfs.h"
 #include "../wlcore/wlcore.h"
 #include "../wlcore/debug.h"
@@ -278,18 +276,15 @@ static ssize_t radar_detection_write(struct file *file,
 	if (unlikely(wl->state != WLCORE_STATE_ON))
 		goto out;
 
-	ret = pm_runtime_get_sync(wl->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(wl->dev);
+	ret = wl1271_ps_elp_wakeup(wl);
+	if (ret < 0)
 		goto out;
-	}
 
 	ret = wl18xx_cmd_radar_detection_debug(wl, channel);
 	if (ret < 0)
 		count = ret;
 
-	pm_runtime_mark_last_busy(wl->dev);
-	pm_runtime_put_autosuspend(wl->dev);
+	wl1271_ps_elp_sleep(wl);
 out:
 	mutex_unlock(&wl->mutex);
 	return count;
@@ -320,18 +315,15 @@ static ssize_t dynamic_fw_traces_write(struct file *file,
 	if (unlikely(wl->state != WLCORE_STATE_ON))
 		goto out;
 
-	ret = pm_runtime_get_sync(wl->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(wl->dev);
+	ret = wl1271_ps_elp_wakeup(wl);
+	if (ret < 0)
 		goto out;
-	}
 
 	ret = wl18xx_acx_dynamic_fw_traces(wl);
 	if (ret < 0)
 		count = ret;
 
-	pm_runtime_mark_last_busy(wl->dev);
-	pm_runtime_put_autosuspend(wl->dev);
+	wl1271_ps_elp_sleep(wl);
 out:
 	mutex_unlock(&wl->mutex);
 	return count;
@@ -382,11 +374,9 @@ static ssize_t radar_debug_mode_write(struct file *file,
 	if (unlikely(wl->state != WLCORE_STATE_ON))
 		goto out;
 
-	ret = pm_runtime_get_sync(wl->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(wl->dev);
+	ret = wl1271_ps_elp_wakeup(wl);
+	if (ret < 0)
 		goto out;
-	}
 
 	wl12xx_for_each_wlvif_ap(wl, wlvif) {
 		wlcore_cmd_generic_cfg(wl, wlvif,
@@ -394,8 +384,7 @@ static ssize_t radar_debug_mode_write(struct file *file,
 				       wl->radar_debug_mode, 0);
 	}
 
-	pm_runtime_mark_last_busy(wl->dev);
-	pm_runtime_put_autosuspend(wl->dev);
+	wl1271_ps_elp_sleep(wl);
 out:
 	mutex_unlock(&wl->mutex);
 	return count;

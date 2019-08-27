@@ -52,6 +52,13 @@
 
 #include "pvrdma.h"
 
+int pvrdma_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
+			 struct ib_recv_wr **bad_wr)
+{
+	/* No support for kernel clients. */
+	return -EOPNOTSUPP;
+}
+
 /**
  * pvrdma_query_srq - query shared receive queue
  * @ibsrq: the shared receive queue to query
@@ -111,7 +118,7 @@ struct ib_srq *pvrdma_create_srq(struct ib_pd *pd,
 	unsigned long flags;
 	int ret;
 
-	if (!udata) {
+	if (!(pd->uobject && udata)) {
 		/* No support for kernel clients. */
 		dev_warn(&dev->pdev->dev,
 			 "no shared receive queue support for kernel client\n");

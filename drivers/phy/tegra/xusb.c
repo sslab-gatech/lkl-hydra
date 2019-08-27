@@ -102,6 +102,19 @@ tegra_xusb_pad_find_phy_node(struct tegra_xusb_pad *pad, unsigned int index)
 	return np;
 }
 
+static int
+tegra_xusb_lane_lookup_function(struct tegra_xusb_lane *lane,
+				    const char *function)
+{
+	unsigned int i;
+
+	for (i = 0; i < lane->soc->num_funcs; i++)
+		if (strcmp(function, lane->soc->funcs[i]) == 0)
+			return i;
+
+	return -EINVAL;
+}
+
 int tegra_xusb_lane_parse_dt(struct tegra_xusb_lane *lane,
 			     struct device_node *np)
 {
@@ -113,10 +126,10 @@ int tegra_xusb_lane_parse_dt(struct tegra_xusb_lane *lane,
 	if (err < 0)
 		return err;
 
-	err = match_string(lane->soc->funcs, lane->soc->num_funcs, function);
+	err = tegra_xusb_lane_lookup_function(lane, function);
 	if (err < 0) {
-		dev_err(dev, "invalid function \"%s\" for lane \"%pOFn\"\n",
-			function, np);
+		dev_err(dev, "invalid function \"%s\" for lane \"%s\"\n",
+			function, np->name);
 		return err;
 	}
 
@@ -405,7 +418,7 @@ tegra_xusb_port_find_lane(struct tegra_xusb_port *port,
 {
 	struct tegra_xusb_lane *lane, *match = ERR_PTR(-ENODEV);
 
-	for (; map->type; map++) {
+	for (map = map; map->type; map++) {
 		if (port->index != map->port)
 			continue;
 

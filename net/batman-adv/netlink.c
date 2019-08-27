@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2016-2018  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2016-2017  B.A.T.M.A.N. contributors:
  *
  * Matthias Schiffer
  *
@@ -29,11 +29,11 @@
 #include <linux/if_ether.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/list.h>
 #include <linux/netdevice.h>
 #include <linux/netlink.h>
 #include <linux/printk.h>
-#include <linux/rtnetlink.h>
+#include <linux/rculist.h>
+#include <linux/rcupdate.h>
 #include <linux/skbuff.h>
 #include <linux/stddef.h>
 #include <linux/types.h>
@@ -45,10 +45,8 @@
 
 #include "bat_algo.h"
 #include "bridge_loop_avoidance.h"
-#include "distributed-arp-table.h"
 #include "gateway_client.h"
 #include "hard-interface.h"
-#include "multicast.h"
 #include "originator.h"
 #include "soft-interface.h"
 #include "tp_meter.h"
@@ -66,44 +64,39 @@ static const struct genl_multicast_group batadv_netlink_mcgrps[] = {
 };
 
 static const struct nla_policy batadv_netlink_policy[NUM_BATADV_ATTR] = {
-	[BATADV_ATTR_VERSION]			= { .type = NLA_STRING },
-	[BATADV_ATTR_ALGO_NAME]			= { .type = NLA_STRING },
-	[BATADV_ATTR_MESH_IFINDEX]		= { .type = NLA_U32 },
-	[BATADV_ATTR_MESH_IFNAME]		= { .type = NLA_STRING },
-	[BATADV_ATTR_MESH_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_HARD_IFINDEX]		= { .type = NLA_U32 },
-	[BATADV_ATTR_HARD_IFNAME]		= { .type = NLA_STRING },
-	[BATADV_ATTR_HARD_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_ORIG_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_TPMETER_RESULT]		= { .type = NLA_U8 },
-	[BATADV_ATTR_TPMETER_TEST_TIME]		= { .type = NLA_U32 },
-	[BATADV_ATTR_TPMETER_BYTES]		= { .type = NLA_U64 },
-	[BATADV_ATTR_TPMETER_COOKIE]		= { .type = NLA_U32 },
-	[BATADV_ATTR_ACTIVE]			= { .type = NLA_FLAG },
-	[BATADV_ATTR_TT_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_TT_TTVN]			= { .type = NLA_U8 },
-	[BATADV_ATTR_TT_LAST_TTVN]		= { .type = NLA_U8 },
-	[BATADV_ATTR_TT_CRC32]			= { .type = NLA_U32 },
-	[BATADV_ATTR_TT_VID]			= { .type = NLA_U16 },
-	[BATADV_ATTR_TT_FLAGS]			= { .type = NLA_U32 },
-	[BATADV_ATTR_FLAG_BEST]			= { .type = NLA_FLAG },
-	[BATADV_ATTR_LAST_SEEN_MSECS]		= { .type = NLA_U32 },
-	[BATADV_ATTR_NEIGH_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_TQ]			= { .type = NLA_U8 },
-	[BATADV_ATTR_THROUGHPUT]		= { .type = NLA_U32 },
-	[BATADV_ATTR_BANDWIDTH_UP]		= { .type = NLA_U32 },
-	[BATADV_ATTR_BANDWIDTH_DOWN]		= { .type = NLA_U32 },
-	[BATADV_ATTR_ROUTER]			= { .len = ETH_ALEN },
-	[BATADV_ATTR_BLA_OWN]			= { .type = NLA_FLAG },
-	[BATADV_ATTR_BLA_ADDRESS]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_BLA_VID]			= { .type = NLA_U16 },
-	[BATADV_ATTR_BLA_BACKBONE]		= { .len = ETH_ALEN },
-	[BATADV_ATTR_BLA_CRC]			= { .type = NLA_U16 },
-	[BATADV_ATTR_DAT_CACHE_IP4ADDRESS]	= { .type = NLA_U32 },
-	[BATADV_ATTR_DAT_CACHE_HWADDRESS]	= { .len = ETH_ALEN },
-	[BATADV_ATTR_DAT_CACHE_VID]		= { .type = NLA_U16 },
-	[BATADV_ATTR_MCAST_FLAGS]		= { .type = NLA_U32 },
-	[BATADV_ATTR_MCAST_FLAGS_PRIV]		= { .type = NLA_U32 },
+	[BATADV_ATTR_VERSION]		= { .type = NLA_STRING },
+	[BATADV_ATTR_ALGO_NAME]		= { .type = NLA_STRING },
+	[BATADV_ATTR_MESH_IFINDEX]	= { .type = NLA_U32 },
+	[BATADV_ATTR_MESH_IFNAME]	= { .type = NLA_STRING },
+	[BATADV_ATTR_MESH_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_HARD_IFINDEX]	= { .type = NLA_U32 },
+	[BATADV_ATTR_HARD_IFNAME]	= { .type = NLA_STRING },
+	[BATADV_ATTR_HARD_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_ORIG_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_TPMETER_RESULT]	= { .type = NLA_U8 },
+	[BATADV_ATTR_TPMETER_TEST_TIME]	= { .type = NLA_U32 },
+	[BATADV_ATTR_TPMETER_BYTES]	= { .type = NLA_U64 },
+	[BATADV_ATTR_TPMETER_COOKIE]	= { .type = NLA_U32 },
+	[BATADV_ATTR_ACTIVE]		= { .type = NLA_FLAG },
+	[BATADV_ATTR_TT_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_TT_TTVN]		= { .type = NLA_U8 },
+	[BATADV_ATTR_TT_LAST_TTVN]	= { .type = NLA_U8 },
+	[BATADV_ATTR_TT_CRC32]		= { .type = NLA_U32 },
+	[BATADV_ATTR_TT_VID]		= { .type = NLA_U16 },
+	[BATADV_ATTR_TT_FLAGS]		= { .type = NLA_U32 },
+	[BATADV_ATTR_FLAG_BEST]		= { .type = NLA_FLAG },
+	[BATADV_ATTR_LAST_SEEN_MSECS]	= { .type = NLA_U32 },
+	[BATADV_ATTR_NEIGH_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_TQ]		= { .type = NLA_U8 },
+	[BATADV_ATTR_THROUGHPUT]	= { .type = NLA_U32 },
+	[BATADV_ATTR_BANDWIDTH_UP]	= { .type = NLA_U32 },
+	[BATADV_ATTR_BANDWIDTH_DOWN]	= { .type = NLA_U32 },
+	[BATADV_ATTR_ROUTER]		= { .len = ETH_ALEN },
+	[BATADV_ATTR_BLA_OWN]		= { .type = NLA_FLAG },
+	[BATADV_ATTR_BLA_ADDRESS]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_BLA_VID]		= { .type = NLA_U16 },
+	[BATADV_ATTR_BLA_BACKBONE]	= { .len = ETH_ALEN },
+	[BATADV_ATTR_BLA_CRC]		= { .type = NLA_U16 },
 };
 
 /**
@@ -153,9 +146,6 @@ batadv_netlink_mesh_info_put(struct sk_buff *msg, struct net_device *soft_iface)
 			ntohs(bat_priv->bla.claim_dest.group)))
 		goto out;
 #endif
-
-	if (batadv_mcast_mesh_info_put(msg, bat_priv))
-		goto out;
 
 	primary_if = batadv_primary_if_get_selected(bat_priv);
 	if (primary_if && primary_if->if_status == BATADV_IF_ACTIVE) {
@@ -445,26 +435,22 @@ out:
  * batadv_netlink_dump_hardif_entry() - Dump one hard interface into a message
  * @msg: Netlink message to dump into
  * @portid: Port making netlink request
- * @cb: Control block containing additional options
+ * @seq: Sequence number of netlink message
  * @hard_iface: Hard interface to dump
  *
  * Return: error code, or 0 on success
  */
 static int
-batadv_netlink_dump_hardif_entry(struct sk_buff *msg, u32 portid,
-				 struct netlink_callback *cb,
+batadv_netlink_dump_hardif_entry(struct sk_buff *msg, u32 portid, u32 seq,
 				 struct batadv_hard_iface *hard_iface)
 {
 	struct net_device *net_dev = hard_iface->net_dev;
 	void *hdr;
 
-	hdr = genlmsg_put(msg, portid, cb->nlh->nlmsg_seq,
-			  &batadv_netlink_family, NLM_F_MULTI,
+	hdr = genlmsg_put(msg, portid, seq, &batadv_netlink_family, NLM_F_MULTI,
 			  BATADV_CMD_GET_HARDIFS);
 	if (!hdr)
 		return -EMSGSIZE;
-
-	genl_dump_check_consistent(cb, hdr);
 
 	if (nla_put_u32(msg, BATADV_ATTR_HARD_IFINDEX,
 			net_dev->ifindex) ||
@@ -502,6 +488,7 @@ batadv_netlink_dump_hardifs(struct sk_buff *msg, struct netlink_callback *cb)
 	struct batadv_hard_iface *hard_iface;
 	int ifindex;
 	int portid = NETLINK_CB(cb->skb).portid;
+	int seq = cb->nlh->nlmsg_seq;
 	int skip = cb->args[0];
 	int i = 0;
 
@@ -519,24 +506,23 @@ batadv_netlink_dump_hardifs(struct sk_buff *msg, struct netlink_callback *cb)
 		return -ENODEV;
 	}
 
-	rtnl_lock();
-	cb->seq = batadv_hardif_generation << 1 | 1;
+	rcu_read_lock();
 
-	list_for_each_entry(hard_iface, &batadv_hardif_list, list) {
+	list_for_each_entry_rcu(hard_iface, &batadv_hardif_list, list) {
 		if (hard_iface->soft_iface != soft_iface)
 			continue;
 
 		if (i++ < skip)
 			continue;
 
-		if (batadv_netlink_dump_hardif_entry(msg, portid, cb,
+		if (batadv_netlink_dump_hardif_entry(msg, portid, seq,
 						     hard_iface)) {
 			i--;
 			break;
 		}
 	}
 
-	rtnl_unlock();
+	rcu_read_unlock();
 
 	dev_put(soft_iface);
 
@@ -617,18 +603,6 @@ static const struct genl_ops batadv_netlink_ops[] = {
 		.flags = GENL_ADMIN_PERM,
 		.policy = batadv_netlink_policy,
 		.dumpit = batadv_bla_backbone_dump,
-	},
-	{
-		.cmd = BATADV_CMD_GET_DAT_CACHE,
-		.flags = GENL_ADMIN_PERM,
-		.policy = batadv_netlink_policy,
-		.dumpit = batadv_dat_cache_dump,
-	},
-	{
-		.cmd = BATADV_CMD_GET_MCAST_FLAGS,
-		.flags = GENL_ADMIN_PERM,
-		.policy = batadv_netlink_policy,
-		.dumpit = batadv_mcast_flags_dump,
 	},
 
 };

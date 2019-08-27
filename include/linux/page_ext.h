@@ -16,7 +16,18 @@ struct page_ext_operations {
 
 #ifdef CONFIG_PAGE_EXTENSION
 
+/*
+ * page_ext->flags bits:
+ *
+ * PAGE_EXT_DEBUG_POISON is set for poisoned pages. This is used to
+ * implement generic debug pagealloc feature. The pages are filled with
+ * poison patterns and set this flag after free_pages(). The poisoned
+ * pages are verified whether the patterns are not corrupted and clear
+ * the flag before alloc_pages().
+ */
+
 enum page_ext_flags {
+	PAGE_EXT_DEBUG_POISON,		/* Page is poisoned */
 	PAGE_EXT_DEBUG_GUARD,
 	PAGE_EXT_OWNER,
 #if defined(CONFIG_IDLE_PAGE_TRACKING) && !defined(CONFIG_64BIT)
@@ -50,7 +61,7 @@ static inline void page_ext_init(void)
 }
 #endif
 
-struct page_ext *lookup_page_ext(const struct page *page);
+struct page_ext *lookup_page_ext(struct page *page);
 
 #else /* !CONFIG_PAGE_EXTENSION */
 struct page_ext;
@@ -59,7 +70,7 @@ static inline void pgdat_page_ext_init(struct pglist_data *pgdat)
 {
 }
 
-static inline struct page_ext *lookup_page_ext(const struct page *page)
+static inline struct page_ext *lookup_page_ext(struct page *page)
 {
 	return NULL;
 }

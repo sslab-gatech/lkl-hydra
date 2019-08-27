@@ -178,8 +178,7 @@ static bool get_mocs_settings(struct drm_i915_private *dev_priv,
 {
 	bool result = false;
 
-	if (IS_GEN9_BC(dev_priv) || IS_CANNONLAKE(dev_priv) ||
-	    IS_ICELAKE(dev_priv)) {
+	if (IS_GEN9_BC(dev_priv) || IS_CANNONLAKE(dev_priv)) {
 		table->size  = ARRAY_SIZE(skylake_mocs_table);
 		table->table = skylake_mocs_table;
 		result = true;
@@ -188,7 +187,7 @@ static bool get_mocs_settings(struct drm_i915_private *dev_priv,
 		table->table = broxton_mocs_table;
 		result = true;
 	} else {
-		WARN_ONCE(INTEL_GEN(dev_priv) >= 9,
+		WARN_ONCE(INTEL_INFO(dev_priv)->gen >= 9,
 			  "Platform that should have a MOCS table does not.\n");
 	}
 
@@ -218,8 +217,6 @@ static i915_reg_t mocs_register(enum intel_engine_id engine_id, int index)
 		return GEN9_VEBOX_MOCS(index);
 	case VCS2:
 		return GEN9_MFX1_MOCS(index);
-	case VCS3:
-		return GEN11_MFX2_MOCS(index);
 	default:
 		MISSING_CASE(engine_id);
 		return INVALID_MMIO_REG;
@@ -232,17 +229,20 @@ static i915_reg_t mocs_register(enum intel_engine_id engine_id, int index)
  *
  * This function simply emits a MI_LOAD_REGISTER_IMM command for the
  * given table starting at the given address.
+ *
+ * Return: 0 on success, otherwise the error status.
  */
-void intel_mocs_init_engine(struct intel_engine_cs *engine)
+int intel_mocs_init_engine(struct intel_engine_cs *engine)
 {
 	struct drm_i915_private *dev_priv = engine->i915;
 	struct drm_i915_mocs_table table;
 	unsigned int index;
 
 	if (!get_mocs_settings(dev_priv, &table))
-		return;
+		return 0;
 
-	GEM_BUG_ON(table.size > GEN9_NUM_MOCS_ENTRIES);
+	if (WARN_ON(table.size > GEN9_NUM_MOCS_ENTRIES))
+		return -ENODEV;
 
 	for (index = 0; index < table.size; index++)
 		I915_WRITE(mocs_register(engine->id, index),
@@ -259,11 +259,13 @@ void intel_mocs_init_engine(struct intel_engine_cs *engine)
 	for (; index < GEN9_NUM_MOCS_ENTRIES; index++)
 		I915_WRITE(mocs_register(engine->id, index),
 			   table.table[0].control_value);
+
+	return 0;
 }
 
 /**
  * emit_mocs_control_table() - emit the mocs control table
- * @rq:	Request to set up the MOCS table for.
+ * @req:	Request to set up the MOCS table for.
  * @table:	The values to program into the control regs.
  *
  * This function simply emits a MI_LOAD_REGISTER_IMM command for the
@@ -271,17 +273,17 @@ void intel_mocs_init_engine(struct intel_engine_cs *engine)
  *
  * Return: 0 on success, otherwise the error status.
  */
-static int emit_mocs_control_table(struct i915_request *rq,
+static int emit_mocs_control_table(struct drm_i915_gem_request *req,
 				   const struct drm_i915_mocs_table *table)
 {
-	enum intel_engine_id engine = rq->engine->id;
+	enum intel_engine_id engine = req->engine->id;
 	unsigned int index;
 	u32 *cs;
 
 	if (WARN_ON(table->size > GEN9_NUM_MOCS_ENTRIES))
 		return -ENODEV;
 
-	cs = intel_ring_begin(rq, 2 + 2 * GEN9_NUM_MOCS_ENTRIES);
+	cs = intel_ring_begin(req, 2 + 2 * GEN9_NUM_MOCS_ENTRIES);
 	if (IS_ERR(cs))
 		return PTR_ERR(cs);
 
@@ -306,7 +308,7 @@ static int emit_mocs_control_table(struct i915_request *rq,
 	}
 
 	*cs++ = MI_NOOP;
-	intel_ring_advance(rq, cs);
+	intel_ring_advance(req, cs);
 
 	return 0;
 }
@@ -321,7 +323,7 @@ static inline u32 l3cc_combine(const struct drm_i915_mocs_table *table,
 
 /**
  * emit_mocs_l3cc_table() - emit the mocs control table
- * @rq:	Request to set up the MOCS table for.
+ * @req:	Request to set up the MOCS table for.
  * @table:	The values to program into the control regs.
  *
  * This function simply emits a MI_LOAD_REGISTER_IMM command for the
@@ -330,7 +332,7 @@ static inline u32 l3cc_combine(const struct drm_i915_mocs_table *table,
  *
  * Return: 0 on success, otherwise the error status.
  */
-static int emit_mocs_l3cc_table(struct i915_request *rq,
+static int emit_mocs_l3cc_table(struct drm_i915_gem_request *req,
 				const struct drm_i915_mocs_table *table)
 {
 	unsigned int i;
@@ -339,7 +341,7 @@ static int emit_mocs_l3cc_table(struct i915_request *rq,
 	if (WARN_ON(table->size > GEN9_NUM_MOCS_ENTRIES))
 		return -ENODEV;
 
-	cs = intel_ring_begin(rq, 2 + GEN9_NUM_MOCS_ENTRIES);
+	cs = intel_ring_begin(req, 2 + GEN9_NUM_MOCS_ENTRIES);
 	if (IS_ERR(cs))
 		return PTR_ERR(cs);
 
@@ -368,7 +370,7 @@ static int emit_mocs_l3cc_table(struct i915_request *rq,
 	}
 
 	*cs++ = MI_NOOP;
-	intel_ring_advance(rq, cs);
+	intel_ring_advance(req, cs);
 
 	return 0;
 }
@@ -415,7 +417,7 @@ void intel_mocs_init_l3cc_table(struct drm_i915_private *dev_priv)
 
 /**
  * intel_rcs_context_init_mocs() - program the MOCS register.
- * @rq:	Request to set up the MOCS tables for.
+ * @req:	Request to set up the MOCS tables for.
  *
  * This function will emit a batch buffer with the values required for
  * programming the MOCS register values for all the currently supported
@@ -429,19 +431,19 @@ void intel_mocs_init_l3cc_table(struct drm_i915_private *dev_priv)
  *
  * Return: 0 on success, otherwise the error status.
  */
-int intel_rcs_context_init_mocs(struct i915_request *rq)
+int intel_rcs_context_init_mocs(struct drm_i915_gem_request *req)
 {
 	struct drm_i915_mocs_table t;
 	int ret;
 
-	if (get_mocs_settings(rq->i915, &t)) {
+	if (get_mocs_settings(req->i915, &t)) {
 		/* Program the RCS control registers */
-		ret = emit_mocs_control_table(rq, &t);
+		ret = emit_mocs_control_table(req, &t);
 		if (ret)
 			return ret;
 
 		/* Now program the l3cc registers */
-		ret = emit_mocs_l3cc_table(rq, &t);
+		ret = emit_mocs_l3cc_table(req, &t);
 		if (ret)
 			return ret;
 	}

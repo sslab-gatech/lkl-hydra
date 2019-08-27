@@ -163,9 +163,8 @@ static int mdio_mux_mmioreg_probe(struct platform_device *pdev)
 			    mdio_mux_mmioreg_switch_fn,
 			    &s->mux_handle, s, NULL);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev,
-				"failed to register mdio-mux bus %pOF\n", np);
+		dev_err(&pdev->dev, "failed to register mdio-mux bus %pOF\n",
+			np);
 		return ret;
 	}
 

@@ -67,7 +67,7 @@ void phy_led_trigger_change_speed(struct phy_device *phy)
 EXPORT_SYMBOL_GPL(phy_led_trigger_change_speed);
 
 static void phy_led_trigger_format_name(struct phy_device *phy, char *buf,
-					size_t size, const char *suffix)
+					size_t size, char *suffix)
 {
 	snprintf(buf, size, PHY_ID_FMT ":%s",
 		 phy->mdio.bus->id, phy->mdio.addr, suffix);
@@ -77,9 +77,20 @@ static int phy_led_trigger_register(struct phy_device *phy,
 				    struct phy_led_trigger *plt,
 				    unsigned int speed)
 {
+	char name_suffix[PHY_LED_TRIGGER_SPEED_SUFFIX_SIZE];
+
 	plt->speed = speed;
+
+	if (speed < SPEED_1000)
+		snprintf(name_suffix, sizeof(name_suffix), "%dMbps", speed);
+	else if (speed == SPEED_2500)
+		snprintf(name_suffix, sizeof(name_suffix), "2.5Gbps");
+	else
+		snprintf(name_suffix, sizeof(name_suffix), "%dGbps",
+			 DIV_ROUND_CLOSEST(speed, 1000));
+
 	phy_led_trigger_format_name(phy, plt->name, sizeof(plt->name),
-				    phy_speed_to_str(speed));
+				    name_suffix);
 	plt->trigger.name = plt->name;
 
 	return led_trigger_register(&plt->trigger);
@@ -117,9 +128,9 @@ int phy_led_triggers_register(struct phy_device *phy)
 	if (err)
 		goto out_free_link;
 
-	phy->phy_led_triggers = devm_kcalloc(&phy->mdio.dev,
-					    phy->phy_num_led_triggers,
-					    sizeof(struct phy_led_trigger),
+	phy->phy_led_triggers = devm_kzalloc(&phy->mdio.dev,
+					    sizeof(struct phy_led_trigger) *
+						   phy->phy_num_led_triggers,
 					    GFP_KERNEL);
 	if (!phy->phy_led_triggers) {
 		err = -ENOMEM;

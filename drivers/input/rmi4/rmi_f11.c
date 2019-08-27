@@ -570,7 +570,9 @@ static inline u8 rmi_f11_parse_finger_state(const u8 *f_state, u8 n_finger)
 }
 
 static void rmi_f11_finger_handler(struct f11_data *f11,
-				   struct rmi_2d_sensor *sensor, int size)
+				   struct rmi_2d_sensor *sensor,
+				   unsigned long *irq_bits, int num_irq_regs,
+				   int size)
 {
 	const u8 *f_state = f11->data.f_state;
 	u8 finger_state;
@@ -579,7 +581,12 @@ static void rmi_f11_finger_handler(struct f11_data *f11,
 	int rel_fingers;
 	int abs_size = sensor->nbr_fingers * RMI_F11_ABS_BYTES;
 
-	if (sensor->report_abs) {
+	int abs_bits = bitmap_and(f11->result_bits, irq_bits, f11->abs_mask,
+				  num_irq_regs * 8);
+	int rel_bits = bitmap_and(f11->result_bits, irq_bits, f11->rel_mask,
+				  num_irq_regs * 8);
+
+	if (abs_bits) {
 		if (abs_size > size)
 			abs_fingers = size / RMI_F11_ABS_BYTES;
 		else
@@ -597,7 +604,19 @@ static void rmi_f11_finger_handler(struct f11_data *f11,
 			rmi_f11_abs_pos_process(f11, sensor, &sensor->objs[i],
 							finger_state, i);
 		}
+	}
 
+	if (rel_bits) {
+		if ((abs_size + sensor->nbr_fingers * RMI_F11_REL_BYTES) > size)
+			rel_fingers = (size - abs_size) / RMI_F11_REL_BYTES;
+		else
+			rel_fingers = sensor->nbr_fingers;
+
+		for (i = 0; i < rel_fingers; i++)
+			rmi_f11_rel_pos_report(f11, i);
+	}
+
+	if (abs_bits) {
 		/*
 		 * the absolute part is made in 2 parts to allow the kernel
 		 * tracking to take place.
@@ -619,16 +638,7 @@ static void rmi_f11_finger_handler(struct f11_data *f11,
 		}
 
 		input_mt_sync_frame(sensor->input);
-	} else if (sensor->report_rel) {
-		if ((abs_size + sensor->nbr_fingers * RMI_F11_REL_BYTES) > size)
-			rel_fingers = (size - abs_size) / RMI_F11_REL_BYTES;
-		else
-			rel_fingers = sensor->nbr_fingers;
-
-		for (i = 0; i < rel_fingers; i++)
-			rmi_f11_rel_pos_report(f11, i);
 	}
-
 }
 
 static int f11_2d_construct_data(struct f11_data *f11)
@@ -1180,15 +1190,14 @@ static int rmi_f11_initialize(struct rmi_function *fn)
 		f11->sensor.attn_size += f11->sensor.nbr_fingers * 2;
 
 	/* allocate the in-kernel tracking buffers */
-	sensor->tracking_pos = devm_kcalloc(&fn->dev,
-			sensor->nbr_fingers, sizeof(struct input_mt_pos),
+	sensor->tracking_pos = devm_kzalloc(&fn->dev,
+			sizeof(struct input_mt_pos) * sensor->nbr_fingers,
 			GFP_KERNEL);
-	sensor->tracking_slots = devm_kcalloc(&fn->dev,
-			sensor->nbr_fingers, sizeof(int), GFP_KERNEL);
-	sensor->objs = devm_kcalloc(&fn->dev,
-			sensor->nbr_fingers,
-			sizeof(struct rmi_2d_sensor_abs_object),
-			GFP_KERNEL);
+	sensor->tracking_slots = devm_kzalloc(&fn->dev,
+			sizeof(int) * sensor->nbr_fingers, GFP_KERNEL);
+	sensor->objs = devm_kzalloc(&fn->dev,
+			sizeof(struct rmi_2d_sensor_abs_object)
+			* sensor->nbr_fingers, GFP_KERNEL);
 	if (!sensor->tracking_pos || !sensor->tracking_slots || !sensor->objs)
 		return -ENOMEM;
 
@@ -1266,9 +1275,8 @@ static int rmi_f11_config(struct rmi_function *fn)
 	return 0;
 }
 
-static irqreturn_t rmi_f11_attention(int irq, void *ctx)
+static int rmi_f11_attention(struct rmi_function *fn, unsigned long *irq_bits)
 {
-	struct rmi_function *fn = ctx;
 	struct rmi_device *rmi_dev = fn->rmi_dev;
 	struct rmi_driver_data *drvdata = dev_get_drvdata(&rmi_dev->dev);
 	struct f11_data *f11 = dev_get_drvdata(&fn->dev);
@@ -1294,12 +1302,13 @@ static irqreturn_t rmi_f11_attention(int irq, void *ctx)
 				data_base_addr, f11->sensor.data_pkt,
 				f11->sensor.pkt_size);
 		if (error < 0)
-			return IRQ_RETVAL(error);
+			return error;
 	}
 
-	rmi_f11_finger_handler(f11, &f11->sensor, valid_bytes);
+	rmi_f11_finger_handler(f11, &f11->sensor, irq_bits,
+				drvdata->num_of_irq_regs, valid_bytes);
 
-	return IRQ_HANDLED;
+	return 0;
 }
 
 static int rmi_f11_resume(struct rmi_function *fn)

@@ -112,29 +112,26 @@ static void del_object(struct i915_mmu_object *mo)
 	mo->attached = false;
 }
 
-static int i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
-			const struct mmu_notifier_range *range)
+static void i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
+						       struct mm_struct *mm,
+						       unsigned long start,
+						       unsigned long end)
 {
 	struct i915_mmu_notifier *mn =
 		container_of(_mn, struct i915_mmu_notifier, mn);
 	struct i915_mmu_object *mo;
 	struct interval_tree_node *it;
 	LIST_HEAD(cancelled);
-	unsigned long end;
 
 	if (RB_EMPTY_ROOT(&mn->objects.rb_root))
-		return 0;
+		return;
 
 	/* interval ranges are inclusive, but invalidate range is exclusive */
-	end = range->end - 1;
+	end--;
 
 	spin_lock(&mn->lock);
-	it = interval_tree_iter_first(&mn->objects, range->start, end);
+	it = interval_tree_iter_first(&mn->objects, start, end);
 	while (it) {
-		if (!range->blockable) {
-			spin_unlock(&mn->lock);
-			return -EAGAIN;
-		}
 		/* The mmu_object is released late when destroying the
 		 * GEM object so it is entirely possible to gain a
 		 * reference on an object in the process of being freed
@@ -149,7 +146,7 @@ static int i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
 			queue_work(mn->wq, &mo->work);
 
 		list_add(&mo->link, &cancelled);
-		it = interval_tree_iter_next(it, range->start, end);
+		it = interval_tree_iter_next(it, start, end);
 	}
 	list_for_each_entry(mo, &cancelled, link)
 		del_object(mo);
@@ -157,8 +154,6 @@ static int i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
 
 	if (!list_empty(&cancelled))
 		flush_workqueue(mn->wq);
-
-	return 0;
 }
 
 static const struct mmu_notifier_ops i915_gem_userptr_notifier = {
@@ -512,7 +507,7 @@ __i915_gem_userptr_get_pages_worker(struct work_struct *_work)
 		struct mm_struct *mm = obj->userptr.mm->mm;
 		unsigned int flags = 0;
 
-		if (!i915_gem_object_is_readonly(obj))
+		if (!obj->userptr.read_only)
 			flags |= FOLL_WRITE;
 
 		ret = -EFAULT;
@@ -648,7 +643,7 @@ static int i915_gem_userptr_get_pages(struct drm_i915_gem_object *obj)
 		if (pvec) /* defer to worker if malloc fails */
 			pinned = __get_user_pages_fast(obj->userptr.ptr,
 						       num_pages,
-						       !i915_gem_object_is_readonly(obj),
+						       !obj->userptr.read_only,
 						       pvec);
 	}
 
@@ -726,7 +721,7 @@ static const struct drm_i915_gem_object_ops i915_gem_userptr_ops = {
 	.release = i915_gem_userptr_release,
 };
 
-/*
+/**
  * Creates a new mm object that wraps some normal memory from the process
  * context - user memory.
  *
@@ -762,9 +757,7 @@ static const struct drm_i915_gem_object_ops i915_gem_userptr_ops = {
  * dma-buf instead.
  */
 int
-i915_gem_userptr_ioctl(struct drm_device *dev,
-		       void *data,
-		       struct drm_file *file)
+i915_gem_userptr_ioctl(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct drm_i915_gem_userptr *args = data;
@@ -783,25 +776,18 @@ i915_gem_userptr_ioctl(struct drm_device *dev,
 			    I915_USERPTR_UNSYNCHRONIZED))
 		return -EINVAL;
 
-	if (!args->user_size)
-		return -EINVAL;
-
 	if (offset_in_page(args->user_ptr | args->user_size))
 		return -EINVAL;
 
-	if (!access_ok((char __user *)(unsigned long)args->user_ptr, args->user_size))
+	if (!access_ok(args->flags & I915_USERPTR_READ_ONLY ? VERIFY_READ : VERIFY_WRITE,
+		       (char __user *)(unsigned long)args->user_ptr, args->user_size))
 		return -EFAULT;
 
 	if (args->flags & I915_USERPTR_READ_ONLY) {
-		struct i915_hw_ppgtt *ppgtt;
-
-		/*
-		 * On almost all of the older hw, we cannot tell the GPU that
-		 * a page is readonly.
+		/* On almost all of the current hw, we cannot tell the GPU that a
+		 * page is readonly, so this is just a placeholder in the uAPI.
 		 */
-		ppgtt = dev_priv->kernel_context->ppgtt;
-		if (!ppgtt || !ppgtt->vm.has_read_only)
-			return -ENODEV;
+		return -ENODEV;
 	}
 
 	obj = i915_gem_object_alloc(dev_priv);
@@ -810,13 +796,12 @@ i915_gem_userptr_ioctl(struct drm_device *dev,
 
 	drm_gem_private_object_init(dev, &obj->base, args->user_size);
 	i915_gem_object_init(obj, &i915_gem_userptr_ops);
-	obj->read_domains = I915_GEM_DOMAIN_CPU;
-	obj->write_domain = I915_GEM_DOMAIN_CPU;
+	obj->base.read_domains = I915_GEM_DOMAIN_CPU;
+	obj->base.write_domain = I915_GEM_DOMAIN_CPU;
 	i915_gem_object_set_cache_coherency(obj, I915_CACHE_LLC);
 
 	obj->userptr.ptr = args->user_ptr;
-	if (args->flags & I915_USERPTR_READ_ONLY)
-		i915_gem_object_set_readonly(obj);
+	obj->userptr.read_only = !!(args->flags & I915_USERPTR_READ_ONLY);
 
 	/* And keep a pointer to the current->mm for resolving the user pages
 	 * at binding. This means that we need to hook into the mmu_notifier

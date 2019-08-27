@@ -36,15 +36,15 @@
 
 #include "vchiq_core.h"
 
-struct vchiq_debugfs_node {
+typedef struct vchiq_debugfs_node_struct {
     struct dentry *dentry;
-};
+} VCHIQ_DEBUGFS_NODE_T;
 
-void vchiq_debugfs_init(void);
+int vchiq_debugfs_init(void);
 
 void vchiq_debugfs_deinit(void);
 
-void vchiq_debugfs_add_instance(VCHIQ_INSTANCE_T instance);
+int vchiq_debugfs_add_instance(VCHIQ_INSTANCE_T instance);
 
 void vchiq_debugfs_remove_instance(VCHIQ_INSTANCE_T instance);
 

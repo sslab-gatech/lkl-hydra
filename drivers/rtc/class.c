@@ -68,7 +68,7 @@ static int rtc_suspend(struct device *dev)
 		return 0;
 	}
 
-	ktime_get_real_ts64(&old_system);
+	getnstimeofday64(&old_system);
 	old_rtc.tv_sec = rtc_tm_to_time64(&tm);
 
 
@@ -110,7 +110,7 @@ static int rtc_resume(struct device *dev)
 		return 0;
 
 	/* snapshot the current rtc and system time at resume */
-	ktime_get_real_ts64(&new_system);
+	getnstimeofday64(&new_system);
 	err = rtc_read_time(rtc, &tm);
 	if (err < 0) {
 		pr_debug("%s:  fail to read rtc time\n", dev_name(&rtc->dev));
@@ -172,15 +172,16 @@ static struct rtc_device *rtc_allocate_device(void)
 
 	mutex_init(&rtc->ops_lock);
 	spin_lock_init(&rtc->irq_lock);
+	spin_lock_init(&rtc->irq_task_lock);
 	init_waitqueue_head(&rtc->irq_queue);
 
 	/* Init timerqueue */
 	timerqueue_init_head(&rtc->timerqueue);
 	INIT_WORK(&rtc->irqwork, rtc_timer_do_work);
 	/* Init aie timer */
-	rtc_timer_init(&rtc->aie_timer, rtc_aie_update_irq, rtc);
+	rtc_timer_init(&rtc->aie_timer, rtc_aie_update_irq, (void *)rtc);
 	/* Init uie timer */
-	rtc_timer_init(&rtc->uie_rtctimer, rtc_uie_update_irq, rtc);
+	rtc_timer_init(&rtc->uie_rtctimer, rtc_uie_update_irq, (void *)rtc);
 	/* Init pie timer */
 	hrtimer_init(&rtc->pie_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	rtc->pie_timer.function = rtc_pie_update_irq;
@@ -210,80 +211,90 @@ static int rtc_device_get_id(struct device *dev)
 	return id;
 }
 
-static void rtc_device_get_offset(struct rtc_device *rtc)
+/**
+ * rtc_device_register - register w/ RTC class
+ * @dev: the device to register
+ *
+ * rtc_device_unregister() must be called when the class device is no
+ * longer needed.
+ *
+ * Returns the pointer to the new struct class device.
+ */
+struct rtc_device *rtc_device_register(const char *name, struct device *dev,
+					const struct rtc_class_ops *ops,
+					struct module *owner)
 {
-	time64_t range_secs;
-	u32 start_year;
-	int ret;
+	struct rtc_device *rtc;
+	struct rtc_wkalrm alrm;
+	int id, err;
 
-	/*
-	 * If RTC driver did not implement the range of RTC hardware device,
-	 * then we can not expand the RTC range by adding or subtracting one
-	 * offset.
-	 */
-	if (rtc->range_min == rtc->range_max)
-		return;
-
-	ret = device_property_read_u32(rtc->dev.parent, "start-year",
-				       &start_year);
-	if (!ret) {
-		rtc->start_secs = mktime64(start_year, 1, 1, 0, 0, 0);
-		rtc->set_start_time = true;
+	id = rtc_device_get_id(dev);
+	if (id < 0) {
+		err = id;
+		goto exit;
 	}
 
-	/*
-	 * If user did not implement the start time for RTC driver, then no
-	 * need to expand the RTC range.
-	 */
-	if (!rtc->set_start_time)
-		return;
+	rtc = rtc_allocate_device();
+	if (!rtc) {
+		err = -ENOMEM;
+		goto exit_ida;
+	}
 
-	range_secs = rtc->range_max - rtc->range_min + 1;
+	rtc->id = id;
+	rtc->ops = ops;
+	rtc->owner = owner;
+	rtc->dev.parent = dev;
 
-	/*
-	 * If the start_secs is larger than the maximum seconds (rtc->range_max)
-	 * supported by RTC hardware or the maximum seconds of new expanded
-	 * range (start_secs + rtc->range_max - rtc->range_min) is less than
-	 * rtc->range_min, which means the minimum seconds (rtc->range_min) of
-	 * RTC hardware will be mapped to start_secs by adding one offset, so
-	 * the offset seconds calculation formula should be:
-	 * rtc->offset_secs = rtc->start_secs - rtc->range_min;
-	 *
-	 * If the start_secs is larger than the minimum seconds (rtc->range_min)
-	 * supported by RTC hardware, then there is one region is overlapped
-	 * between the original RTC hardware range and the new expanded range,
-	 * and this overlapped region do not need to be mapped into the new
-	 * expanded range due to it is valid for RTC device. So the minimum
-	 * seconds of RTC hardware (rtc->range_min) should be mapped to
-	 * rtc->range_max + 1, then the offset seconds formula should be:
-	 * rtc->offset_secs = rtc->range_max - rtc->range_min + 1;
-	 *
-	 * If the start_secs is less than the minimum seconds (rtc->range_min),
-	 * which is similar to case 2. So the start_secs should be mapped to
-	 * start_secs + rtc->range_max - rtc->range_min + 1, then the
-	 * offset seconds formula should be:
-	 * rtc->offset_secs = -(rtc->range_max - rtc->range_min + 1);
-	 *
-	 * Otherwise the offset seconds should be 0.
-	 */
-	if (rtc->start_secs > rtc->range_max ||
-	    rtc->start_secs + range_secs - 1 < rtc->range_min)
-		rtc->offset_secs = rtc->start_secs - rtc->range_min;
-	else if (rtc->start_secs > rtc->range_min)
-		rtc->offset_secs = range_secs;
-	else if (rtc->start_secs < rtc->range_min)
-		rtc->offset_secs = -range_secs;
-	else
-		rtc->offset_secs = 0;
+	dev_set_name(&rtc->dev, "rtc%d", id);
+
+	/* Check to see if there is an ALARM already set in hw */
+	err = __rtc_read_alarm(rtc, &alrm);
+
+	if (!err && !rtc_valid_tm(&alrm.time))
+		rtc_initialize_alarm(rtc, &alrm);
+
+	rtc_dev_prepare(rtc);
+
+	err = cdev_device_add(&rtc->char_dev, &rtc->dev);
+	if (err) {
+		dev_warn(&rtc->dev, "%s: failed to add char device %d:%d\n",
+			 name, MAJOR(rtc->dev.devt), rtc->id);
+
+		/* This will free both memory and the ID */
+		put_device(&rtc->dev);
+		goto exit;
+	} else {
+		dev_dbg(&rtc->dev, "%s: dev (%d:%d)\n", name,
+			MAJOR(rtc->dev.devt), rtc->id);
+	}
+
+	rtc_proc_add_device(rtc);
+
+	dev_info(dev, "rtc core: registered %s as %s\n",
+			name, dev_name(&rtc->dev));
+
+	return rtc;
+
+exit_ida:
+	ida_simple_remove(&rtc_ida, id);
+
+exit:
+	dev_err(dev, "rtc core: unable to register %s, err = %d\n",
+			name, err);
+	return ERR_PTR(err);
 }
+EXPORT_SYMBOL_GPL(rtc_device_register);
+
 
 /**
  * rtc_device_unregister - removes the previously registered RTC class device
  *
  * @rtc: the RTC class device to destroy
  */
-static void rtc_device_unregister(struct rtc_device *rtc)
+void rtc_device_unregister(struct rtc_device *rtc)
 {
+	rtc_nvmem_unregister(rtc);
+
 	mutex_lock(&rtc->ops_lock);
 	/*
 	 * Remove innards of this RTC, then disable it, before
@@ -295,12 +306,81 @@ static void rtc_device_unregister(struct rtc_device *rtc)
 	mutex_unlock(&rtc->ops_lock);
 	put_device(&rtc->dev);
 }
+EXPORT_SYMBOL_GPL(rtc_device_unregister);
+
+static void devm_rtc_device_release(struct device *dev, void *res)
+{
+	struct rtc_device *rtc = *(struct rtc_device **)res;
+
+	rtc_device_unregister(rtc);
+}
+
+static int devm_rtc_device_match(struct device *dev, void *res, void *data)
+{
+	struct rtc **r = res;
+
+	return *r == data;
+}
+
+/**
+ * devm_rtc_device_register - resource managed rtc_device_register()
+ * @dev: the device to register
+ * @name: the name of the device
+ * @ops: the rtc operations structure
+ * @owner: the module owner
+ *
+ * @return a struct rtc on success, or an ERR_PTR on error
+ *
+ * Managed rtc_device_register(). The rtc_device returned from this function
+ * are automatically freed on driver detach. See rtc_device_register()
+ * for more information.
+ */
+
+struct rtc_device *devm_rtc_device_register(struct device *dev,
+					const char *name,
+					const struct rtc_class_ops *ops,
+					struct module *owner)
+{
+	struct rtc_device **ptr, *rtc;
+
+	ptr = devres_alloc(devm_rtc_device_release, sizeof(*ptr), GFP_KERNEL);
+	if (!ptr)
+		return ERR_PTR(-ENOMEM);
+
+	rtc = rtc_device_register(name, dev, ops, owner);
+	if (!IS_ERR(rtc)) {
+		*ptr = rtc;
+		devres_add(dev, ptr);
+	} else {
+		devres_free(ptr);
+	}
+
+	return rtc;
+}
+EXPORT_SYMBOL_GPL(devm_rtc_device_register);
+
+/**
+ * devm_rtc_device_unregister - resource managed devm_rtc_device_unregister()
+ * @dev: the device to unregister
+ * @rtc: the RTC class device to unregister
+ *
+ * Deallocated a rtc allocated with devm_rtc_device_register(). Normally this
+ * function will not need to be called and the resource management code will
+ * ensure that the resource is freed.
+ */
+void devm_rtc_device_unregister(struct device *dev, struct rtc_device *rtc)
+{
+	int rc;
+
+	rc = devres_release(dev, devm_rtc_device_release,
+				devm_rtc_device_match, rtc);
+	WARN_ON(rc);
+}
+EXPORT_SYMBOL_GPL(devm_rtc_device_unregister);
 
 static void devm_rtc_release_device(struct device *dev, void *res)
 {
 	struct rtc_device *rtc = *(struct rtc_device **)res;
-
-	rtc_nvmem_unregister(rtc);
 
 	if (rtc->registered)
 		rtc_device_unregister(rtc);
@@ -355,7 +435,6 @@ int __rtc_register_device(struct module *owner, struct rtc_device *rtc)
 		return -EINVAL;
 
 	rtc->owner = owner;
-	rtc_device_get_offset(rtc);
 
 	/* Check to see if there is an ALARM already set in hw */
 	err = __rtc_read_alarm(rtc, &alrm);
@@ -374,6 +453,8 @@ int __rtc_register_device(struct module *owner, struct rtc_device *rtc)
 
 	rtc_proc_add_device(rtc);
 
+	rtc_nvmem_register(rtc);
+
 	rtc->registered = true;
 	dev_info(rtc->dev.parent, "registered as %s\n",
 		 dev_name(&rtc->dev));
@@ -381,42 +462,6 @@ int __rtc_register_device(struct module *owner, struct rtc_device *rtc)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(__rtc_register_device);
-
-/**
- * devm_rtc_device_register - resource managed rtc_device_register()
- * @dev: the device to register
- * @name: the name of the device (unused)
- * @ops: the rtc operations structure
- * @owner: the module owner
- *
- * @return a struct rtc on success, or an ERR_PTR on error
- *
- * Managed rtc_device_register(). The rtc_device returned from this function
- * are automatically freed on driver detach.
- * This function is deprecated, use devm_rtc_allocate_device and
- * rtc_register_device instead
- */
-struct rtc_device *devm_rtc_device_register(struct device *dev,
-					const char *name,
-					const struct rtc_class_ops *ops,
-					struct module *owner)
-{
-	struct rtc_device *rtc;
-	int err;
-
-	rtc = devm_rtc_allocate_device(dev);
-	if (IS_ERR(rtc))
-		return rtc;
-
-	rtc->ops = ops;
-
-	err = __rtc_register_device(owner, rtc);
-	if (err)
-		return ERR_PTR(err);
-
-	return rtc;
-}
-EXPORT_SYMBOL_GPL(devm_rtc_device_register);
 
 static int __init rtc_init(void)
 {

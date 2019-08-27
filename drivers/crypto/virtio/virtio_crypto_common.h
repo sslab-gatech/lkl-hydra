@@ -24,6 +24,7 @@
 #include <linux/spinlock.h>
 #include <crypto/aead.h>
 #include <crypto/aes.h>
+#include <crypto/authenc.h>
 #include <crypto/engine.h>
 
 
@@ -54,20 +55,6 @@ struct virtio_crypto {
 
 	/* Number of queue currently used by the driver */
 	u32 curr_queue;
-
-	/*
-	 * Specifies the services mask which the device support,
-	 * see VIRTIO_CRYPTO_SERVICE_*
-	 */
-	u32 crypto_services;
-
-	/* Detailed algorithms mask */
-	u32 cipher_algo_l;
-	u32 cipher_algo_h;
-	u32 hash_algo;
-	u32 mac_algo_l;
-	u32 mac_algo_h;
-	u32 aead_algo;
 
 	/* Maximum length of cipher key */
 	u32 max_cipher_key_len;
@@ -116,16 +103,12 @@ int virtcrypto_dev_in_use(struct virtio_crypto *vcrypto_dev);
 int virtcrypto_dev_get(struct virtio_crypto *vcrypto_dev);
 void virtcrypto_dev_put(struct virtio_crypto *vcrypto_dev);
 int virtcrypto_dev_started(struct virtio_crypto *vcrypto_dev);
-bool virtcrypto_algo_is_supported(struct virtio_crypto *vcrypto_dev,
-				  uint32_t service,
-				  uint32_t algo);
-struct virtio_crypto *virtcrypto_get_dev_node(int node,
-					      uint32_t service,
-					      uint32_t algo);
+struct virtio_crypto *virtcrypto_get_dev_node(int node);
 int virtcrypto_dev_start(struct virtio_crypto *vcrypto);
 void virtcrypto_dev_stop(struct virtio_crypto *vcrypto);
 int virtio_crypto_ablkcipher_crypt_req(
-	struct crypto_engine *engine, void *vreq);
+	struct crypto_engine *engine,
+	struct ablkcipher_request *req);
 
 void
 virtcrypto_clear_request(struct virtio_crypto_request *vc_req);
@@ -141,7 +124,7 @@ static inline int virtio_crypto_get_current_node(void)
 	return node;
 }
 
-int virtio_crypto_algs_register(struct virtio_crypto *vcrypto);
-void virtio_crypto_algs_unregister(struct virtio_crypto *vcrypto);
+int virtio_crypto_algs_register(void);
+void virtio_crypto_algs_unregister(void);
 
 #endif /* _VIRTIO_CRYPTO_COMMON_H */

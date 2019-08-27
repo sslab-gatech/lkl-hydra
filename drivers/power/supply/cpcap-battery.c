@@ -620,7 +620,7 @@ static int cpcap_battery_init_irq(struct platform_device *pdev,
 static int cpcap_battery_init_interrupts(struct platform_device *pdev,
 					 struct cpcap_battery_ddata *ddata)
 {
-	static const char * const cpcap_battery_irqs[] = {
+	const char * const cpcap_battery_irqs[] = {
 		"eol", "lowbph", "lowbpl",
 		"chrgcurr1", "battdetb"
 	};

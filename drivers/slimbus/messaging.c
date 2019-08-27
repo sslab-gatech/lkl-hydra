@@ -29,19 +29,22 @@ void slim_msg_response(struct slim_controller *ctrl, u8 *reply, u8 tid, u8 len)
 
 	spin_lock_irqsave(&ctrl->txn_lock, flags);
 	txn = idr_find(&ctrl->tid_idr, tid);
-	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
-
-	if (txn == NULL)
+	if (txn == NULL) {
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		return;
+	}
 
 	msg = txn->msg;
 	if (msg == NULL || msg->rbuf == NULL) {
 		dev_err(ctrl->dev, "Got response to invalid TID:%d, len:%d\n",
 				tid, len);
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		return;
 	}
 
-	slim_free_txn_tid(ctrl, txn);
+	idr_remove(&ctrl->tid_idr, tid);
+	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
+
 	memcpy(msg->rbuf, reply, len);
 	if (txn->comp)
 		complete(txn->comp);
@@ -51,48 +54,6 @@ void slim_msg_response(struct slim_controller *ctrl, u8 *reply, u8 tid, u8 len)
 	pm_runtime_put_autosuspend(ctrl->dev);
 }
 EXPORT_SYMBOL_GPL(slim_msg_response);
-
-/**
- * slim_alloc_txn_tid() - Allocate a tid to txn
- *
- * @ctrl: Controller handle
- * @txn: transaction to be allocated with tid.
- *
- * Return: zero on success with valid txn->tid and error code on failures.
- */
-int slim_alloc_txn_tid(struct slim_controller *ctrl, struct slim_msg_txn *txn)
-{
-	unsigned long flags;
-	int ret = 0;
-
-	spin_lock_irqsave(&ctrl->txn_lock, flags);
-	ret = idr_alloc_cyclic(&ctrl->tid_idr, txn, 0,
-				SLIM_MAX_TIDS, GFP_ATOMIC);
-	if (ret < 0) {
-		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
-		return ret;
-	}
-	txn->tid = ret;
-	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(slim_alloc_txn_tid);
-
-/**
- * slim_free_txn_tid() - Freee tid of txn
- *
- * @ctrl: Controller handle
- * @txn: transaction whose tid should be freed
- */
-void slim_free_txn_tid(struct slim_controller *ctrl, struct slim_msg_txn *txn)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ctrl->txn_lock, flags);
-	idr_remove(&ctrl->tid_idr, txn->tid);
-	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
-}
-EXPORT_SYMBOL_GPL(slim_free_txn_tid);
 
 /**
  * slim_do_transfer() - Process a SLIMbus-messaging transaction
@@ -111,7 +72,8 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	bool need_tid = false, clk_pause_msg = false;
-	int ret, timeout;
+	unsigned long flags;
+	int ret, tid, timeout;
 
 	/*
 	 * do not vote for runtime-PM if the transactions are part of clock
@@ -135,26 +97,34 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 	need_tid = slim_tid_txn(txn->mt, txn->mc);
 
 	if (need_tid) {
-		ret = slim_alloc_txn_tid(ctrl, txn);
-		if (ret)
-			return ret;
+		spin_lock_irqsave(&ctrl->txn_lock, flags);
+		tid = idr_alloc(&ctrl->tid_idr, txn, 0,
+				SLIM_MAX_TIDS, GFP_ATOMIC);
+		txn->tid = tid;
 
 		if (!txn->msg->comp)
 			txn->comp = &done;
 		else
 			txn->comp = txn->comp;
+
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
+
+		if (tid < 0)
+			return tid;
 	}
 
 	ret = ctrl->xfer_msg(ctrl, txn);
 
-	if (!ret && need_tid && !txn->msg->comp) {
+	if (ret && need_tid && !txn->msg->comp) {
 		unsigned long ms = txn->rl + HZ;
 
 		timeout = wait_for_completion_timeout(txn->comp,
 						      msecs_to_jiffies(ms));
 		if (!timeout) {
 			ret = -ETIMEDOUT;
-			slim_free_txn_tid(ctrl, txn);
+			spin_lock_irqsave(&ctrl->txn_lock, flags);
+			idr_remove(&ctrl->tid_idr, tid);
+			spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		}
 	}
 
@@ -169,7 +139,7 @@ slim_xfer_err:
 		 * if there was error during this transaction
 		 */
 		pm_runtime_mark_last_busy(ctrl->dev);
-		pm_runtime_put_autosuspend(ctrl->dev);
+		pm_runtime_mark_last_busy(ctrl->dev);
 	}
 	return ret;
 }
@@ -213,7 +183,7 @@ static u16 slim_slicesize(int code)
 		0, 1, 2, 3, 3, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7
 	};
 
-	code = clamp(code, 1, (int)ARRAY_SIZE(sizetocode));
+	clamp(code, 1, (int)ARRAY_SIZE(sizetocode));
 
 	return sizetocode[code - 1];
 }
@@ -276,7 +246,6 @@ static void slim_fill_msg(struct slim_val_inf *msg, u32 addr,
 	msg->num_bytes = count;
 	msg->rbuf = rbuf;
 	msg->wbuf = wbuf;
-	msg->comp = NULL;
 }
 
 /**
@@ -338,7 +307,7 @@ int slim_write(struct slim_device *sdev, u32 addr, size_t count, u8 *val)
 {
 	struct slim_val_inf msg;
 
-	slim_fill_msg(&msg, addr, count,  NULL, val);
+	slim_fill_msg(&msg, addr, count,  val, NULL);
 
 	return slim_xfer_msg(sdev, &msg, SLIM_MSG_MC_CHANGE_VALUE);
 }

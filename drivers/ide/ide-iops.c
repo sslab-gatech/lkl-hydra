@@ -108,7 +108,6 @@ int __ide_wait_stat(ide_drive_t *drive, u8 good, u8 bad,
 	ide_hwif_t *hwif = drive->hwif;
 	const struct ide_tp_ops *tp_ops = hwif->tp_ops;
 	unsigned long flags;
-	bool irqs_threaded = force_irqthreads;
 	int i;
 	u8 stat;
 
@@ -116,10 +115,8 @@ int __ide_wait_stat(ide_drive_t *drive, u8 good, u8 bad,
 	stat = tp_ops->read_status(hwif);
 
 	if (stat & ATA_BUSY) {
-		if (!irqs_threaded) {
-			local_save_flags(flags);
-			local_irq_enable_in_hardirq();
-		}
+		local_save_flags(flags);
+		local_irq_enable_in_hardirq();
 		timeout += jiffies;
 		while ((stat = tp_ops->read_status(hwif)) & ATA_BUSY) {
 			if (time_after(jiffies, timeout)) {
@@ -132,14 +129,12 @@ int __ide_wait_stat(ide_drive_t *drive, u8 good, u8 bad,
 				if ((stat & ATA_BUSY) == 0)
 					break;
 
-				if (!irqs_threaded)
-					local_irq_restore(flags);
+				local_irq_restore(flags);
 				*rstat = stat;
 				return -EBUSY;
 			}
 		}
-		if (!irqs_threaded)
-			local_irq_restore(flags);
+		local_irq_restore(flags);
 	}
 	/*
 	 * Allow status to settle, then read it again.

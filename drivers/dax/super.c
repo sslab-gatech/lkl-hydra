@@ -74,90 +74,66 @@ EXPORT_SYMBOL_GPL(fs_dax_get_by_bdev);
 
 /**
  * __bdev_dax_supported() - Check if the device supports dax for filesystem
- * @bdev: block device to check
+ * @sb: The superblock of the device
  * @blocksize: The block size of the device
  *
  * This is a library function for filesystems to check if the block device
  * can be mounted with dax option.
  *
- * Return: true if supported, false if unsupported
+ * Return: negative errno if unsupported, 0 if supported.
  */
-bool __bdev_dax_supported(struct block_device *bdev, int blocksize)
+int __bdev_dax_supported(struct super_block *sb, int blocksize)
 {
+	struct block_device *bdev = sb->s_bdev;
 	struct dax_device *dax_dev;
-	bool dax_enabled = false;
-	struct request_queue *q;
 	pgoff_t pgoff;
 	int err, id;
+	void *kaddr;
 	pfn_t pfn;
 	long len;
-	char buf[BDEVNAME_SIZE];
 
 	if (blocksize != PAGE_SIZE) {
-		pr_debug("%s: error: unsupported blocksize for dax\n",
-				bdevname(bdev, buf));
-		return false;
-	}
-
-	q = bdev_get_queue(bdev);
-	if (!q || !blk_queue_dax(q)) {
-		pr_debug("%s: error: request queue doesn't support dax\n",
-				bdevname(bdev, buf));
-		return false;
+		pr_debug("VFS (%s): error: unsupported blocksize for dax\n",
+				sb->s_id);
+		return -EINVAL;
 	}
 
 	err = bdev_dax_pgoff(bdev, 0, PAGE_SIZE, &pgoff);
 	if (err) {
-		pr_debug("%s: error: unaligned partition for dax\n",
-				bdevname(bdev, buf));
-		return false;
+		pr_debug("VFS (%s): error: unaligned partition for dax\n",
+				sb->s_id);
+		return err;
 	}
 
 	dax_dev = dax_get_by_host(bdev->bd_disk->disk_name);
 	if (!dax_dev) {
-		pr_debug("%s: error: device does not support dax\n",
-				bdevname(bdev, buf));
-		return false;
+		pr_debug("VFS (%s): error: device does not support dax\n",
+				sb->s_id);
+		return -EOPNOTSUPP;
 	}
 
 	id = dax_read_lock();
-	len = dax_direct_access(dax_dev, pgoff, 1, NULL, &pfn);
+	len = dax_direct_access(dax_dev, pgoff, 1, &kaddr, &pfn);
 	dax_read_unlock(id);
 
 	put_dax(dax_dev);
 
 	if (len < 1) {
-		pr_debug("%s: error: dax access failed (%ld)\n",
-				bdevname(bdev, buf), len);
-		return false;
+		pr_debug("VFS (%s): error: dax access failed (%ld)\n",
+				sb->s_id, len);
+		return len < 0 ? len : -EIO;
 	}
 
-	if (IS_ENABLED(CONFIG_FS_DAX_LIMITED) && pfn_t_special(pfn)) {
-		/*
-		 * An arch that has enabled the pmem api should also
-		 * have its drivers support pfn_t_devmap()
-		 *
-		 * This is a developer warning and should not trigger in
-		 * production. dax_flush() will crash since it depends
-		 * on being able to do (page_address(pfn_to_page())).
-		 */
-		WARN_ON(IS_ENABLED(CONFIG_ARCH_HAS_PMEM_API));
-		dax_enabled = true;
-	} else if (pfn_t_devmap(pfn)) {
-		struct dev_pagemap *pgmap;
-
-		pgmap = get_dev_pagemap(pfn_t_to_pfn(pfn), NULL);
-		if (pgmap && pgmap->type == MEMORY_DEVICE_FS_DAX)
-			dax_enabled = true;
-		put_dev_pagemap(pgmap);
+	if ((IS_ENABLED(CONFIG_FS_DAX_LIMITED) && pfn_t_special(pfn))
+			|| pfn_t_devmap(pfn))
+		/* pass */;
+	else {
+		pr_debug("VFS (%s): error: dax support not enabled\n",
+				sb->s_id);
+		return -EOPNOTSUPP;
 	}
 
-	if (!dax_enabled) {
-		pr_debug("%s: error: dax support not enabled\n",
-				bdevname(bdev, buf));
-		return false;
-	}
-	return true;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(__bdev_dax_supported);
 #endif
@@ -197,7 +173,8 @@ static ssize_t write_cache_show(struct device *dev,
 	if (!dax_dev)
 		return -ENXIO;
 
-	rc = sprintf(buf, "%d\n", !!dax_write_cache_enabled(dax_dev));
+	rc = sprintf(buf, "%d\n", !!test_bit(DAXDEV_WRITE_CACHE,
+				&dax_dev->flags));
 	put_dax(dax_dev);
 	return rc;
 }
@@ -215,8 +192,10 @@ static ssize_t write_cache_store(struct device *dev,
 
 	if (rc)
 		len = rc;
+	else if (write_cache)
+		set_bit(DAXDEV_WRITE_CACHE, &dax_dev->flags);
 	else
-		dax_write_cache(dax_dev, write_cache);
+		clear_bit(DAXDEV_WRITE_CACHE, &dax_dev->flags);
 
 	put_dax(dax_dev);
 	return len;
@@ -294,21 +273,11 @@ size_t dax_copy_from_iter(struct dax_device *dax_dev, pgoff_t pgoff, void *addr,
 }
 EXPORT_SYMBOL_GPL(dax_copy_from_iter);
 
-size_t dax_copy_to_iter(struct dax_device *dax_dev, pgoff_t pgoff, void *addr,
-		size_t bytes, struct iov_iter *i)
-{
-	if (!dax_alive(dax_dev))
-		return 0;
-
-	return dax_dev->ops->copy_to_iter(dax_dev, pgoff, addr, bytes, i);
-}
-EXPORT_SYMBOL_GPL(dax_copy_to_iter);
-
 #ifdef CONFIG_ARCH_HAS_PMEM_API
 void arch_wb_cache_pmem(void *addr, size_t size);
 void dax_flush(struct dax_device *dax_dev, void *addr, size_t size)
 {
-	if (unlikely(!dax_write_cache_enabled(dax_dev)))
+	if (unlikely(!test_bit(DAXDEV_WRITE_CACHE, &dax_dev->flags)))
 		return;
 
 	arch_wb_cache_pmem(addr, size);

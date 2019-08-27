@@ -43,21 +43,15 @@ ENTRY(unsigned_movw)
 	ret
 ENDPROC(unsigned_movw)
 
-	.align	12
-	.space	0xff8
+#ifndef CONFIG_ARM64_ERRATUM_843419
+
 ENTRY(relative_adrp)
 	adrp	x0, sym64_rel
 	add	x0, x0, #:lo12:sym64_rel
 	ret
 ENDPROC(relative_adrp)
 
-	.align	12
-	.space	0xffc
-ENTRY(relative_adrp_far)
-	adrp	x0, memstart_addr
-	add	x0, x0, #:lo12:memstart_addr
-	ret
-ENDPROC(relative_adrp_far)
+#endif
 
 ENTRY(relative_adr)
 	adr	x0, sym64_rel

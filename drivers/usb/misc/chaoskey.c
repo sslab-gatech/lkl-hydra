@@ -168,10 +168,14 @@ static int chaoskey_probe(struct usb_interface *interface,
 	 */
 
 	if (udev->product && udev->serial) {
-		dev->name = kasprintf(GFP_KERNEL, "%s-%s", udev->product,
-				      udev->serial);
+		dev->name = kmalloc(strlen(udev->product) + 1 +
+				    strlen(udev->serial) + 1, GFP_KERNEL);
 		if (dev->name == NULL)
 			goto out;
+
+		strcpy(dev->name, udev->product);
+		strcat(dev->name, "-");
+		strcat(dev->name, udev->serial);
 	}
 
 	dev->interface = interface;

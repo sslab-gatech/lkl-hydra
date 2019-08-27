@@ -335,7 +335,7 @@ static int put_compat_statfs64(struct compat_statfs64 __user *ubuf, struct kstat
 	return 0;
 }
 
-int kcompat_sys_statfs64(const char __user * pathname, compat_size_t sz, struct compat_statfs64 __user * buf)
+COMPAT_SYSCALL_DEFINE3(statfs64, const char __user *, pathname, compat_size_t, sz, struct compat_statfs64 __user *, buf)
 {
 	struct kstatfs tmp;
 	int error;
@@ -349,12 +349,7 @@ int kcompat_sys_statfs64(const char __user * pathname, compat_size_t sz, struct 
 	return error;
 }
 
-COMPAT_SYSCALL_DEFINE3(statfs64, const char __user *, pathname, compat_size_t, sz, struct compat_statfs64 __user *, buf)
-{
-	return kcompat_sys_statfs64(pathname, sz, buf);
-}
-
-int kcompat_sys_fstatfs64(unsigned int fd, compat_size_t sz, struct compat_statfs64 __user * buf)
+COMPAT_SYSCALL_DEFINE3(fstatfs64, unsigned int, fd, compat_size_t, sz, struct compat_statfs64 __user *, buf)
 {
 	struct kstatfs tmp;
 	int error;
@@ -366,11 +361,6 @@ int kcompat_sys_fstatfs64(unsigned int fd, compat_size_t sz, struct compat_statf
 	if (!error)
 		error = put_compat_statfs64(buf, &tmp);
 	return error;
-}
-
-COMPAT_SYSCALL_DEFINE3(fstatfs64, unsigned int, fd, compat_size_t, sz, struct compat_statfs64 __user *, buf)
-{
-	return kcompat_sys_fstatfs64(fd, sz, buf);
 }
 
 /*

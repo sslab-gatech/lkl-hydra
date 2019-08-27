@@ -20,16 +20,14 @@
 #include <acpi/pcc.h>
 #include <acpi/processor.h>
 
-/* Support CPPCv2 and CPPCv3  */
-#define CPPC_V2_REV	2
-#define CPPC_V3_REV	3
-#define CPPC_V2_NUM_ENT	21
-#define CPPC_V3_NUM_ENT	23
+/* Only support CPPCv2 for now. */
+#define CPPC_NUM_ENT	21
+#define CPPC_REV	2
 
 #define PCC_CMD_COMPLETE_MASK	(1 << 0)
 #define PCC_ERROR_MASK		(1 << 2)
 
-#define MAX_CPC_REG_ENT 21
+#define MAX_CPC_REG_ENT 19
 
 /* CPPC specific PCC commands. */
 #define	CMD_READ 0
@@ -93,8 +91,6 @@ enum cppc_regs {
 	AUTO_ACT_WINDOW,
 	ENERGY_PERF,
 	REFERENCE_PERF,
-	LOWEST_FREQ,
-	NOMINAL_FREQ,
 };
 
 /*
@@ -104,13 +100,10 @@ enum cppc_regs {
  * today.
  */
 struct cppc_perf_caps {
-	u32 guaranteed_perf;
 	u32 highest_perf;
 	u32 nominal_perf;
 	u32 lowest_perf;
 	u32 lowest_nonlinear_perf;
-	u32 lowest_freq;
-	u32 nominal_freq;
 };
 
 struct cppc_perf_ctrls {
@@ -142,8 +135,5 @@ extern int cppc_set_perf(int cpu, struct cppc_perf_ctrls *perf_ctrls);
 extern int cppc_get_perf_caps(int cpu, struct cppc_perf_caps *caps);
 extern int acpi_get_psd_map(struct cppc_cpudata **);
 extern unsigned int cppc_get_transition_latency(int cpu);
-extern bool cpc_ffh_supported(void);
-extern int cpc_read_ffh(int cpunum, struct cpc_reg *reg, u64 *val);
-extern int cpc_write_ffh(int cpunum, struct cpc_reg *reg, u64 val);
 
 #endif /* _CPPC_ACPI_H*/

@@ -21,19 +21,16 @@
  * Kris Katterjohn - Added many additional checks in bpf_check_classic()
  */
 
-#include <uapi/linux/btf.h>
 #include <linux/filter.h>
 #include <linux/skbuff.h>
 #include <linux/vmalloc.h>
 #include <linux/random.h>
 #include <linux/moduleloader.h>
 #include <linux/bpf.h>
-#include <linux/btf.h>
 #include <linux/frame.h>
 #include <linux/rbtree_latch.h>
 #include <linux/kallsyms.h>
 #include <linux/rcupdate.h>
-#include <linux/perf_event.h>
 
 #include <asm/unaligned.h>
 
@@ -54,7 +51,6 @@
 #define DST	regs[insn->dst_reg]
 #define SRC	regs[insn->src_reg]
 #define FP	regs[BPF_REG_FP]
-#define AX	regs[BPF_REG_AX]
 #define ARG1	regs[BPF_REG_ARG1]
 #define CTX	regs[BPF_REG_CTX]
 #define IMM	insn->imm
@@ -105,91 +101,6 @@ struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 	return fp;
 }
 EXPORT_SYMBOL_GPL(bpf_prog_alloc);
-
-int bpf_prog_alloc_jited_linfo(struct bpf_prog *prog)
-{
-	if (!prog->aux->nr_linfo || !prog->jit_requested)
-		return 0;
-
-	prog->aux->jited_linfo = kcalloc(prog->aux->nr_linfo,
-					 sizeof(*prog->aux->jited_linfo),
-					 GFP_KERNEL | __GFP_NOWARN);
-	if (!prog->aux->jited_linfo)
-		return -ENOMEM;
-
-	return 0;
-}
-
-void bpf_prog_free_jited_linfo(struct bpf_prog *prog)
-{
-	kfree(prog->aux->jited_linfo);
-	prog->aux->jited_linfo = NULL;
-}
-
-void bpf_prog_free_unused_jited_linfo(struct bpf_prog *prog)
-{
-	if (prog->aux->jited_linfo && !prog->aux->jited_linfo[0])
-		bpf_prog_free_jited_linfo(prog);
-}
-
-/* The jit engine is responsible to provide an array
- * for insn_off to the jited_off mapping (insn_to_jit_off).
- *
- * The idx to this array is the insn_off.  Hence, the insn_off
- * here is relative to the prog itself instead of the main prog.
- * This array has one entry for each xlated bpf insn.
- *
- * jited_off is the byte off to the last byte of the jited insn.
- *
- * Hence, with
- * insn_start:
- *      The first bpf insn off of the prog.  The insn off
- *      here is relative to the main prog.
- *      e.g. if prog is a subprog, insn_start > 0
- * linfo_idx:
- *      The prog's idx to prog->aux->linfo and jited_linfo
- *
- * jited_linfo[linfo_idx] = prog->bpf_func
- *
- * For i > linfo_idx,
- *
- * jited_linfo[i] = prog->bpf_func +
- *	insn_to_jit_off[linfo[i].insn_off - insn_start - 1]
- */
-void bpf_prog_fill_jited_linfo(struct bpf_prog *prog,
-			       const u32 *insn_to_jit_off)
-{
-	u32 linfo_idx, insn_start, insn_end, nr_linfo, i;
-	const struct bpf_line_info *linfo;
-	void **jited_linfo;
-
-	if (!prog->aux->jited_linfo)
-		/* Userspace did not provide linfo */
-		return;
-
-	linfo_idx = prog->aux->linfo_idx;
-	linfo = &prog->aux->linfo[linfo_idx];
-	insn_start = linfo[0].insn_off;
-	insn_end = insn_start + prog->len;
-
-	jited_linfo = &prog->aux->jited_linfo[linfo_idx];
-	jited_linfo[0] = prog->bpf_func;
-
-	nr_linfo = prog->aux->nr_linfo - linfo_idx;
-
-	for (i = 1; i < nr_linfo && linfo[i].insn_off < insn_end; i++)
-		/* The verifier ensures that linfo[i].insn_off is
-		 * strictly increasing
-		 */
-		jited_linfo[i] = prog->bpf_func +
-			insn_to_jit_off[linfo[i].insn_off - insn_start - 1];
-}
-
-void bpf_prog_free_linfo(struct bpf_prog *prog)
-{
-	bpf_prog_free_jited_linfo(prog);
-	kvfree(prog->aux->linfo);
-}
 
 struct bpf_prog *bpf_prog_realloc(struct bpf_prog *fp_old, unsigned int size,
 				  gfp_t gfp_extra_flags)
@@ -307,104 +218,47 @@ int bpf_prog_calc_tag(struct bpf_prog *fp)
 	return 0;
 }
 
-static int bpf_adj_delta_to_imm(struct bpf_insn *insn, u32 pos, u32 delta,
-				u32 curr, const bool probe_pass)
+static void bpf_adj_branches(struct bpf_prog *prog, u32 pos, u32 delta)
 {
-	const s64 imm_min = S32_MIN, imm_max = S32_MAX;
-	s64 imm = insn->imm;
-
-	if (curr < pos && curr + imm + 1 > pos)
-		imm += delta;
-	else if (curr > pos + delta && curr + imm + 1 <= pos + delta)
-		imm -= delta;
-	if (imm < imm_min || imm > imm_max)
-		return -ERANGE;
-	if (!probe_pass)
-		insn->imm = imm;
-	return 0;
-}
-
-static int bpf_adj_delta_to_off(struct bpf_insn *insn, u32 pos, u32 delta,
-				u32 curr, const bool probe_pass)
-{
-	const s32 off_min = S16_MIN, off_max = S16_MAX;
-	s32 off = insn->off;
-
-	if (curr < pos && curr + off + 1 > pos)
-		off += delta;
-	else if (curr > pos + delta && curr + off + 1 <= pos + delta)
-		off -= delta;
-	if (off < off_min || off > off_max)
-		return -ERANGE;
-	if (!probe_pass)
-		insn->off = off;
-	return 0;
-}
-
-static int bpf_adj_branches(struct bpf_prog *prog, u32 pos, u32 delta,
-			    const bool probe_pass)
-{
-	u32 i, insn_cnt = prog->len + (probe_pass ? delta : 0);
 	struct bpf_insn *insn = prog->insnsi;
-	int ret = 0;
+	u32 i, insn_cnt = prog->len;
+	bool pseudo_call;
+	u8 code;
+	int off;
 
 	for (i = 0; i < insn_cnt; i++, insn++) {
-		u8 code;
-
-		/* In the probing pass we still operate on the original,
-		 * unpatched image in order to check overflows before we
-		 * do any other adjustments. Therefore skip the patchlet.
-		 */
-		if (probe_pass && i == pos) {
-			i += delta + 1;
-			insn++;
-		}
 		code = insn->code;
-		if (BPF_CLASS(code) != BPF_JMP ||
-		    BPF_OP(code) == BPF_EXIT)
+		if (BPF_CLASS(code) != BPF_JMP)
 			continue;
-		/* Adjust offset of jmps if we cross patch boundaries. */
+		if (BPF_OP(code) == BPF_EXIT)
+			continue;
 		if (BPF_OP(code) == BPF_CALL) {
-			if (insn->src_reg != BPF_PSEUDO_CALL)
+			if (insn->src_reg == BPF_PSEUDO_CALL)
+				pseudo_call = true;
+			else
 				continue;
-			ret = bpf_adj_delta_to_imm(insn, pos, delta, i,
-						   probe_pass);
 		} else {
-			ret = bpf_adj_delta_to_off(insn, pos, delta, i,
-						   probe_pass);
+			pseudo_call = false;
 		}
-		if (ret)
-			break;
+		off = pseudo_call ? insn->imm : insn->off;
+
+		/* Adjust offset of jmps if we cross boundaries. */
+		if (i < pos && i + off + 1 > pos)
+			off += delta;
+		else if (i > pos + delta && i + off + 1 <= pos + delta)
+			off -= delta;
+
+		if (pseudo_call)
+			insn->imm = off;
+		else
+			insn->off = off;
 	}
-
-	return ret;
-}
-
-static void bpf_adj_linfo(struct bpf_prog *prog, u32 off, u32 delta)
-{
-	struct bpf_line_info *linfo;
-	u32 i, nr_linfo;
-
-	nr_linfo = prog->aux->nr_linfo;
-	if (!nr_linfo || !delta)
-		return;
-
-	linfo = prog->aux->linfo;
-
-	for (i = 0; i < nr_linfo; i++)
-		if (off < linfo[i].insn_off)
-			break;
-
-	/* Push all off < linfo[i].insn_off by delta */
-	for (; i < nr_linfo; i++)
-		linfo[i].insn_off += delta;
 }
 
 struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 				       const struct bpf_insn *patch, u32 len)
 {
 	u32 insn_adj_cnt, insn_rest, insn_delta = len - 1;
-	const u32 cnt_max = S16_MAX;
 	struct bpf_prog *prog_adj;
 
 	/* Since our patchlet doesn't expand the image, we're done. */
@@ -414,15 +268,6 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 	}
 
 	insn_adj_cnt = prog->len + insn_delta;
-
-	/* Reject anything that would potentially let the insn->off
-	 * target overflow when we have excessive program expansions.
-	 * We need to probe here before we do any reallocation where
-	 * we afterwards may not fail anymore.
-	 */
-	if (insn_adj_cnt > cnt_max &&
-	    bpf_adj_branches(prog, off, insn_delta, true))
-		return NULL;
 
 	/* Several new instructions need to be inserted. Make room
 	 * for them. Likely, there's no need for a new allocation as
@@ -449,29 +294,9 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 		sizeof(*patch) * insn_rest);
 	memcpy(prog_adj->insnsi + off, patch, sizeof(*patch) * len);
 
-	/* We are guaranteed to not fail at this point, otherwise
-	 * the ship has sailed to reverse to the original state. An
-	 * overflow cannot happen at this point.
-	 */
-	BUG_ON(bpf_adj_branches(prog_adj, off, insn_delta, false));
-
-	bpf_adj_linfo(prog_adj, off, insn_delta);
+	bpf_adj_branches(prog_adj, off, insn_delta);
 
 	return prog_adj;
-}
-
-void bpf_prog_kallsyms_del_subprogs(struct bpf_prog *fp)
-{
-	int i;
-
-	for (i = 0; i < fp->aux->func_cnt; i++)
-		bpf_prog_kallsyms_del(fp->aux->func[i]);
-}
-
-void bpf_prog_kallsyms_del_all(struct bpf_prog *fp)
-{
-	bpf_prog_kallsyms_del_subprogs(fp);
-	bpf_prog_kallsyms_del(fp);
 }
 
 #ifdef CONFIG_BPF_JIT
@@ -479,7 +304,6 @@ void bpf_prog_kallsyms_del_all(struct bpf_prog *fp)
 int bpf_jit_enable   __read_mostly = IS_BUILTIN(CONFIG_BPF_JIT_ALWAYS_ON);
 int bpf_jit_harden   __read_mostly;
 int bpf_jit_kallsyms __read_mostly;
-long bpf_jit_limit   __read_mostly;
 
 static __always_inline void
 bpf_get_prog_addr_region(const struct bpf_prog *prog,
@@ -498,8 +322,6 @@ bpf_get_prog_addr_region(const struct bpf_prog *prog,
 static void bpf_get_prog_name(const struct bpf_prog *prog, char *sym)
 {
 	const char *end = sym + KSYM_NAME_LEN;
-	const struct btf_type *type;
-	const char *func_name;
 
 	BUILD_BUG_ON(sizeof("bpf_prog_") +
 		     sizeof(prog->tag) * 2 +
@@ -514,16 +336,6 @@ static void bpf_get_prog_name(const struct bpf_prog *prog, char *sym)
 
 	sym += snprintf(sym, KSYM_NAME_LEN, "bpf_prog_");
 	sym  = bin2hex(sym, prog->tag, sizeof(prog->tag));
-
-	/* prog->aux->name will be ignored if full btf name is available */
-	if (prog->aux->func_info_cnt) {
-		type = btf_type_by_id(prog->aux->btf,
-				      prog->aux->func_info[prog->aux->func_idx].type_id);
-		func_name = btf_name_by_offset(prog->aux->btf, type->name_off);
-		snprintf(sym, (size_t)(end - sym), "_%s", func_name);
-		return;
-	}
-
 	if (prog->aux->name[0])
 		snprintf(sym, (size_t)(end - sym), "_%s", prog->aux->name);
 	else
@@ -673,6 +485,7 @@ bool is_bpf_text_address(unsigned long addr)
 int bpf_get_kallsym(unsigned int symnum, unsigned long *value, char *type,
 		    char *sym)
 {
+	unsigned long symbol_start, symbol_end;
 	struct bpf_prog_aux *aux;
 	unsigned int it = 0;
 	int ret = -ERANGE;
@@ -685,9 +498,10 @@ int bpf_get_kallsym(unsigned int symnum, unsigned long *value, char *type,
 		if (it++ != symnum)
 			continue;
 
+		bpf_get_prog_addr_region(aux->prog, &symbol_start, &symbol_end);
 		bpf_get_prog_name(aux->prog, sym);
 
-		*value = (unsigned long)aux->prog->bpf_func;
+		*value = symbol_start;
 		*type  = BPF_SYM_ELF_TYPE;
 
 		ret = 0;
@@ -698,85 +512,27 @@ int bpf_get_kallsym(unsigned int symnum, unsigned long *value, char *type,
 	return ret;
 }
 
-static atomic_long_t bpf_jit_current;
-
-/* Can be overridden by an arch's JIT compiler if it has a custom,
- * dedicated BPF backend memory area, or if neither of the two
- * below apply.
- */
-u64 __weak bpf_jit_alloc_exec_limit(void)
-{
-#if defined(MODULES_VADDR)
-	return MODULES_END - MODULES_VADDR;
-#else
-	return VMALLOC_END - VMALLOC_START;
-#endif
-}
-
-static int __init bpf_jit_charge_init(void)
-{
-	/* Only used as heuristic here to derive limit. */
-	bpf_jit_limit = min_t(u64, round_up(bpf_jit_alloc_exec_limit() >> 2,
-					    PAGE_SIZE), LONG_MAX);
-	return 0;
-}
-pure_initcall(bpf_jit_charge_init);
-
-static int bpf_jit_charge_modmem(u32 pages)
-{
-	if (atomic_long_add_return(pages, &bpf_jit_current) >
-	    (bpf_jit_limit >> PAGE_SHIFT)) {
-		if (!capable(CAP_SYS_ADMIN)) {
-			atomic_long_sub(pages, &bpf_jit_current);
-			return -EPERM;
-		}
-	}
-
-	return 0;
-}
-
-static void bpf_jit_uncharge_modmem(u32 pages)
-{
-	atomic_long_sub(pages, &bpf_jit_current);
-}
-
-void *__weak bpf_jit_alloc_exec(unsigned long size)
-{
-	return module_alloc(size);
-}
-
-void __weak bpf_jit_free_exec(void *addr)
-{
-	module_memfree(addr);
-}
-
 struct bpf_binary_header *
 bpf_jit_binary_alloc(unsigned int proglen, u8 **image_ptr,
 		     unsigned int alignment,
 		     bpf_jit_fill_hole_t bpf_fill_ill_insns)
 {
 	struct bpf_binary_header *hdr;
-	u32 size, hole, start, pages;
+	unsigned int size, hole, start;
 
 	/* Most of BPF filters are really small, but if some of them
 	 * fill a page, allow at least 128 extra bytes to insert a
 	 * random section of illegal instructions.
 	 */
 	size = round_up(proglen + sizeof(*hdr) + 128, PAGE_SIZE);
-	pages = size / PAGE_SIZE;
-
-	if (bpf_jit_charge_modmem(pages))
+	hdr = module_alloc(size);
+	if (hdr == NULL)
 		return NULL;
-	hdr = bpf_jit_alloc_exec(size);
-	if (!hdr) {
-		bpf_jit_uncharge_modmem(pages);
-		return NULL;
-	}
 
 	/* Fill space with illegal/arch-dep instructions. */
 	bpf_fill_ill_insns(hdr, size);
 
-	hdr->pages = pages;
+	hdr->pages = size / PAGE_SIZE;
 	hole = min_t(unsigned int, size - (proglen + sizeof(*hdr)),
 		     PAGE_SIZE - sizeof(*hdr));
 	start = (get_random_int() % hole) & ~(alignment - 1);
@@ -789,10 +545,7 @@ bpf_jit_binary_alloc(unsigned int proglen, u8 **image_ptr,
 
 void bpf_jit_binary_free(struct bpf_binary_header *hdr)
 {
-	u32 pages = hdr->pages;
-
-	bpf_jit_free_exec(hdr);
-	bpf_jit_uncharge_modmem(pages);
+	module_memfree(hdr);
 }
 
 /* This symbol is only overridden by archs that have different
@@ -813,40 +566,6 @@ void __weak bpf_jit_free(struct bpf_prog *fp)
 	bpf_prog_unlock_free(fp);
 }
 
-int bpf_jit_get_func_addr(const struct bpf_prog *prog,
-			  const struct bpf_insn *insn, bool extra_pass,
-			  u64 *func_addr, bool *func_addr_fixed)
-{
-	s16 off = insn->off;
-	s32 imm = insn->imm;
-	u8 *addr;
-
-	*func_addr_fixed = insn->src_reg != BPF_PSEUDO_CALL;
-	if (!*func_addr_fixed) {
-		/* Place-holder address till the last pass has collected
-		 * all addresses for JITed subprograms in which case we
-		 * can pick them up from prog->aux.
-		 */
-		if (!extra_pass)
-			addr = NULL;
-		else if (prog->aux->func &&
-			 off >= 0 && off < prog->aux->func_cnt)
-			addr = (u8 *)prog->aux->func[off]->bpf_func;
-		else
-			return -EINVAL;
-	} else {
-		/* Address of a BPF helper call. Since part of the core
-		 * kernel, it's always at a fixed location. __bpf_call_base
-		 * and the helper with imm relative to it are both in core
-		 * kernel.
-		 */
-		addr = (u8 *)__bpf_call_base + imm;
-	}
-
-	*func_addr = (unsigned long)addr;
-	return 0;
-}
-
 static int bpf_jit_blind_insn(const struct bpf_insn *from,
 			      const struct bpf_insn *aux,
 			      struct bpf_insn *to_buff)
@@ -857,26 +576,6 @@ static int bpf_jit_blind_insn(const struct bpf_insn *from,
 
 	BUILD_BUG_ON(BPF_REG_AX  + 1 != MAX_BPF_JIT_REG);
 	BUILD_BUG_ON(MAX_BPF_REG + 1 != MAX_BPF_JIT_REG);
-
-	/* Constraints on AX register:
-	 *
-	 * AX register is inaccessible from user space. It is mapped in
-	 * all JITs, and used here for constant blinding rewrites. It is
-	 * typically "stateless" meaning its contents are only valid within
-	 * the executed instruction, but not across several instructions.
-	 * There are a few exceptions however which are further detailed
-	 * below.
-	 *
-	 * Constant blinding is only used by JITs, not in the interpreter.
-	 * The interpreter uses AX in some occasions as a local temporary
-	 * register e.g. in DIV or MOD instructions.
-	 *
-	 * In restricted circumstances, the verifier can also use the AX
-	 * register for rewrites as long as they do not interfere with
-	 * the above cases!
-	 */
-	if (from->dst_reg == BPF_REG_AX || from->src_reg == BPF_REG_AX)
-		goto out;
 
 	if (from->imm == 0 &&
 	    (from->code == (BPF_ALU   | BPF_MOV | BPF_K) ||
@@ -932,6 +631,23 @@ static int bpf_jit_blind_insn(const struct bpf_insn *from,
 		*to++ = BPF_ALU64_IMM(BPF_MOV, BPF_REG_AX, imm_rnd ^ from->imm);
 		*to++ = BPF_ALU64_IMM(BPF_XOR, BPF_REG_AX, imm_rnd);
 		*to++ = BPF_JMP_REG(from->code, from->dst_reg, BPF_REG_AX, off);
+		break;
+
+	case BPF_LD | BPF_ABS | BPF_W:
+	case BPF_LD | BPF_ABS | BPF_H:
+	case BPF_LD | BPF_ABS | BPF_B:
+		*to++ = BPF_ALU64_IMM(BPF_MOV, BPF_REG_AX, imm_rnd ^ from->imm);
+		*to++ = BPF_ALU64_IMM(BPF_XOR, BPF_REG_AX, imm_rnd);
+		*to++ = BPF_LD_IND(from->code, BPF_REG_AX, 0);
+		break;
+
+	case BPF_LD | BPF_IND | BPF_W:
+	case BPF_LD | BPF_IND | BPF_H:
+	case BPF_LD | BPF_IND | BPF_B:
+		*to++ = BPF_ALU64_IMM(BPF_MOV, BPF_REG_AX, imm_rnd ^ from->imm);
+		*to++ = BPF_ALU64_IMM(BPF_XOR, BPF_REG_AX, imm_rnd);
+		*to++ = BPF_ALU32_REG(BPF_ADD, BPF_REG_AX, from->src_reg);
+		*to++ = BPF_LD_IND(from->code, BPF_REG_AX, 0);
 		break;
 
 	case BPF_LD | BPF_IMM | BPF_DW:
@@ -1070,34 +786,32 @@ EXPORT_SYMBOL_GPL(__bpf_call_base);
 #define BPF_INSN_MAP(INSN_2, INSN_3)		\
 	/* 32 bit ALU operations. */		\
 	/*   Register based. */			\
-	INSN_3(ALU, ADD,  X),			\
-	INSN_3(ALU, SUB,  X),			\
-	INSN_3(ALU, AND,  X),			\
-	INSN_3(ALU, OR,   X),			\
-	INSN_3(ALU, LSH,  X),			\
-	INSN_3(ALU, RSH,  X),			\
-	INSN_3(ALU, XOR,  X),			\
-	INSN_3(ALU, MUL,  X),			\
-	INSN_3(ALU, MOV,  X),			\
-	INSN_3(ALU, ARSH, X),			\
-	INSN_3(ALU, DIV,  X),			\
-	INSN_3(ALU, MOD,  X),			\
+	INSN_3(ALU, ADD, X),			\
+	INSN_3(ALU, SUB, X),			\
+	INSN_3(ALU, AND, X),			\
+	INSN_3(ALU, OR,  X),			\
+	INSN_3(ALU, LSH, X),			\
+	INSN_3(ALU, RSH, X),			\
+	INSN_3(ALU, XOR, X),			\
+	INSN_3(ALU, MUL, X),			\
+	INSN_3(ALU, MOV, X),			\
+	INSN_3(ALU, DIV, X),			\
+	INSN_3(ALU, MOD, X),			\
 	INSN_2(ALU, NEG),			\
 	INSN_3(ALU, END, TO_BE),		\
 	INSN_3(ALU, END, TO_LE),		\
 	/*   Immediate based. */		\
-	INSN_3(ALU, ADD,  K),			\
-	INSN_3(ALU, SUB,  K),			\
-	INSN_3(ALU, AND,  K),			\
-	INSN_3(ALU, OR,   K),			\
-	INSN_3(ALU, LSH,  K),			\
-	INSN_3(ALU, RSH,  K),			\
-	INSN_3(ALU, XOR,  K),			\
-	INSN_3(ALU, MUL,  K),			\
-	INSN_3(ALU, MOV,  K),			\
-	INSN_3(ALU, ARSH, K),			\
-	INSN_3(ALU, DIV,  K),			\
-	INSN_3(ALU, MOD,  K),			\
+	INSN_3(ALU, ADD, K),			\
+	INSN_3(ALU, SUB, K),			\
+	INSN_3(ALU, AND, K),			\
+	INSN_3(ALU, OR,  K),			\
+	INSN_3(ALU, LSH, K),			\
+	INSN_3(ALU, RSH, K),			\
+	INSN_3(ALU, XOR, K),			\
+	INSN_3(ALU, MUL, K),			\
+	INSN_3(ALU, MOV, K),			\
+	INSN_3(ALU, DIV, K),			\
+	INSN_3(ALU, MOD, K),			\
 	/* 64 bit ALU operations. */		\
 	/*   Register based. */			\
 	INSN_3(ALU64, ADD,  X),			\
@@ -1176,7 +890,14 @@ EXPORT_SYMBOL_GPL(__bpf_call_base);
 	INSN_3(LDX, MEM, W),			\
 	INSN_3(LDX, MEM, DW),			\
 	/*   Immediate based. */		\
-	INSN_3(LD, IMM, DW)
+	INSN_3(LD, IMM, DW),			\
+	/*   Misc (old cBPF carry-over). */	\
+	INSN_3(LD, ABS, B),			\
+	INSN_3(LD, ABS, H),			\
+	INSN_3(LD, ABS, W),			\
+	INSN_3(LD, IND, B),			\
+	INSN_3(LD, IND, H),			\
+	INSN_3(LD, IND, W)
 
 bool bpf_opcode_in_insntable(u8 code)
 {
@@ -1186,13 +907,6 @@ bool bpf_opcode_in_insntable(u8 code)
 		[0 ... 255] = false,
 		/* Now overwrite non-defaults ... */
 		BPF_INSN_MAP(BPF_INSN_2_TBL, BPF_INSN_3_TBL),
-		/* UAPI exposed, but rewritten opcodes. cBPF carry-over. */
-		[BPF_LD | BPF_ABS | BPF_B] = true,
-		[BPF_LD | BPF_ABS | BPF_H] = true,
-		[BPF_LD | BPF_ABS | BPF_W] = true,
-		[BPF_LD | BPF_IND | BPF_B] = true,
-		[BPF_LD | BPF_IND | BPF_H] = true,
-		[BPF_LD | BPF_IND | BPF_W] = true,
 	};
 #undef BPF_INSN_3_TBL
 #undef BPF_INSN_2_TBL
@@ -1209,6 +923,7 @@ bool bpf_opcode_in_insntable(u8 code)
  */
 static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn, u64 *stack)
 {
+	u64 tmp;
 #define BPF_INSN_2_LBL(x, y)    [BPF_##x | BPF_##y] = &&x##_##y
 #define BPF_INSN_3_LBL(x, y, z) [BPF_##x | BPF_##y | BPF_##z] = &&x##_##y##_##z
 	static const void *jumptable[256] = {
@@ -1222,6 +937,8 @@ static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn, u64 *stack)
 #undef BPF_INSN_3_LBL
 #undef BPF_INSN_2_LBL
 	u32 tail_call_cnt = 0;
+	void *ptr;
+	int off;
 
 #define CONT	 ({ insn++; goto select_insn; })
 #define CONT_JMP ({ insn++; goto select_insn; })
@@ -1275,12 +992,6 @@ select_insn:
 		DST = (u64) (u32) insn[0].imm | ((u64) (u32) insn[1].imm) << 32;
 		insn++;
 		CONT;
-	ALU_ARSH_X:
-		DST = (u64) (u32) ((*(s32 *) &DST) >> SRC);
-		CONT;
-	ALU_ARSH_K:
-		DST = (u64) (u32) ((*(s32 *) &DST) >> IMM);
-		CONT;
 	ALU64_ARSH_X:
 		(*(s64 *) &DST) >>= SRC;
 		CONT;
@@ -1288,36 +999,36 @@ select_insn:
 		(*(s64 *) &DST) >>= IMM;
 		CONT;
 	ALU64_MOD_X:
-		div64_u64_rem(DST, SRC, &AX);
-		DST = AX;
+		div64_u64_rem(DST, SRC, &tmp);
+		DST = tmp;
 		CONT;
 	ALU_MOD_X:
-		AX = (u32) DST;
-		DST = do_div(AX, (u32) SRC);
+		tmp = (u32) DST;
+		DST = do_div(tmp, (u32) SRC);
 		CONT;
 	ALU64_MOD_K:
-		div64_u64_rem(DST, IMM, &AX);
-		DST = AX;
+		div64_u64_rem(DST, IMM, &tmp);
+		DST = tmp;
 		CONT;
 	ALU_MOD_K:
-		AX = (u32) DST;
-		DST = do_div(AX, (u32) IMM);
+		tmp = (u32) DST;
+		DST = do_div(tmp, (u32) IMM);
 		CONT;
 	ALU64_DIV_X:
 		DST = div64_u64(DST, SRC);
 		CONT;
 	ALU_DIV_X:
-		AX = (u32) DST;
-		do_div(AX, (u32) SRC);
-		DST = (u32) AX;
+		tmp = (u32) DST;
+		do_div(tmp, (u32) SRC);
+		DST = (u32) tmp;
 		CONT;
 	ALU64_DIV_K:
 		DST = div64_u64(DST, IMM);
 		CONT;
 	ALU_DIV_K:
-		AX = (u32) DST;
-		do_div(AX, (u32) IMM);
-		DST = (u32) AX;
+		tmp = (u32) DST;
+		do_div(tmp, (u32) IMM);
+		DST = (u32) tmp;
 		CONT;
 	ALU_END_TO_BE:
 		switch (IMM) {
@@ -1554,6 +1265,67 @@ out:
 		atomic64_add((u64) SRC, (atomic64_t *)(unsigned long)
 			     (DST + insn->off));
 		CONT;
+	LD_ABS_W: /* BPF_R0 = ntohl(*(u32 *) (skb->data + imm32)) */
+		off = IMM;
+load_word:
+		/* BPF_LD + BPD_ABS and BPF_LD + BPF_IND insns are only
+		 * appearing in the programs where ctx == skb
+		 * (see may_access_skb() in the verifier). All programs
+		 * keep 'ctx' in regs[BPF_REG_CTX] == BPF_R6,
+		 * bpf_convert_filter() saves it in BPF_R6, internal BPF
+		 * verifier will check that BPF_R6 == ctx.
+		 *
+		 * BPF_ABS and BPF_IND are wrappers of function calls,
+		 * so they scratch BPF_R1-BPF_R5 registers, preserve
+		 * BPF_R6-BPF_R9, and store return value into BPF_R0.
+		 *
+		 * Implicit input:
+		 *   ctx == skb == BPF_R6 == CTX
+		 *
+		 * Explicit input:
+		 *   SRC == any register
+		 *   IMM == 32-bit immediate
+		 *
+		 * Output:
+		 *   BPF_R0 - 8/16/32-bit skb data converted to cpu endianness
+		 */
+
+		ptr = bpf_load_pointer((struct sk_buff *) (unsigned long) CTX, off, 4, &tmp);
+		if (likely(ptr != NULL)) {
+			BPF_R0 = get_unaligned_be32(ptr);
+			CONT;
+		}
+
+		return 0;
+	LD_ABS_H: /* BPF_R0 = ntohs(*(u16 *) (skb->data + imm32)) */
+		off = IMM;
+load_half:
+		ptr = bpf_load_pointer((struct sk_buff *) (unsigned long) CTX, off, 2, &tmp);
+		if (likely(ptr != NULL)) {
+			BPF_R0 = get_unaligned_be16(ptr);
+			CONT;
+		}
+
+		return 0;
+	LD_ABS_B: /* BPF_R0 = *(u8 *) (skb->data + imm32) */
+		off = IMM;
+load_byte:
+		ptr = bpf_load_pointer((struct sk_buff *) (unsigned long) CTX, off, 1, &tmp);
+		if (likely(ptr != NULL)) {
+			BPF_R0 = *(u8 *)ptr;
+			CONT;
+		}
+
+		return 0;
+	LD_IND_W: /* BPF_R0 = ntohl(*(u32 *) (skb->data + src_reg + imm32)) */
+		off = IMM + SRC;
+		goto load_word;
+	LD_IND_H: /* BPF_R0 = ntohs(*(u16 *) (skb->data + src_reg + imm32)) */
+		off = IMM + SRC;
+		goto load_half;
+	LD_IND_B: /* BPF_R0 = *(u8 *) (skb->data + src_reg + imm32) */
+		off = IMM + SRC;
+		goto load_byte;
 
 	default_label:
 		/* If we ever reach this, we have a bug somewhere. Die hard here
@@ -1573,7 +1345,7 @@ STACK_FRAME_NON_STANDARD(___bpf_prog_run); /* jump table */
 static unsigned int PROG_NAME(stack_size)(const void *ctx, const struct bpf_insn *insn) \
 { \
 	u64 stack[stack_size / sizeof(u64)]; \
-	u64 regs[MAX_BPF_EXT_REG]; \
+	u64 regs[MAX_BPF_REG]; \
 \
 	FP = (u64) (unsigned long) &stack[ARRAY_SIZE(stack)]; \
 	ARG1 = (u64) (unsigned long) ctx; \
@@ -1586,7 +1358,7 @@ static u64 PROG_NAME_ARGS(stack_size)(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5, \
 				      const struct bpf_insn *insn) \
 { \
 	u64 stack[stack_size / sizeof(u64)]; \
-	u64 regs[MAX_BPF_EXT_REG]; \
+	u64 regs[MAX_BPF_REG]; \
 \
 	FP = (u64) (unsigned long) &stack[ARRAY_SIZE(stack)]; \
 	BPF_R1 = r1; \
@@ -1691,17 +1463,6 @@ static int bpf_check_tail_call(const struct bpf_prog *fp)
 	return 0;
 }
 
-static void bpf_prog_select_func(struct bpf_prog *fp)
-{
-#ifndef CONFIG_BPF_JIT_ALWAYS_ON
-	u32 stack_depth = max_t(u32, fp->aux->stack_depth, 1);
-
-	fp->bpf_func = interpreters[(round_up(stack_depth, 32) / 32) - 1];
-#else
-	fp->bpf_func = __bpf_prog_ret0_warn;
-#endif
-}
-
 /**
  *	bpf_prog_select_runtime - select exec runtime for BPF program
  *	@fp: bpf_prog populated with internal BPF program
@@ -1712,13 +1473,13 @@ static void bpf_prog_select_func(struct bpf_prog *fp)
  */
 struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 {
-	/* In case of BPF to BPF calls, verifier did all the prep
-	 * work with regards to JITing, etc.
-	 */
-	if (fp->bpf_func)
-		goto finalize;
+#ifndef CONFIG_BPF_JIT_ALWAYS_ON
+	u32 stack_depth = max_t(u32, fp->aux->stack_depth, 1);
 
-	bpf_prog_select_func(fp);
+	fp->bpf_func = interpreters[(round_up(stack_depth, 32) / 32) - 1];
+#else
+	fp->bpf_func = __bpf_prog_ret0_warn;
+#endif
 
 	/* eBPF JITs can rewrite the program in case constant
 	 * blinding is active. However, in case of error during
@@ -1727,27 +1488,18 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	 * be JITed, but falls back to the interpreter.
 	 */
 	if (!bpf_prog_is_dev_bound(fp->aux)) {
-		*err = bpf_prog_alloc_jited_linfo(fp);
-		if (*err)
-			return fp;
-
 		fp = bpf_int_jit_compile(fp);
-		if (!fp->jited) {
-			bpf_prog_free_jited_linfo(fp);
 #ifdef CONFIG_BPF_JIT_ALWAYS_ON
+		if (!fp->jited) {
 			*err = -ENOTSUPP;
 			return fp;
-#endif
-		} else {
-			bpf_prog_free_unused_jited_linfo(fp);
 		}
+#endif
 	} else {
 		*err = bpf_prog_offload_compile(fp);
 		if (*err)
 			return fp;
 	}
-
-finalize:
 	bpf_prog_lock_ro(fp);
 
 	/* The tail call compatibility check can only be done at
@@ -1788,12 +1540,11 @@ static struct {
 	.null_prog = NULL,
 };
 
-struct bpf_prog_array *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags)
+struct bpf_prog_array __rcu *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags)
 {
 	if (prog_cnt)
 		return kzalloc(sizeof(struct bpf_prog_array) +
-			       sizeof(struct bpf_prog_array_item) *
-			       (prog_cnt + 1),
+			       sizeof(struct bpf_prog *) * (prog_cnt + 1),
 			       flags);
 
 	return &empty_prog_array.hdr;
@@ -1807,48 +1558,27 @@ void bpf_prog_array_free(struct bpf_prog_array __rcu *progs)
 	kfree_rcu(progs, rcu);
 }
 
-int bpf_prog_array_length(struct bpf_prog_array __rcu *array)
+int bpf_prog_array_length(struct bpf_prog_array __rcu *progs)
 {
-	struct bpf_prog_array_item *item;
+	struct bpf_prog **prog;
 	u32 cnt = 0;
 
 	rcu_read_lock();
-	item = rcu_dereference(array)->items;
-	for (; item->prog; item++)
-		if (item->prog != &dummy_bpf_prog.prog)
+	prog = rcu_dereference(progs)->progs;
+	for (; *prog; prog++)
+		if (*prog != &dummy_bpf_prog.prog)
 			cnt++;
 	rcu_read_unlock();
 	return cnt;
 }
 
-
-static bool bpf_prog_array_copy_core(struct bpf_prog_array __rcu *array,
-				     u32 *prog_ids,
-				     u32 request_cnt)
-{
-	struct bpf_prog_array_item *item;
-	int i = 0;
-
-	item = rcu_dereference_check(array, 1)->items;
-	for (; item->prog; item++) {
-		if (item->prog == &dummy_bpf_prog.prog)
-			continue;
-		prog_ids[i] = item->prog->aux->id;
-		if (++i == request_cnt) {
-			item++;
-			break;
-		}
-	}
-
-	return !!(item->prog);
-}
-
-int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *array,
+int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *progs,
 				__u32 __user *prog_ids, u32 cnt)
 {
+	struct bpf_prog **prog;
 	unsigned long err = 0;
+	u32 i = 0, *ids;
 	bool nospc;
-	u32 *ids;
 
 	/* users of this function are doing:
 	 * cnt = bpf_prog_array_length();
@@ -1864,7 +1594,17 @@ int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *array,
 	if (!ids)
 		return -ENOMEM;
 	rcu_read_lock();
-	nospc = bpf_prog_array_copy_core(array, ids, cnt);
+	prog = rcu_dereference(progs)->progs;
+	for (; *prog; prog++) {
+		if (*prog == &dummy_bpf_prog.prog)
+			continue;
+		ids[i] = (*prog)->aux->id;
+		if (++i == cnt) {
+			prog++;
+			break;
+		}
+	}
+	nospc = !!(*prog);
 	rcu_read_unlock();
 	err = copy_to_user(prog_ids, ids, cnt * sizeof(u32));
 	kfree(ids);
@@ -1875,14 +1615,14 @@ int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *array,
 	return 0;
 }
 
-void bpf_prog_array_delete_safe(struct bpf_prog_array __rcu *array,
+void bpf_prog_array_delete_safe(struct bpf_prog_array __rcu *progs,
 				struct bpf_prog *old_prog)
 {
-	struct bpf_prog_array_item *item = array->items;
+	struct bpf_prog **prog = progs->progs;
 
-	for (; item->prog; item++)
-		if (item->prog == old_prog) {
-			WRITE_ONCE(item->prog, &dummy_bpf_prog.prog);
+	for (; *prog; prog++)
+		if (*prog == old_prog) {
+			WRITE_ONCE(*prog, &dummy_bpf_prog.prog);
 			break;
 		}
 }
@@ -1893,30 +1633,23 @@ int bpf_prog_array_copy(struct bpf_prog_array __rcu *old_array,
 			struct bpf_prog_array **new_array)
 {
 	int new_prog_cnt, carry_prog_cnt = 0;
-	struct bpf_prog_array_item *existing;
+	struct bpf_prog **existing_prog;
 	struct bpf_prog_array *array;
-	bool found_exclude = false;
 	int new_prog_idx = 0;
 
 	/* Figure out how many existing progs we need to carry over to
 	 * the new array.
 	 */
 	if (old_array) {
-		existing = old_array->items;
-		for (; existing->prog; existing++) {
-			if (existing->prog == exclude_prog) {
-				found_exclude = true;
-				continue;
-			}
-			if (existing->prog != &dummy_bpf_prog.prog)
+		existing_prog = old_array->progs;
+		for (; *existing_prog; existing_prog++) {
+			if (*existing_prog != exclude_prog &&
+			    *existing_prog != &dummy_bpf_prog.prog)
 				carry_prog_cnt++;
-			if (existing->prog == include_prog)
+			if (*existing_prog == include_prog)
 				return -EEXIST;
 		}
 	}
-
-	if (exclude_prog && !found_exclude)
-		return -ENOENT;
 
 	/* How many progs (not NULL) will be in the new array? */
 	new_prog_cnt = carry_prog_cnt;
@@ -1936,39 +1669,36 @@ int bpf_prog_array_copy(struct bpf_prog_array __rcu *old_array,
 
 	/* Fill in the new prog array */
 	if (carry_prog_cnt) {
-		existing = old_array->items;
-		for (; existing->prog; existing++)
-			if (existing->prog != exclude_prog &&
-			    existing->prog != &dummy_bpf_prog.prog) {
-				array->items[new_prog_idx++].prog =
-					existing->prog;
-			}
+		existing_prog = old_array->progs;
+		for (; *existing_prog; existing_prog++)
+			if (*existing_prog != exclude_prog &&
+			    *existing_prog != &dummy_bpf_prog.prog)
+				array->progs[new_prog_idx++] = *existing_prog;
 	}
 	if (include_prog)
-		array->items[new_prog_idx++].prog = include_prog;
-	array->items[new_prog_idx].prog = NULL;
+		array->progs[new_prog_idx++] = include_prog;
+	array->progs[new_prog_idx] = NULL;
 	*new_array = array;
 	return 0;
 }
 
 int bpf_prog_array_copy_info(struct bpf_prog_array __rcu *array,
-			     u32 *prog_ids, u32 request_cnt,
-			     u32 *prog_cnt)
+			     __u32 __user *prog_ids, u32 request_cnt,
+			     __u32 __user *prog_cnt)
 {
 	u32 cnt = 0;
 
 	if (array)
 		cnt = bpf_prog_array_length(array);
 
-	*prog_cnt = cnt;
+	if (copy_to_user(prog_cnt, &cnt, sizeof(cnt)))
+		return -EFAULT;
 
 	/* return early if user requested only program count or nothing to copy */
 	if (!request_cnt || !cnt)
 		return 0;
 
-	/* this function is called under trace/bpf_trace.c: bpf_event_mutex */
-	return bpf_prog_array_copy_core(array, prog_ids, request_cnt) ? -ENOSPC
-								     : 0;
+	return bpf_prog_array_copy_to_user(array, prog_ids, request_cnt);
 }
 
 static void bpf_prog_free_deferred(struct work_struct *work)
@@ -1979,10 +1709,6 @@ static void bpf_prog_free_deferred(struct work_struct *work)
 	aux = container_of(work, struct bpf_prog_aux, work);
 	if (bpf_prog_is_dev_bound(aux))
 		bpf_prog_offload_destroy(aux->prog);
-#ifdef CONFIG_PERF_EVENTS
-	if (aux->prog->has_callchain_buf)
-		put_callchain_buffers();
-#endif
 	for (i = 0; i < aux->func_cnt; i++)
 		bpf_jit_free(aux->func[i]);
 	if (aux->func_cnt) {
@@ -2033,9 +1759,6 @@ BPF_CALL_0(bpf_user_rnd_u32)
 const struct bpf_func_proto bpf_map_lookup_elem_proto __weak;
 const struct bpf_func_proto bpf_map_update_elem_proto __weak;
 const struct bpf_func_proto bpf_map_delete_elem_proto __weak;
-const struct bpf_func_proto bpf_map_push_elem_proto __weak;
-const struct bpf_func_proto bpf_map_pop_elem_proto __weak;
-const struct bpf_func_proto bpf_map_peek_elem_proto __weak;
 
 const struct bpf_func_proto bpf_get_prandom_u32_proto __weak;
 const struct bpf_func_proto bpf_get_smp_processor_id_proto __weak;
@@ -2045,8 +1768,7 @@ const struct bpf_func_proto bpf_ktime_get_ns_proto __weak;
 const struct bpf_func_proto bpf_get_current_pid_tgid_proto __weak;
 const struct bpf_func_proto bpf_get_current_uid_gid_proto __weak;
 const struct bpf_func_proto bpf_get_current_comm_proto __weak;
-const struct bpf_func_proto bpf_get_current_cgroup_id_proto __weak;
-const struct bpf_func_proto bpf_get_local_storage_proto __weak;
+const struct bpf_func_proto bpf_sock_map_update_proto __weak;
 
 const struct bpf_func_proto * __weak bpf_get_trace_printk_proto(void)
 {
@@ -2059,7 +1781,6 @@ bpf_event_output(struct bpf_map *map, u64 flags, void *meta, u64 meta_size,
 {
 	return -ENOTSUPP;
 }
-EXPORT_SYMBOL_GPL(bpf_event_output);
 
 /* Always built-in helper functions. */
 const struct bpf_func_proto bpf_tail_call_proto = {
@@ -2106,3 +1827,9 @@ int __weak skb_copy_bits(const struct sk_buff *skb, int offset, void *to,
 #include <linux/bpf_trace.h>
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(xdp_exception);
+
+/* These are only used within the BPF_SYSCALL code */
+#ifdef CONFIG_BPF_SYSCALL
+EXPORT_TRACEPOINT_SYMBOL_GPL(bpf_prog_get_type);
+EXPORT_TRACEPOINT_SYMBOL_GPL(bpf_prog_put_rcu);
+#endif

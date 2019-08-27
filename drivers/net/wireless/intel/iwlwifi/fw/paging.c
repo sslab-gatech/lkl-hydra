@@ -8,7 +8,6 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018        Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,7 +30,6 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018        Intel Corporation
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -165,7 +163,7 @@ static int iwl_alloc_fw_paging_mem(struct iwl_fw_runtime *fwrt,
 static int iwl_fill_paging_mem(struct iwl_fw_runtime *fwrt,
 			       const struct fw_img *image)
 {
-	int sec_idx, idx, ret;
+	int sec_idx, idx;
 	u32 offset = 0;
 
 	/*
@@ -192,23 +190,17 @@ static int iwl_fill_paging_mem(struct iwl_fw_runtime *fwrt,
 	 */
 	if (sec_idx >= image->num_sec - 1) {
 		IWL_ERR(fwrt, "Paging: Missing CSS and/or paging sections\n");
-		ret = -EINVAL;
-		goto err;
+		iwl_free_fw_paging(fwrt);
+		return -EINVAL;
 	}
 
 	/* copy the CSS block to the dram */
 	IWL_DEBUG_FW(fwrt, "Paging: load paging CSS to FW, sec = %d\n",
 		     sec_idx);
 
-	if (image->sec[sec_idx].len > fwrt->fw_paging_db[0].fw_paging_size) {
-		IWL_ERR(fwrt, "CSS block is larger than paging size\n");
-		ret = -EINVAL;
-		goto err;
-	}
-
 	memcpy(page_address(fwrt->fw_paging_db[0].fw_paging_block),
 	       image->sec[sec_idx].data,
-	       image->sec[sec_idx].len);
+	       fwrt->fw_paging_db[0].fw_paging_size);
 	dma_sync_single_for_device(fwrt->trans->dev,
 				   fwrt->fw_paging_db[0].fw_paging_phys,
 				   fwrt->fw_paging_db[0].fw_paging_size,
@@ -221,39 +213,17 @@ static int iwl_fill_paging_mem(struct iwl_fw_runtime *fwrt,
 	sec_idx++;
 
 	/*
-	 * Copy the paging blocks to the dram.  The loop index starts
-	 * from 1 since the CSS block (index 0) was already copied to
-	 * dram.  We use num_of_paging_blk + 1 to account for that.
+	 * copy the paging blocks to the dram
+	 * loop index start from 1 since that CSS block already copied to dram
+	 * and CSS index is 0.
+	 * loop stop at num_of_paging_blk since that last block is not full.
 	 */
-	for (idx = 1; idx < fwrt->num_of_paging_blk + 1; idx++) {
+	for (idx = 1; idx < fwrt->num_of_paging_blk; idx++) {
 		struct iwl_fw_paging *block = &fwrt->fw_paging_db[idx];
-		int remaining = image->sec[sec_idx].len - offset;
-		int len = block->fw_paging_size;
-
-		/*
-		 * For the last block, we copy all that is remaining,
-		 * for all other blocks, we copy fw_paging_size at a
-		 * time. */
-		if (idx == fwrt->num_of_paging_blk) {
-			len = remaining;
-			if (remaining !=
-			    fwrt->num_of_pages_in_last_blk * FW_PAGING_SIZE) {
-				IWL_ERR(fwrt,
-					"Paging: last block contains more data than expected %d\n",
-					remaining);
-				ret = -EINVAL;
-				goto err;
-			}
-		} else if (block->fw_paging_size > remaining) {
-			IWL_ERR(fwrt,
-				"Paging: not enough data in other in block %d (%d)\n",
-				idx, remaining);
-			ret = -EINVAL;
-			goto err;
-		}
 
 		memcpy(page_address(block->fw_paging_block),
-		       image->sec[sec_idx].data + offset, len);
+		       image->sec[sec_idx].data + offset,
+		       block->fw_paging_size);
 		dma_sync_single_for_device(fwrt->trans->dev,
 					   block->fw_paging_phys,
 					   block->fw_paging_size,
@@ -261,16 +231,30 @@ static int iwl_fill_paging_mem(struct iwl_fw_runtime *fwrt,
 
 		IWL_DEBUG_FW(fwrt,
 			     "Paging: copied %d paging bytes to block %d\n",
-			     len, idx);
+			     fwrt->fw_paging_db[idx].fw_paging_size,
+			     idx);
 
-		offset += block->fw_paging_size;
+		offset += fwrt->fw_paging_db[idx].fw_paging_size;
+	}
+
+	/* copy the last paging block */
+	if (fwrt->num_of_pages_in_last_blk > 0) {
+		struct iwl_fw_paging *block = &fwrt->fw_paging_db[idx];
+
+		memcpy(page_address(block->fw_paging_block),
+		       image->sec[sec_idx].data + offset,
+		       FW_PAGING_SIZE * fwrt->num_of_pages_in_last_blk);
+		dma_sync_single_for_device(fwrt->trans->dev,
+					   block->fw_paging_phys,
+					   block->fw_paging_size,
+					   DMA_BIDIRECTIONAL);
+
+		IWL_DEBUG_FW(fwrt,
+			     "Paging: copied %d pages in the last block %d\n",
+			     fwrt->num_of_pages_in_last_blk, idx);
 	}
 
 	return 0;
-
-err:
-	iwl_free_fw_paging(fwrt);
-	return ret;
 }
 
 static int iwl_save_fw_paging(struct iwl_fw_runtime *fwrt,

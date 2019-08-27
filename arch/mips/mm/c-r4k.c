@@ -459,28 +459,11 @@ static void r4k_blast_scache_setup(void)
 		r4k_blast_scache = blast_scache128;
 }
 
-static void (*r4k_blast_scache_node)(long node);
-
-static void r4k_blast_scache_node_setup(void)
-{
-	unsigned long sc_lsize = cpu_scache_line_size();
-
-	if (current_cpu_type() != CPU_LOONGSON3)
-		r4k_blast_scache_node = (void *)cache_noop;
-	else if (sc_lsize == 16)
-		r4k_blast_scache_node = blast_scache16_node;
-	else if (sc_lsize == 32)
-		r4k_blast_scache_node = blast_scache32_node;
-	else if (sc_lsize == 64)
-		r4k_blast_scache_node = blast_scache64_node;
-	else if (sc_lsize == 128)
-		r4k_blast_scache_node = blast_scache128_node;
-}
-
 static inline void local_r4k___flush_cache_all(void * args)
 {
 	switch (current_cpu_type()) {
 	case CPU_LOONGSON2:
+	case CPU_LOONGSON3:
 	case CPU_R4000SC:
 	case CPU_R4000MC:
 	case CPU_R4400SC:
@@ -495,11 +478,6 @@ static inline void local_r4k___flush_cache_all(void * args)
 		 * in one of the primary caches.
 		 */
 		r4k_blast_scache();
-		break;
-
-	case CPU_LOONGSON3:
-		/* Use get_ebase_cpunum() for both NUMA=y/n */
-		r4k_blast_scache_node(get_ebase_cpunum() >> 2);
 		break;
 
 	case CPU_BMIPS5000:
@@ -852,24 +830,19 @@ static void r4k_flush_icache_user_range(unsigned long start, unsigned long end)
 	return __r4k_flush_icache_range(start, end, true);
 }
 
-#ifdef CONFIG_DMA_NONCOHERENT
+#if defined(CONFIG_DMA_NONCOHERENT) || defined(CONFIG_DMA_MAYBE_COHERENT)
 
 static void r4k_dma_cache_wback_inv(unsigned long addr, unsigned long size)
 {
 	/* Catch bad driver code */
-	if (WARN_ON(size == 0))
-		return;
+	BUG_ON(size == 0);
 
 	preempt_disable();
 	if (cpu_has_inclusive_pcaches) {
-		if (size >= scache_size) {
-			if (current_cpu_type() != CPU_LOONGSON3)
-				r4k_blast_scache();
-			else
-				r4k_blast_scache_node(pa_to_nid(addr));
-		} else {
+		if (size >= scache_size)
+			r4k_blast_scache();
+		else
 			blast_scache_range(addr, addr + size);
-		}
 		preempt_enable();
 		__sync();
 		return;
@@ -878,12 +851,9 @@ static void r4k_dma_cache_wback_inv(unsigned long addr, unsigned long size)
 	/*
 	 * Either no secondary cache or the available caches don't have the
 	 * subset property so we have to flush the primary caches
-	 * explicitly.
-	 * If we would need IPI to perform an INDEX-type operation, then
-	 * we have to use the HIT-type alternative as IPI cannot be used
-	 * here due to interrupts possibly being disabled.
+	 * explicitly
 	 */
-	if (!r4k_op_needs_ipi(R4K_INDEX) && size >= dcache_size) {
+	if (size >= dcache_size) {
 		r4k_blast_dcache();
 	} else {
 		R4600_HIT_CACHEOP_WAR_IMPL;
@@ -898,17 +868,13 @@ static void r4k_dma_cache_wback_inv(unsigned long addr, unsigned long size)
 static void r4k_dma_cache_inv(unsigned long addr, unsigned long size)
 {
 	/* Catch bad driver code */
-	if (WARN_ON(size == 0))
-		return;
+	BUG_ON(size == 0);
 
 	preempt_disable();
 	if (cpu_has_inclusive_pcaches) {
-		if (size >= scache_size) {
-			if (current_cpu_type() != CPU_LOONGSON3)
-				r4k_blast_scache();
-			else
-				r4k_blast_scache_node(pa_to_nid(addr));
-		} else {
+		if (size >= scache_size)
+			r4k_blast_scache();
+		else {
 			/*
 			 * There is no clearly documented alignment requirement
 			 * for the cache instruction on MIPS processors and
@@ -924,7 +890,7 @@ static void r4k_dma_cache_inv(unsigned long addr, unsigned long size)
 		return;
 	}
 
-	if (!r4k_op_needs_ipi(R4K_INDEX) && size >= dcache_size) {
+	if (size >= dcache_size) {
 		r4k_blast_dcache();
 	} else {
 		R4600_HIT_CACHEOP_WAR_IMPL;
@@ -935,7 +901,7 @@ static void r4k_dma_cache_inv(unsigned long addr, unsigned long size)
 	bc_inv(addr, size);
 	__sync();
 }
-#endif /* CONFIG_DMA_NONCOHERENT */
+#endif /* CONFIG_DMA_NONCOHERENT || CONFIG_DMA_MAYBE_COHERENT */
 
 struct flush_cache_sigtramp_args {
 	struct mm_struct *mm;
@@ -1280,7 +1246,6 @@ static void probe_pcache(void)
 
 	case CPU_VR4133:
 		write_c0_config(config & ~VR41_CONF_P4K);
-		/* fall through */
 	case CPU_VR4131:
 		/* Workaround for cache instruction bug of VR4131 */
 		if (c->processor_id == 0x0c80U || c->processor_id == 0x0c81U ||
@@ -1382,7 +1347,7 @@ static void probe_pcache(void)
 					  c->dcache.ways *
 					  c->dcache.linesz;
 		c->dcache.waybit = 0;
-		if ((prid & PRID_REV_MASK) >= PRID_REV_LOONGSON3A_R2_0)
+		if ((prid & PRID_REV_MASK) >= PRID_REV_LOONGSON3A_R2)
 			c->options |= MIPS_CPU_PREFETCH;
 		break;
 
@@ -1528,7 +1493,6 @@ static void probe_pcache(void)
 			c->dcache.flags |= MIPS_CACHE_PINDEX;
 			break;
 		}
-		/* fall through */
 	default:
 		if (has_74k_erratum || c->dcache.waysize > PAGE_SIZE)
 			c->dcache.flags |= MIPS_CACHE_ALIASES;
@@ -1537,14 +1501,6 @@ static void probe_pcache(void)
 	/* Physically indexed caches don't suffer from virtual aliasing */
 	if (c->dcache.flags & MIPS_CACHE_PINDEX)
 		c->dcache.flags &= ~MIPS_CACHE_ALIASES;
-
-	/*
-	 * In systems with CM the icache fills from L2 or closer caches, and
-	 * thus sees remote stores without needing to write them back any
-	 * further than that.
-	 */
-	if (mips_cm_present())
-		c->icache.flags |= MIPS_IC_SNOOPS_REMOTE;
 
 	switch (current_cpu_type()) {
 	case CPU_20KC:
@@ -1949,7 +1905,6 @@ void r4k_cache_init(void)
 	r4k_blast_scache_page_setup();
 	r4k_blast_scache_page_indexed_setup();
 	r4k_blast_scache_setup();
-	r4k_blast_scache_node_setup();
 #ifdef CONFIG_EVA
 	r4k_blast_dcache_user_page_setup();
 	r4k_blast_icache_user_page_setup();
@@ -1987,21 +1942,22 @@ void r4k_cache_init(void)
 	__flush_icache_user_range	= r4k_flush_icache_user_range;
 	__local_flush_icache_user_range	= local_r4k_flush_icache_user_range;
 
-#ifdef CONFIG_DMA_NONCOHERENT
-#ifdef CONFIG_DMA_MAYBE_COHERENT
-	if (coherentio == IO_COHERENCE_ENABLED ||
-	    (coherentio == IO_COHERENCE_DEFAULT && hw_coherentio)) {
+#if defined(CONFIG_DMA_NONCOHERENT) || defined(CONFIG_DMA_MAYBE_COHERENT)
+# if defined(CONFIG_DMA_PERDEV_COHERENT)
+	if (0) {
+# else
+	if ((coherentio == IO_COHERENCE_ENABLED) ||
+	    ((coherentio == IO_COHERENCE_DEFAULT) && hw_coherentio)) {
+# endif
 		_dma_cache_wback_inv	= (void *)cache_noop;
 		_dma_cache_wback	= (void *)cache_noop;
 		_dma_cache_inv		= (void *)cache_noop;
-	} else
-#endif /* CONFIG_DMA_MAYBE_COHERENT */
-	{
+	} else {
 		_dma_cache_wback_inv	= r4k_dma_cache_wback_inv;
 		_dma_cache_wback	= r4k_dma_cache_wback_inv;
 		_dma_cache_inv		= r4k_dma_cache_inv;
 	}
-#endif /* CONFIG_DMA_NONCOHERENT */
+#endif
 
 	build_clear_page();
 	build_copy_page();

@@ -23,8 +23,6 @@
 #ifndef __ASM_ASSEMBLER_H
 #define __ASM_ASSEMBLER_H
 
-#include <asm-generic/export.h>
-
 #include <asm/asm-offsets.h>
 #include <asm/cpufeature.h>
 #include <asm/debug-monitors.h>
@@ -125,19 +123,6 @@
 	.endm
 
 /*
- * Speculation barrier
- */
-	.macro	sb
-alternative_if_not ARM64_HAS_SB
-	dsb	nsh
-	isb
-alternative_else
-	SB_BARRIER_INSN
-	nop
-alternative_endif
-	.endm
-
-/*
  * Sanitise a 64-bit bounded index wrt speculation, returning zero if out
  * of bounds.
  */
@@ -217,15 +202,25 @@ lr	.req	x30		// link register
 
 /*
  * Pseudo-ops for PC-relative adr/ldr/str <reg>, <symbol> where
- * <symbol> is within the range +/- 4 GB of the PC.
+ * <symbol> is within the range +/- 4 GB of the PC when running
+ * in core kernel context. In module context, a movz/movk sequence
+ * is used, since modules may be loaded far away from the kernel
+ * when KASLR is in effect.
  */
 	/*
 	 * @dst: destination register (64 bit wide)
 	 * @sym: name of the symbol
 	 */
 	.macro	adr_l, dst, sym
+#ifndef MODULE
 	adrp	\dst, \sym
 	add	\dst, \dst, :lo12:\sym
+#else
+	movz	\dst, #:abs_g3:\sym
+	movk	\dst, #:abs_g2_nc:\sym
+	movk	\dst, #:abs_g1_nc:\sym
+	movk	\dst, #:abs_g0_nc:\sym
+#endif
 	.endm
 
 	/*
@@ -236,6 +231,7 @@ lr	.req	x30		// link register
 	 *       the address
 	 */
 	.macro	ldr_l, dst, sym, tmp=
+#ifndef MODULE
 	.ifb	\tmp
 	adrp	\dst, \sym
 	ldr	\dst, [\dst, :lo12:\sym]
@@ -243,6 +239,15 @@ lr	.req	x30		// link register
 	adrp	\tmp, \sym
 	ldr	\dst, [\tmp, :lo12:\sym]
 	.endif
+#else
+	.ifb	\tmp
+	adr_l	\dst, \sym
+	ldr	\dst, [\dst]
+	.else
+	adr_l	\tmp, \sym
+	ldr	\dst, [\tmp]
+	.endif
+#endif
 	.endm
 
 	/*
@@ -252,18 +257,28 @@ lr	.req	x30		// link register
 	 *       while <src> needs to be preserved.
 	 */
 	.macro	str_l, src, sym, tmp
+#ifndef MODULE
 	adrp	\tmp, \sym
 	str	\src, [\tmp, :lo12:\sym]
+#else
+	adr_l	\tmp, \sym
+	str	\src, [\tmp]
+#endif
 	.endm
 
 	/*
-	 * @dst: Result of per_cpu(sym, smp_processor_id()) (can be SP)
+	 * @dst: Result of per_cpu(sym, smp_processor_id()), can be SP for
+	 *       non-module code
 	 * @sym: The name of the per-cpu variable
 	 * @tmp: scratch register
 	 */
 	.macro adr_this_cpu, dst, sym, tmp
+#ifndef MODULE
 	adrp	\tmp, \sym
 	add	\dst, \tmp, #:lo12:\sym
+#else
+	adr_l	\dst, \sym
+#endif
 alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 	mrs	\tmp, tpidr_el1
 alternative_else
@@ -301,11 +316,12 @@ alternative_endif
 	ldr	\rd, [\rn, #MM_CONTEXT_ID]
 	.endm
 /*
- * read_ctr - read CTR_EL0. If the system has mismatched register fields,
- * provide the system wide safe value from arm64_ftr_reg_ctrel0.sys_val
+ * read_ctr - read CTR_EL0. If the system has mismatched
+ * cache line sizes, provide the system wide safe value
+ * from arm64_ftr_reg_ctrel0.sys_val
  */
 	.macro	read_ctr, reg
-alternative_if_not ARM64_MISMATCHED_CACHE_TYPE
+alternative_if_not ARM64_MISMATCHED_CACHE_LINE_SIZE
 	mrs	\reg, ctr_el0			// read CTR
 	nop
 alternative_else
@@ -357,10 +373,11 @@ alternative_endif
 	.endm
 
 /*
- * tcr_set_t0sz - update TCR.T0SZ so that we can load the ID map
+ * tcr_set_idmap_t0sz - update TCR.T0SZ so that we can load the ID map
  */
-	.macro	tcr_set_t0sz, valreg, t0sz
-	bfi	\valreg, \t0sz, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
+	.macro	tcr_set_idmap_t0sz, valreg, tmpreg
+	ldr_l	\tmpreg, idmap_t0sz
+	bfi	\valreg, \tmpreg, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
 	.endm
 
 /*
@@ -391,32 +408,26 @@ alternative_endif
  * 	size:		size of the region
  * 	Corrupts:	kaddr, size, tmp1, tmp2
  */
-	.macro __dcache_op_workaround_clean_cache, op, kaddr
-alternative_if_not ARM64_WORKAROUND_CLEAN_CACHE
-	dc	\op, \kaddr
-alternative_else
-	dc	civac, \kaddr
-alternative_endif
-	.endm
-
 	.macro dcache_by_line_op op, domain, kaddr, size, tmp1, tmp2
 	dcache_line_size \tmp1, \tmp2
 	add	\size, \kaddr, \size
 	sub	\tmp2, \tmp1, #1
 	bic	\kaddr, \kaddr, \tmp2
 9998:
-	.ifc	\op, cvau
-	__dcache_op_workaround_clean_cache \op, \kaddr
-	.else
-	.ifc	\op, cvac
-	__dcache_op_workaround_clean_cache \op, \kaddr
-	.else
-	.ifc	\op, cvap
-	sys	3, c7, c12, 1, \kaddr	// dc cvap
+	.if	(\op == cvau || \op == cvac)
+alternative_if_not ARM64_WORKAROUND_CLEAN_CACHE
+	dc	\op, \kaddr
+alternative_else
+	dc	civac, \kaddr
+alternative_endif
+	.elseif	(\op == cvap)
+alternative_if ARM64_HAS_DCPOP
+	sys 3, c7, c12, 1, \kaddr	// dc cvap
+alternative_else
+	dc	cvac, \kaddr
+alternative_endif
 	.else
 	dc	\op, \kaddr
-	.endif
-	.endif
 	.endif
 	add	\kaddr, \kaddr, \tmp1
 	cmp	\kaddr, \size
@@ -497,13 +508,6 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
 #else
 #define NOKPROBE(x)
 #endif
-
-#ifdef CONFIG_KASAN
-#define EXPORT_SYMBOL_NOKASAN(name)
-#else
-#define EXPORT_SYMBOL_NOKASAN(name)	EXPORT_SYMBOL(name)
-#endif
-
 	/*
 	 * Emit a 64-bit absolute little endian symbol reference in a way that
 	 * ensures that it will be resolved at build time, even when building a
@@ -540,29 +544,6 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
  */
 	.macro	get_thread_info, rd
 	mrs	\rd, sp_el0
-	.endm
-
-/*
- * Offset ttbr1 to allow for 48-bit kernel VAs set with 52-bit PTRS_PER_PGD.
- * orr is used as it can cover the immediate value (and is idempotent).
- * In future this may be nop'ed out when dealing with 52-bit kernel VAs.
- * 	ttbr: Value of ttbr to set, modified.
- */
-	.macro	offset_ttbr1, ttbr
-#ifdef CONFIG_ARM64_USER_VA_BITS_52
-	orr	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
-#endif
-	.endm
-
-/*
- * Perform the reverse of offset_ttbr1.
- * bic is used as it can cover the immediate value and, in future, won't need
- * to be nop'ed out when dealing with 52-bit kernel VAs.
- */
-	.macro	restore_ttbr1, ttbr
-#ifdef CONFIG_ARM64_USER_VA_BITS_52
-	bic	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
-#endif
 	.endm
 
 /*
@@ -612,140 +593,6 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
 #ifdef CONFIG_QCOM_FALKOR_ERRATUM_E1041
 	isb
 #endif
-	.endm
-
-	/*
-	 * frame_push - Push @regcount callee saved registers to the stack,
-	 *              starting at x19, as well as x29/x30, and set x29 to
-	 *              the new value of sp. Add @extra bytes of stack space
-	 *              for locals.
-	 */
-	.macro		frame_push, regcount:req, extra
-	__frame		st, \regcount, \extra
-	.endm
-
-	/*
-	 * frame_pop  - Pop the callee saved registers from the stack that were
-	 *              pushed in the most recent call to frame_push, as well
-	 *              as x29/x30 and any extra stack space that may have been
-	 *              allocated.
-	 */
-	.macro		frame_pop
-	__frame		ld
-	.endm
-
-	.macro		__frame_regs, reg1, reg2, op, num
-	.if		.Lframe_regcount == \num
-	\op\()r		\reg1, [sp, #(\num + 1) * 8]
-	.elseif		.Lframe_regcount > \num
-	\op\()p		\reg1, \reg2, [sp, #(\num + 1) * 8]
-	.endif
-	.endm
-
-	.macro		__frame, op, regcount, extra=0
-	.ifc		\op, st
-	.if		(\regcount) < 0 || (\regcount) > 10
-	.error		"regcount should be in the range [0 ... 10]"
-	.endif
-	.if		((\extra) % 16) != 0
-	.error		"extra should be a multiple of 16 bytes"
-	.endif
-	.ifdef		.Lframe_regcount
-	.if		.Lframe_regcount != -1
-	.error		"frame_push/frame_pop may not be nested"
-	.endif
-	.endif
-	.set		.Lframe_regcount, \regcount
-	.set		.Lframe_extra, \extra
-	.set		.Lframe_local_offset, ((\regcount + 3) / 2) * 16
-	stp		x29, x30, [sp, #-.Lframe_local_offset - .Lframe_extra]!
-	mov		x29, sp
-	.endif
-
-	__frame_regs	x19, x20, \op, 1
-	__frame_regs	x21, x22, \op, 3
-	__frame_regs	x23, x24, \op, 5
-	__frame_regs	x25, x26, \op, 7
-	__frame_regs	x27, x28, \op, 9
-
-	.ifc		\op, ld
-	.if		.Lframe_regcount == -1
-	.error		"frame_push/frame_pop may not be nested"
-	.endif
-	ldp		x29, x30, [sp], #.Lframe_local_offset + .Lframe_extra
-	.set		.Lframe_regcount, -1
-	.endif
-	.endm
-
-/*
- * Check whether to yield to another runnable task from kernel mode NEON code
- * (which runs with preemption disabled).
- *
- * if_will_cond_yield_neon
- *        // pre-yield patchup code
- * do_cond_yield_neon
- *        // post-yield patchup code
- * endif_yield_neon    <label>
- *
- * where <label> is optional, and marks the point where execution will resume
- * after a yield has been performed. If omitted, execution resumes right after
- * the endif_yield_neon invocation. Note that the entire sequence, including
- * the provided patchup code, will be omitted from the image if CONFIG_PREEMPT
- * is not defined.
- *
- * As a convenience, in the case where no patchup code is required, the above
- * sequence may be abbreviated to
- *
- * cond_yield_neon <label>
- *
- * Note that the patchup code does not support assembler directives that change
- * the output section, any use of such directives is undefined.
- *
- * The yield itself consists of the following:
- * - Check whether the preempt count is exactly 1, in which case disabling
- *   preemption once will make the task preemptible. If this is not the case,
- *   yielding is pointless.
- * - Check whether TIF_NEED_RESCHED is set, and if so, disable and re-enable
- *   kernel mode NEON (which will trigger a reschedule), and branch to the
- *   yield fixup code.
- *
- * This macro sequence may clobber all CPU state that is not guaranteed by the
- * AAPCS to be preserved across an ordinary function call.
- */
-
-	.macro		cond_yield_neon, lbl
-	if_will_cond_yield_neon
-	do_cond_yield_neon
-	endif_yield_neon	\lbl
-	.endm
-
-	.macro		if_will_cond_yield_neon
-#ifdef CONFIG_PREEMPT
-	get_thread_info	x0
-	ldr		x0, [x0, #TSK_TI_PREEMPT]
-	sub		x0, x0, #PREEMPT_DISABLE_OFFSET
-	cbz		x0, .Lyield_\@
-	/* fall through to endif_yield_neon */
-	.subsection	1
-.Lyield_\@ :
-#else
-	.section	".discard.cond_yield_neon", "ax"
-#endif
-	.endm
-
-	.macro		do_cond_yield_neon
-	bl		kernel_neon_end
-	bl		kernel_neon_begin
-	.endm
-
-	.macro		endif_yield_neon, lbl
-	.ifnb		\lbl
-	b		\lbl
-	.else
-	b		.Lyield_out_\@
-	.endif
-	.previous
-.Lyield_out_\@ :
 	.endm
 
 #endif	/* __ASM_ASSEMBLER_H */

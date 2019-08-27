@@ -176,7 +176,7 @@ static int efi_read_time(struct device *dev, struct rtc_time *tm)
 	if (!convert_from_efi_time(&eft, tm))
 		return -EIO;
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int efi_set_time(struct device *dev, struct rtc_time *tm)

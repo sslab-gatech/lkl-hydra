@@ -1,16 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * XPower AXP288 PMIC operation region driver
+ * intel_pmic_xpower.c - XPower AXP288 PMIC operation region driver
  *
  * Copyright (C) 2014 Intel Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License version
+ * 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
-#include <linux/acpi.h>
 #include <linux/init.h>
+#include <linux/acpi.h>
 #include <linux/mfd/axp20x.h>
 #include <linux/regmap.h>
 #include <linux/platform_device.h>
-#include <asm/iosf_mbi.h>
 #include "intel_pmic.h"
 
 #define XPOWER_GPADC_LOW	0x5b
@@ -20,11 +27,8 @@
 #define GPI1_LDO_ON		(3 << 0)
 #define GPI1_LDO_OFF		(4 << 0)
 
-#define AXP288_ADC_TS_CURRENT_ON_OFF_MASK		GENMASK(1, 0)
-#define AXP288_ADC_TS_CURRENT_OFF			(0 << 0)
-#define AXP288_ADC_TS_CURRENT_ON_WHEN_CHARGING		(1 << 0)
-#define AXP288_ADC_TS_CURRENT_ON_ONDEMAND		(2 << 0)
-#define AXP288_ADC_TS_CURRENT_ON			(3 << 0)
+#define AXP288_ADC_TS_PIN_GPADC	0xf2
+#define AXP288_ADC_TS_PIN_ON	0xf3
 
 static struct pmic_table power_table[] = {
 	{
@@ -176,21 +180,15 @@ static int intel_xpower_pmic_get_power(struct regmap *regmap, int reg,
 static int intel_xpower_pmic_update_power(struct regmap *regmap, int reg,
 					  int bit, bool on)
 {
-	int data, ret;
+	int data;
 
 	/* GPIO1 LDO regulator needs special handling */
 	if (reg == XPOWER_GPI1_CTRL)
 		return regmap_update_bits(regmap, reg, GPI1_LDO_MASK,
 					  on ? GPI1_LDO_ON : GPI1_LDO_OFF);
 
-	ret = iosf_mbi_block_punit_i2c_access();
-	if (ret)
-		return ret;
-
-	if (regmap_read(regmap, reg, &data)) {
-		ret = -EIO;
-		goto out;
-	}
+	if (regmap_read(regmap, reg, &data))
+		return -EIO;
 
 	if (on)
 		data |= BIT(bit);
@@ -198,11 +196,9 @@ static int intel_xpower_pmic_update_power(struct regmap *regmap, int reg,
 		data &= ~BIT(bit);
 
 	if (regmap_write(regmap, reg, data))
-		ret = -EIO;
-out:
-	iosf_mbi_unblock_punit_i2c_access();
+		return -EIO;
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -215,44 +211,22 @@ out:
  */
 static int intel_xpower_pmic_get_raw_temp(struct regmap *regmap, int reg)
 {
-	int ret, adc_ts_pin_ctrl;
 	u8 buf[2];
+	int ret;
 
-	/*
-	 * The current-source used for the battery temp-sensor (TS) is shared
-	 * with the GPADC. For proper fuel-gauge and charger operation the TS
-	 * current-source needs to be permanently on. But to read the GPADC we
-	 * need to temporary switch the TS current-source to ondemand, so that
-	 * the GPADC can use it, otherwise we will always read an all 0 value.
-	 *
-	 * Note that the switching from on to on-ondemand is not necessary
-	 * when the TS current-source is off (this happens on devices which
-	 * do not use the TS-pin).
-	 */
-	ret = regmap_read(regmap, AXP288_ADC_TS_PIN_CTRL, &adc_ts_pin_ctrl);
+	ret = regmap_write(regmap, AXP288_ADC_TS_PIN_CTRL,
+			   AXP288_ADC_TS_PIN_GPADC);
 	if (ret)
 		return ret;
 
-	if (adc_ts_pin_ctrl & AXP288_ADC_TS_CURRENT_ON_OFF_MASK) {
-		ret = regmap_update_bits(regmap, AXP288_ADC_TS_PIN_CTRL,
-					 AXP288_ADC_TS_CURRENT_ON_OFF_MASK,
-					 AXP288_ADC_TS_CURRENT_ON_ONDEMAND);
-		if (ret)
-			return ret;
-
-		/* Wait a bit after switching the current-source */
-		usleep_range(6000, 10000);
-	}
+	/* After switching to the GPADC pin give things some time to settle */
+	usleep_range(6000, 10000);
 
 	ret = regmap_bulk_read(regmap, AXP288_GP_ADC_H, buf, 2);
 	if (ret == 0)
 		ret = (buf[0] << 4) + ((buf[1] >> 4) & 0x0f);
 
-	if (adc_ts_pin_ctrl & AXP288_ADC_TS_CURRENT_ON_OFF_MASK) {
-		regmap_update_bits(regmap, AXP288_ADC_TS_PIN_CTRL,
-				   AXP288_ADC_TS_CURRENT_ON_OFF_MASK,
-				   AXP288_ADC_TS_CURRENT_ON);
-	}
+	regmap_write(regmap, AXP288_ADC_TS_PIN_CTRL, AXP288_ADC_TS_PIN_ON);
 
 	return ret;
 }

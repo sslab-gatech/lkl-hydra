@@ -26,7 +26,6 @@
 #include <linux/syscalls.h>
 #include <linux/rcupdate.h>
 #include <linux/binfmts.h>
-#include <linux/syscalls.h>
 
 #include <asm/spu.h>
 
@@ -91,7 +90,7 @@ SYSCALL_DEFINE4(spu_create, const char __user *, name, unsigned int, flags,
 	return ret;
 }
 
-SYSCALL_DEFINE3(spu_run,int, fd, __u32 __user *, unpc, __u32 __user *, ustatus)
+asmlinkage long sys_spu_run(int fd, __u32 __user *unpc, __u32 __user *ustatus)
 {
 	long ret;
 	struct fd arg;

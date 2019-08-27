@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 /*
  * Atari Falcon PATA controller driver
  *
@@ -9,6 +7,10 @@
  * Based on falconide.c:
  *
  *     Created 12 Jul 1997 by Geert Uytterhoeven
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #include <linux/kernel.h>
@@ -178,5 +180,5 @@ module_init(pata_falcon_init_one);
 
 MODULE_AUTHOR("Bartlomiej Zolnierkiewicz");
 MODULE_DESCRIPTION("low-level driver for Atari Falcon PATA");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);

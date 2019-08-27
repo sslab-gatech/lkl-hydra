@@ -149,8 +149,8 @@ nfnl_cthelper_expect_policy(struct nf_conntrack_expect_policy *expect_policy,
 	    !tb[NFCTH_POLICY_EXPECT_TIMEOUT])
 		return -EINVAL;
 
-	nla_strlcpy(expect_policy->name,
-		    tb[NFCTH_POLICY_NAME], NF_CT_HELPER_NAME_LEN);
+	strncpy(expect_policy->name,
+		nla_data(tb[NFCTH_POLICY_NAME]), NF_CT_HELPER_NAME_LEN);
 	expect_policy->max_expected =
 		ntohl(nla_get_be32(tb[NFCTH_POLICY_EXPECT_MAX]));
 	if (expect_policy->max_expected > NF_CT_EXPECT_MAX_CNT)
@@ -190,9 +190,8 @@ nfnl_cthelper_parse_expect_policy(struct nf_conntrack_helper *helper,
 	if (class_max > NF_CT_MAX_EXPECT_CLASSES)
 		return -EOVERFLOW;
 
-	expect_policy = kcalloc(class_max,
-				sizeof(struct nf_conntrack_expect_policy),
-				GFP_KERNEL);
+	expect_policy = kzalloc(sizeof(struct nf_conntrack_expect_policy) *
+				class_max, GFP_KERNEL);
 	if (expect_policy == NULL)
 		return -ENOMEM;
 
@@ -235,8 +234,7 @@ nfnl_cthelper_create(const struct nlattr * const tb[],
 	if (ret < 0)
 		goto err1;
 
-	nla_strlcpy(helper->name,
-		    tb[NFCTH_NAME], NF_CT_HELPER_NAME_LEN);
+	strncpy(helper->name, nla_data(tb[NFCTH_NAME]), NF_CT_HELPER_NAME_LEN);
 	size = ntohl(nla_get_be32(tb[NFCTH_PRIV_DATA_LEN]));
 	if (size > FIELD_SIZEOF(struct nf_conn_help, data)) {
 		ret = -ENOMEM;
@@ -316,30 +314,23 @@ nfnl_cthelper_update_policy_one(const struct nf_conntrack_expect_policy *policy,
 static int nfnl_cthelper_update_policy_all(struct nlattr *tb[],
 					   struct nf_conntrack_helper *helper)
 {
-	struct nf_conntrack_expect_policy *new_policy;
+	struct nf_conntrack_expect_policy new_policy[helper->expect_class_max + 1];
 	struct nf_conntrack_expect_policy *policy;
-	int i, ret = 0;
-
-	new_policy = kmalloc_array(helper->expect_class_max + 1,
-				   sizeof(*new_policy), GFP_KERNEL);
-	if (!new_policy)
-		return -ENOMEM;
+	int i, err;
 
 	/* Check first that all policy attributes are well-formed, so we don't
 	 * leave things in inconsistent state on errors.
 	 */
 	for (i = 0; i < helper->expect_class_max + 1; i++) {
 
-		if (!tb[NFCTH_POLICY_SET + i]) {
-			ret = -EINVAL;
-			goto err;
-		}
+		if (!tb[NFCTH_POLICY_SET + i])
+			return -EINVAL;
 
-		ret = nfnl_cthelper_update_policy_one(&helper->expect_policy[i],
+		err = nfnl_cthelper_update_policy_one(&helper->expect_policy[i],
 						      &new_policy[i],
 						      tb[NFCTH_POLICY_SET + i]);
-		if (ret < 0)
-			goto err;
+		if (err < 0)
+			return err;
 	}
 	/* Now we can safely update them. */
 	for (i = 0; i < helper->expect_class_max + 1; i++) {
@@ -349,9 +340,7 @@ static int nfnl_cthelper_update_policy_all(struct nlattr *tb[],
 		policy->timeout	= new_policy->timeout;
 	}
 
-err:
-	kfree(new_policy);
-	return ret;
+	return 0;
 }
 
 static int nfnl_cthelper_update_policy(struct nf_conntrack_helper *helper,

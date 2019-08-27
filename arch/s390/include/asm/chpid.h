@@ -9,7 +9,7 @@
 #include <uapi/asm/chpid.h>
 #include <asm/cio.h>
 
-struct channel_path_desc_fmt0 {
+struct channel_path_desc {
 	u8 flags;
 	u8 lsn;
 	u8 desc;

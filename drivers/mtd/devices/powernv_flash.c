@@ -175,11 +175,19 @@ static int powernv_flash_erase(struct mtd_info *mtd, struct erase_info *erase)
 {
 	int rc;
 
+	erase->state = MTD_ERASING;
+
+	/* todo: register our own notifier to do a true async implementation */
 	rc =  powernv_flash_async_op(mtd, FLASH_OP_ERASE, erase->addr,
 			erase->len, NULL, NULL);
-	if (rc)
-		erase->fail_addr = erase->addr;
 
+	if (rc) {
+		erase->fail_addr = erase->addr;
+		erase->state = MTD_ERASE_FAILED;
+	} else {
+		erase->state = MTD_ERASE_DONE;
+	}
+	mtd_erase_callback(erase);
 	return rc;
 }
 
@@ -212,7 +220,7 @@ static int powernv_flash_set_driver_info(struct device *dev,
 	 * Going to have to check what details I need to set and how to
 	 * get them
 	 */
-	mtd->name = devm_kasprintf(dev, GFP_KERNEL, "%pOFP", dev->of_node);
+	mtd->name = of_get_property(dev->of_node, "name", NULL);
 	mtd->type = MTD_NORFLASH;
 	mtd->flags = MTD_WRITEABLE;
 	mtd->size = size;
@@ -223,7 +231,6 @@ static int powernv_flash_set_driver_info(struct device *dev,
 	mtd->_read = powernv_flash_read;
 	mtd->_write = powernv_flash_write;
 	mtd->dev.parent = dev;
-	mtd_set_of_node(mtd, dev->of_node);
 	return 0;
 }
 

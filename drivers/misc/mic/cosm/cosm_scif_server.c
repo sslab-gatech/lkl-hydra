@@ -179,13 +179,9 @@ static void cosm_set_crashed(struct cosm_device *cdev)
 static void cosm_send_time(struct cosm_device *cdev)
 {
 	struct cosm_msg msg = { .id = COSM_MSG_SYNC_TIME };
-	struct timespec64 ts;
 	int rc;
 
-	ktime_get_real_ts64(&ts);
-	msg.timespec.tv_sec = ts.tv_sec;
-	msg.timespec.tv_nsec = ts.tv_nsec;
-
+	getnstimeofday64(&msg.timespec);
 	rc = scif_send(cdev->epd, &msg, sizeof(msg), SCIF_SEND_BLOCK);
 	if (rc < 0)
 		dev_err(&cdev->dev, "%s %d scif_send failed rc %d\n",

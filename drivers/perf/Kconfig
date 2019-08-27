@@ -5,41 +5,6 @@
 menu "Performance monitor support"
 	depends on PERF_EVENTS
 
-config ARM_CCI_PMU
-	tristate "ARM CCI PMU driver"
-	depends on (ARM && CPU_V7) || ARM64
-	select ARM_CCI
-	help
-	  Support for PMU events monitoring on the ARM CCI (Cache Coherent
-	  Interconnect) family of products.
-
-	  If compiled as a module, it will be called arm-cci.
-
-config ARM_CCI400_PMU
-	bool "support CCI-400"
-	default y
-	depends on ARM_CCI_PMU
-	select ARM_CCI400_COMMON
-	help
-	  CCI-400 provides 4 independent event counters counting events related
-	  to the connected slave/master interfaces, plus a cycle counter.
-
-config ARM_CCI5xx_PMU
-	bool "support CCI-500/CCI-550"
-	default y
-	depends on ARM_CCI_PMU
-	help
-	  CCI-500/CCI-550 both provide 8 independent event counters, which can
-	  count events pertaining to the slave/master interfaces as well as the
-	  internal events to the CCI.
-
-config ARM_CCN
-	tristate "ARM CCN driver support"
-	depends on ARM || ARM64
-	help
-	  PMU (perf) driver supporting the ARM CCN (Cache Coherent Network)
-	  interconnect.
-
 config ARM_PMU
 	depends on ARM || ARM64
 	bool "ARM PMU framework"
@@ -87,15 +52,6 @@ config QCOM_L3_PMU
 	   Adds the L3 cache PMU into the perf events subsystem for
 	   monitoring L3 cache events.
 
-config THUNDERX2_PMU
-	tristate "Cavium ThunderX2 SoC PMU UNCORE"
-	depends on ARCH_THUNDER2 && ARM64 && ACPI && NUMA
-	default m
-	help
-	   Provides support for ThunderX2 UNCORE events.
-	   The SoC has PMU support in its L3 cache controller (L3C) and
-	   in the DDR4 Memory Controller (DMC).
-
 config XGENE_PMU
         depends on ARCH_XGENE
         bool "APM X-Gene SoC PMU"
@@ -105,7 +61,7 @@ config XGENE_PMU
 
 config ARM_SPE_PMU
 	tristate "Enable support for the ARMv8.2 Statistical Profiling Extension"
-	depends on ARM64
+	depends on PERF_EVENTS && ARM64
 	help
 	  Enable perf support for the ARMv8.2 Statistical Profiling
 	  Extension, which provides periodic sampling of operations in

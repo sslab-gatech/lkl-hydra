@@ -19,14 +19,20 @@
 	model = "Armadeus Systems APF27 module";
 	compatible = "armadeus,imx27-apf27", "fsl,imx27";
 
-	memory@a0000000 {
-		device_type = "memory";
+	memory {
 		reg = <0xa0000000 0x04000000>;
 	};
-};
 
-&clk_osc26m {
-	clock-frequency = <0>;
+	clocks {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		osc26m {
+			compatible = "fsl,imx-osc26m", "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <0>;
+		};
+	};
 };
 
 &iomuxc {

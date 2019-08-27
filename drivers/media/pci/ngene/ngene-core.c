@@ -51,6 +51,8 @@ MODULE_PARM_DESC(debug, "Print debugging information.");
 
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 
+#define dprintk	if (debug) printk
+
 #define ngwriteb(dat, adr)         writeb((dat), dev->iomem + (adr))
 #define ngwritel(dat, adr)         writel((dat), dev->iomem + (adr))
 #define ngwriteb(dat, adr)         writeb((dat), dev->iomem + (adr))
@@ -84,7 +86,6 @@ static void event_tasklet(unsigned long data)
 static void demux_tasklet(unsigned long data)
 {
 	struct ngene_channel *chan = (struct ngene_channel *)data;
-	struct device *pdev = &chan->dev->pci_dev->dev;
 	struct SBufferHeader *Cur = chan->nextBuffer;
 
 	spin_lock_irq(&chan->state_lock);
@@ -123,15 +124,16 @@ static void demux_tasklet(unsigned long data)
 					chan->HWState = HWSTATE_RUN;
 				}
 			} else {
-				dev_err(pdev, "OOPS\n");
+				printk(KERN_ERR DEVICE_NAME ": OOPS\n");
 				if (chan->HWState == HWSTATE_RUN) {
 					Cur->ngeneBuffer.SR.Flags &= ~0x40;
 					break;	/* Stop processing stream */
 				}
 			}
 			if (chan->AudioDTOUpdated) {
-				dev_info(pdev, "Update AudioDTO = %d\n",
-					 chan->AudioDTOValue);
+				printk(KERN_INFO DEVICE_NAME
+				       ": Update AudioDTO = %d\n",
+				       chan->AudioDTOValue);
 				Cur->ngeneBuffer.SR.DTOUpdate =
 					chan->AudioDTOValue;
 				chan->AudioDTOUpdated = 0;
@@ -171,7 +173,6 @@ static void demux_tasklet(unsigned long data)
 static irqreturn_t irq_handler(int irq, void *dev_id)
 {
 	struct ngene *dev = (struct ngene *)dev_id;
-	struct device *pdev = &dev->pci_dev->dev;
 	u32 icounts = 0;
 	irqreturn_t rc = IRQ_NONE;
 	u32 i = MAX_STREAM;
@@ -212,7 +213,7 @@ static irqreturn_t irq_handler(int irq, void *dev_id)
 				*(dev->EventBuffer);
 			dev->EventQueueWriteIndex = nextWriteIndex;
 		} else {
-			dev_err(pdev, "event overflow\n");
+			printk(KERN_ERR DEVICE_NAME ": event overflow\n");
 			dev->EventQueueOverflowCount += 1;
 			dev->EventQueueOverflowFlag = 1;
 		}
@@ -248,25 +249,23 @@ static irqreturn_t irq_handler(int irq, void *dev_id)
 
 static void dump_command_io(struct ngene *dev)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	u8 buf[8], *b;
 
 	ngcpyfrom(buf, HOST_TO_NGENE, 8);
-	dev_err(pdev, "host_to_ngene (%04x): %*ph\n", HOST_TO_NGENE, 8, buf);
+	printk(KERN_ERR "host_to_ngene (%04x): %*ph\n", HOST_TO_NGENE, 8, buf);
 
 	ngcpyfrom(buf, NGENE_TO_HOST, 8);
-	dev_err(pdev, "ngene_to_host (%04x): %*ph\n", NGENE_TO_HOST, 8, buf);
+	printk(KERN_ERR "ngene_to_host (%04x): %*ph\n", NGENE_TO_HOST, 8, buf);
 
 	b = dev->hosttongene;
-	dev_err(pdev, "dev->hosttongene (%p): %*ph\n", b, 8, b);
+	printk(KERN_ERR "dev->hosttongene (%p): %*ph\n", b, 8, b);
 
 	b = dev->ngenetohost;
-	dev_err(pdev, "dev->ngenetohost (%p): %*ph\n", b, 8, b);
+	printk(KERN_ERR "dev->ngenetohost (%p): %*ph\n", b, 8, b);
 }
 
 static int ngene_command_mutex(struct ngene *dev, struct ngene_command *com)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	int ret;
 	u8 *tmpCmdDoneByte;
 
@@ -314,8 +313,9 @@ static int ngene_command_mutex(struct ngene *dev, struct ngene_command *com)
 	if (!ret) {
 		/*ngwritel(0, FORCE_NMI);*/
 
-		dev_err(pdev, "Command timeout cmd=%02x prev=%02x\n",
-			com->cmd.hdr.Opcode, dev->prev_cmd);
+		printk(KERN_ERR DEVICE_NAME
+		       ": Command timeout cmd=%02x prev=%02x\n",
+		       com->cmd.hdr.Opcode, dev->prev_cmd);
 		dump_command_io(dev);
 		return -1;
 	}
@@ -553,7 +553,6 @@ static void clear_buffers(struct ngene_channel *chan)
 static int ngene_command_stream_control(struct ngene *dev, u8 stream,
 					u8 control, u8 mode, u8 flags)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	struct ngene_channel *chan = &dev->channel[stream];
 	struct ngene_command com;
 	u16 BsUVI = ((stream & 1) ? 0x9400 : 0x9300);
@@ -573,7 +572,8 @@ static int ngene_command_stream_control(struct ngene *dev, u8 stream,
 	com.in_len = sizeof(struct FW_STREAM_CONTROL);
 	com.out_len = 0;
 
-	dev_dbg(pdev, "Stream=%02x, Control=%02x, Mode=%02x\n",
+	dprintk(KERN_INFO DEVICE_NAME
+		": Stream=%02x, Control=%02x, Mode=%02x\n",
 		com.cmd.StreamControl.Stream, com.cmd.StreamControl.Control,
 		com.cmd.StreamControl.Mode);
 
@@ -695,24 +695,23 @@ static int ngene_command_stream_control(struct ngene *dev, u8 stream,
 
 void set_transfer(struct ngene_channel *chan, int state)
 {
-	struct device *pdev = &chan->dev->pci_dev->dev;
 	u8 control = 0, mode = 0, flags = 0;
 	struct ngene *dev = chan->dev;
 	int ret;
 
 	/*
-	dev_info(pdev, "st %d\n", state);
+	printk(KERN_INFO DEVICE_NAME ": st %d\n", state);
 	msleep(100);
 	*/
 
 	if (state) {
 		if (chan->running) {
-			dev_info(pdev, "already running\n");
+			printk(KERN_INFO DEVICE_NAME ": already running\n");
 			return;
 		}
 	} else {
 		if (!chan->running) {
-			dev_info(pdev, "already stopped\n");
+			printk(KERN_INFO DEVICE_NAME ": already stopped\n");
 			return;
 		}
 	}
@@ -723,7 +722,7 @@ void set_transfer(struct ngene_channel *chan, int state)
 	if (state) {
 		spin_lock_irq(&chan->state_lock);
 
-		/* dev_info(pdev, "lock=%08x\n",
+		/* printk(KERN_INFO DEVICE_NAME ": lock=%08x\n",
 			  ngreadl(0x9310)); */
 		dvb_ringbuffer_flush(&dev->tsout_rbuf);
 		control = 0x80;
@@ -741,7 +740,7 @@ void set_transfer(struct ngene_channel *chan, int state)
 			chan->pBufferExchange = tsin_exchange;
 		spin_unlock_irq(&chan->state_lock);
 	}
-		/* else dev_info(pdev, "lock=%08x\n",
+		/* else printk(KERN_INFO DEVICE_NAME ": lock=%08x\n",
 			   ngreadl(0x9310)); */
 
 	mutex_lock(&dev->stream_mutex);
@@ -752,7 +751,8 @@ void set_transfer(struct ngene_channel *chan, int state)
 	if (!ret)
 		chan->running = state;
 	else
-		dev_err(pdev, "%s %d failed\n", __func__, state);
+		printk(KERN_ERR DEVICE_NAME ": set_transfer %d failed\n",
+		       state);
 	if (!state) {
 		spin_lock_irq(&chan->state_lock);
 		chan->pBufferExchange = NULL;
@@ -1195,7 +1195,6 @@ static int ngene_get_buffers(struct ngene *dev)
 
 static void ngene_init(struct ngene *dev)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	int i;
 
 	tasklet_init(&dev->event_tasklet, event_tasklet, (unsigned long)dev);
@@ -1215,12 +1214,12 @@ static void ngene_init(struct ngene *dev)
 	dev->icounts = ngreadl(NGENE_INT_COUNTS);
 
 	dev->device_version = ngreadl(DEV_VER) & 0x0f;
-	dev_info(pdev, "Device version %d\n", dev->device_version);
+	printk(KERN_INFO DEVICE_NAME ": Device version %d\n",
+	       dev->device_version);
 }
 
 static int ngene_load_firm(struct ngene *dev)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	u32 size;
 	const struct firmware *fw = NULL;
 	u8 *ngene_fw;
@@ -1254,18 +1253,21 @@ static int ngene_load_firm(struct ngene *dev)
 	}
 
 	if (request_firmware(&fw, fw_name, &dev->pci_dev->dev) < 0) {
-		dev_err(pdev, "Could not load firmware file %s.\n", fw_name);
-		dev_info(pdev, "Copy %s to your hotplug directory!\n",
-			 fw_name);
+		printk(KERN_ERR DEVICE_NAME
+			": Could not load firmware file %s.\n", fw_name);
+		printk(KERN_INFO DEVICE_NAME
+			": Copy %s to your hotplug directory!\n", fw_name);
 		return -1;
 	}
 	if (size == 0)
 		size = fw->size;
 	if (size != fw->size) {
-		dev_err(pdev, "Firmware %s has invalid size!", fw_name);
+		printk(KERN_ERR DEVICE_NAME
+			": Firmware %s has invalid size!", fw_name);
 		err = -1;
 	} else {
-		dev_info(pdev, "Loading firmware file %s.\n", fw_name);
+		printk(KERN_INFO DEVICE_NAME
+			": Loading firmware file %s.\n", fw_name);
 		ngene_fw = (u8 *) fw->data;
 		err = ngene_command_load_firmware(dev, ngene_fw, size);
 	}
@@ -1358,14 +1360,14 @@ static int ngene_start(struct ngene *dev)
 #ifdef CONFIG_PCI_MSI
 	/* enable MSI if kernel and card support it */
 	if (pci_msi_enabled() && dev->card_info->msi_supported) {
-		struct device *pdev = &dev->pci_dev->dev;
 		unsigned long flags;
 
 		ngwritel(0, NGENE_INT_ENABLE);
 		free_irq(dev->pci_dev->irq, dev);
 		stat = pci_enable_msi(dev->pci_dev);
 		if (stat) {
-			dev_info(pdev, "MSI not available\n");
+			printk(KERN_INFO DEVICE_NAME
+				": MSI not available\n");
 			flags = IRQF_SHARED;
 		} else {
 			flags = 0;
@@ -1424,13 +1426,6 @@ static void release_channel(struct ngene_channel *chan)
 
 	if (chan->fe) {
 		dvb_unregister_frontend(chan->fe);
-
-		/* release I2C client (tuner) if needed */
-		if (chan->i2c_client_fe) {
-			dvb_module_release(chan->i2c_client[0]);
-			chan->i2c_client[0] = NULL;
-		}
-
 		dvb_frontend_detach(chan->fe);
 		chan->fe = NULL;
 	}
@@ -1466,7 +1461,6 @@ static int init_channel(struct ngene_channel *chan)
 	chan->users = 0;
 	chan->type = io;
 	chan->mode = chan->type;	/* for now only one mode */
-	chan->i2c_client_fe = 0;	/* be sure this is set to zero */
 
 	if (io & NGENE_IO_TSIN) {
 		chan->fe = NULL;
@@ -1568,46 +1562,19 @@ static int init_channels(struct ngene *dev)
 	return 0;
 }
 
-static const struct cxd2099_cfg cxd_cfgtmpl = {
+static struct cxd2099_cfg cxd_cfg = {
 	.bitrate = 62000,
+	.adr = 0x40,
 	.polarity = 0,
 	.clock_mode = 0,
 };
 
 static void cxd_attach(struct ngene *dev)
 {
-	struct device *pdev = &dev->pci_dev->dev;
 	struct ngene_ci *ci = &dev->ci;
-	struct cxd2099_cfg cxd_cfg = cxd_cfgtmpl;
-	struct i2c_client *client;
-	int ret;
-	u8 type;
 
-	/* check for CXD2099AR presence before attaching */
-	ret = ngene_port_has_cxd2099(&dev->channel[0].i2c_adapter, &type);
-	if (!ret) {
-		dev_dbg(pdev, "No CXD2099AR found\n");
-		return;
-	}
-
-	if (type != 1) {
-		dev_warn(pdev, "CXD2099AR is uninitialized!\n");
-		return;
-	}
-
-	cxd_cfg.en = &ci->en;
-	client = dvb_module_probe("cxd2099", NULL,
-				  &dev->channel[0].i2c_adapter,
-				  0x40, &cxd_cfg);
-	if (!client)
-		goto err;
-
+	ci->en = cxd2099_attach(&cxd_cfg, dev, &dev->channel[0].i2c_adapter);
 	ci->dev = dev;
-	dev->channel[0].i2c_client[0] = client;
-	return;
-
-err:
-	dev_err(pdev, "CXD2099AR attach failed\n");
 	return;
 }
 
@@ -1616,9 +1583,7 @@ static void cxd_detach(struct ngene *dev)
 	struct ngene_ci *ci = &dev->ci;
 
 	dvb_ca_en50221_release(ci->en);
-
-	dvb_module_release(dev->channel[0].i2c_client[0]);
-	dev->channel[0].i2c_client[0] = NULL;
+	kfree(ci->en);
 	ci->en = NULL;
 }
 
@@ -1650,7 +1615,7 @@ void ngene_shutdown(struct pci_dev *pdev)
 	if (!dev || !shutdown_workaround)
 		return;
 
-	dev_info(&pdev->dev, "shutdown workaround...\n");
+	printk(KERN_INFO DEVICE_NAME ": shutdown workaround...\n");
 	ngene_unlink(dev);
 	pci_disable_device(pdev);
 }
@@ -1690,7 +1655,7 @@ int ngene_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 
 	dev->pci_dev = pci_dev;
 	dev->card_info = (struct ngene_info *)id->driver_data;
-	dev_info(&pci_dev->dev, "Found %s\n", dev->card_info->name);
+	printk(KERN_INFO DEVICE_NAME ": Found %s\n", dev->card_info->name);
 
 	pci_set_drvdata(pci_dev, dev);
 

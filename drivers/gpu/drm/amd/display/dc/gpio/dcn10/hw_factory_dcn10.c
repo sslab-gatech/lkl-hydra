@@ -36,8 +36,7 @@
 
 #include "dcn/dcn_1_0_offset.h"
 #include "dcn/dcn_1_0_sh_mask.h"
-#include "soc15_hw_ip.h"
-#include "vega10_ip_offset.h"
+#include "soc15ip.h"
 
 #define block HPD
 #define reg_num 0

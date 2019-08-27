@@ -40,7 +40,7 @@
 #include <linux/export.h>
 
 static ax25_route *ax25_route_list;
-DEFINE_RWLOCK(ax25_route_lock);
+static DEFINE_RWLOCK(ax25_route_lock);
 
 void ax25_rt_device_down(struct net_device *dev)
 {
@@ -323,19 +323,31 @@ static int ax25_rt_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-const struct seq_operations ax25_rt_seqops = {
+static const struct seq_operations ax25_rt_seqops = {
 	.start = ax25_rt_seq_start,
 	.next = ax25_rt_seq_next,
 	.stop = ax25_rt_seq_stop,
 	.show = ax25_rt_seq_show,
 };
+
+static int ax25_rt_info_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &ax25_rt_seqops);
+}
+
+const struct file_operations ax25_route_fops = {
+	.open = ax25_rt_info_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
 #endif
 
 /*
  *	Find AX.25 route
  *
  *	Only routes with a reference count of zero can be destroyed.
- *	Must be called with ax25_route_lock read locked.
  */
 ax25_route *ax25_get_route(ax25_address *addr, struct net_device *dev)
 {
@@ -343,6 +355,7 @@ ax25_route *ax25_get_route(ax25_address *addr, struct net_device *dev)
 	ax25_route *ax25_def_rt = NULL;
 	ax25_route *ax25_rt;
 
+	read_lock(&ax25_route_lock);
 	/*
 	 *	Bind to the physical interface we heard them on, or the default
 	 *	route if none is found;
@@ -364,6 +377,11 @@ ax25_route *ax25_get_route(ax25_address *addr, struct net_device *dev)
 	ax25_rt = ax25_def_rt;
 	if (ax25_spe_rt != NULL)
 		ax25_rt = ax25_spe_rt;
+
+	if (ax25_rt != NULL)
+		ax25_hold_route(ax25_rt);
+
+	read_unlock(&ax25_route_lock);
 
 	return ax25_rt;
 }
@@ -395,12 +413,9 @@ int ax25_rt_autobind(ax25_cb *ax25, ax25_address *addr)
 	ax25_route *ax25_rt;
 	int err = 0;
 
-	ax25_route_lock_use();
-	ax25_rt = ax25_get_route(addr, NULL);
-	if (!ax25_rt) {
-		ax25_route_lock_unuse();
+	if ((ax25_rt = ax25_get_route(addr, NULL)) == NULL)
 		return -EHOSTUNREACH;
-	}
+
 	if ((ax25->ax25_dev = ax25_dev_ax25dev(ax25_rt->dev)) == NULL) {
 		err = -EHOSTUNREACH;
 		goto put;
@@ -435,7 +450,8 @@ int ax25_rt_autobind(ax25_cb *ax25, ax25_address *addr)
 	}
 
 put:
-	ax25_route_lock_unuse();
+	ax25_put_route(ax25_rt);
+
 	return err;
 }
 

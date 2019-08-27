@@ -891,7 +891,8 @@ bool dss_has_feature(enum dss_feat_id id)
 
 void dss_feat_get_reg_field(enum dss_feat_reg_field id, u8 *start, u8 *end)
 {
-	BUG_ON(id >= omap_current_dss_features->num_reg_fields);
+	if (id >= omap_current_dss_features->num_reg_fields)
+		BUG();
 
 	*start = omap_current_dss_features->reg_fields[id].start;
 	*end = omap_current_dss_features->reg_fields[id].end;

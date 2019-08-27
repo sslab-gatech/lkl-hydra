@@ -276,14 +276,16 @@ static void nfs_readpage_result(struct rpc_task *task,
 				struct nfs_pgio_header *hdr)
 {
 	if (hdr->res.eof) {
-		loff_t pos = hdr->args.offset + hdr->res.count;
-		unsigned int new = pos - hdr->io_start;
+		loff_t bound;
 
-		if (hdr->good_bytes > new) {
-			hdr->good_bytes = new;
+		bound = hdr->args.offset + hdr->res.count;
+		spin_lock(&hdr->lock);
+		if (bound < hdr->io_start + hdr->good_bytes) {
 			set_bit(NFS_IOHDR_EOF, &hdr->flags);
 			clear_bit(NFS_IOHDR_ERROR, &hdr->flags);
+			hdr->good_bytes = bound - hdr->io_start;
 		}
+		spin_unlock(&hdr->lock);
 	} else if (hdr->res.count < hdr->args.count)
 		nfs_readpage_retry(task, hdr);
 }

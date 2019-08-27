@@ -500,7 +500,7 @@ void smsdvb_debugfs_release(struct smsdvb_client_t *client)
 	client->debugfs = NULL;
 }
 
-void smsdvb_debugfs_register(void)
+int smsdvb_debugfs_register(void)
 {
 	struct dentry *d;
 
@@ -517,15 +517,15 @@ void smsdvb_debugfs_register(void)
 	d = debugfs_create_dir("smsdvb", usb_debug_root);
 	if (IS_ERR_OR_NULL(d)) {
 		pr_err("Couldn't create sysfs node for smsdvb\n");
-		return;
+		return PTR_ERR(d);
+	} else {
+		smsdvb_debugfs_usb_root = d;
 	}
-	smsdvb_debugfs_usb_root = d;
+	return 0;
 }
 
 void smsdvb_debugfs_unregister(void)
 {
-	if (!smsdvb_debugfs_usb_root)
-		return;
 	debugfs_remove_recursive(smsdvb_debugfs_usb_root);
 	smsdvb_debugfs_usb_root = NULL;
 }

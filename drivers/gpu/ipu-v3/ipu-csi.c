@@ -224,18 +224,14 @@ static int ipu_csi_set_testgen_mclk(struct ipu_csi *csi, u32 pixel_clk,
  * Find the CSI data format and data width for the given V4L2 media
  * bus pixel format code.
  */
-static int mbus_code_to_bus_cfg(struct ipu_csi_bus_config *cfg, u32 mbus_code,
-				enum v4l2_mbus_type mbus_type)
+static int mbus_code_to_bus_cfg(struct ipu_csi_bus_config *cfg, u32 mbus_code)
 {
 	switch (mbus_code) {
 	case MEDIA_BUS_FMT_BGR565_2X8_BE:
 	case MEDIA_BUS_FMT_BGR565_2X8_LE:
 	case MEDIA_BUS_FMT_RGB565_2X8_BE:
 	case MEDIA_BUS_FMT_RGB565_2X8_LE:
-		if (mbus_type == V4L2_MBUS_CSI2_DPHY)
-			cfg->data_fmt = CSI_SENS_CONF_DATA_FMT_RGB565;
-		else
-			cfg->data_fmt = CSI_SENS_CONF_DATA_FMT_BAYER;
+		cfg->data_fmt = CSI_SENS_CONF_DATA_FMT_RGB565;
 		cfg->mipi_dt = MIPI_DT_RGB565;
 		cfg->data_width = IPU_CSI_DATA_WIDTH_8;
 		break;
@@ -249,12 +245,6 @@ static int mbus_code_to_bus_cfg(struct ipu_csi_bus_config *cfg, u32 mbus_code,
 	case MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE:
 		cfg->data_fmt = CSI_SENS_CONF_DATA_FMT_RGB555;
 		cfg->mipi_dt = MIPI_DT_RGB555;
-		cfg->data_width = IPU_CSI_DATA_WIDTH_8;
-		break;
-	case MEDIA_BUS_FMT_RGB888_1X24:
-	case MEDIA_BUS_FMT_BGR888_1X24:
-		cfg->data_fmt = CSI_SENS_CONF_DATA_FMT_RGB_YUV444;
-		cfg->mipi_dt = MIPI_DT_RGB888;
 		cfg->data_width = IPU_CSI_DATA_WIDTH_8;
 		break;
 	case MEDIA_BUS_FMT_UYVY8_2X8:
@@ -328,17 +318,13 @@ static int mbus_code_to_bus_cfg(struct ipu_csi_bus_config *cfg, u32 mbus_code,
 /*
  * Fill a CSI bus config struct from mbus_config and mbus_framefmt.
  */
-static int fill_csi_bus_cfg(struct ipu_csi_bus_config *csicfg,
+static void fill_csi_bus_cfg(struct ipu_csi_bus_config *csicfg,
 				 struct v4l2_mbus_config *mbus_cfg,
 				 struct v4l2_mbus_framefmt *mbus_fmt)
 {
-	int ret;
-
 	memset(csicfg, 0, sizeof(*csicfg));
 
-	ret = mbus_code_to_bus_cfg(csicfg, mbus_fmt->code, mbus_cfg->type);
-	if (ret < 0)
-		return ret;
+	mbus_code_to_bus_cfg(csicfg, mbus_fmt->code);
 
 	switch (mbus_cfg->type) {
 	case V4L2_MBUS_PARALLEL:
@@ -353,13 +339,12 @@ static int fill_csi_bus_cfg(struct ipu_csi_bus_config *csicfg,
 		break;
 	case V4L2_MBUS_BT656:
 		csicfg->ext_vsync = 0;
-		if (V4L2_FIELD_HAS_BOTH(mbus_fmt->field) ||
-		    mbus_fmt->field == V4L2_FIELD_ALTERNATE)
+		if (V4L2_FIELD_HAS_BOTH(mbus_fmt->field))
 			csicfg->clk_mode = IPU_CSI_CLK_MODE_CCIR656_INTERLACED;
 		else
 			csicfg->clk_mode = IPU_CSI_CLK_MODE_CCIR656_PROGRESSIVE;
 		break;
-	case V4L2_MBUS_CSI2_DPHY:
+	case V4L2_MBUS_CSI2:
 		/*
 		 * MIPI CSI-2 requires non gated clock mode, all other
 		 * parameters are not applicable for MIPI CSI-2 bus.
@@ -370,8 +355,6 @@ static int fill_csi_bus_cfg(struct ipu_csi_bus_config *csicfg,
 		/* will never get here, keep compiler quiet */
 		break;
 	}
-
-	return 0;
 }
 
 int ipu_csi_init_interface(struct ipu_csi *csi,
@@ -381,11 +364,8 @@ int ipu_csi_init_interface(struct ipu_csi *csi,
 	struct ipu_csi_bus_config cfg;
 	unsigned long flags;
 	u32 width, height, data = 0;
-	int ret;
 
-	ret = fill_csi_bus_cfg(&cfg, mbus_cfg, mbus_fmt);
-	if (ret < 0)
-		return ret;
+	fill_csi_bus_cfg(&cfg, mbus_cfg, mbus_fmt);
 
 	/* set default sensor frame width and height */
 	width = mbus_fmt->width;
@@ -606,14 +586,11 @@ int ipu_csi_set_mipi_datatype(struct ipu_csi *csi, u32 vc,
 	struct ipu_csi_bus_config cfg;
 	unsigned long flags;
 	u32 temp;
-	int ret;
 
 	if (vc > 3)
 		return -EINVAL;
 
-	ret = mbus_code_to_bus_cfg(&cfg, mbus_fmt->code, V4L2_MBUS_CSI2_DPHY);
-	if (ret < 0)
-		return ret;
+	mbus_code_to_bus_cfg(&cfg, mbus_fmt->code);
 
 	spin_lock_irqsave(&csi->lock, flags);
 

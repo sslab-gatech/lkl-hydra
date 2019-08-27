@@ -33,11 +33,11 @@ static const struct tegra_udc_soc_info tegra30_udc_soc_info = {
 };
 
 static const struct tegra_udc_soc_info tegra114_udc_soc_info = {
-	.flags = CI_HDRC_REQUIRES_ALIGNED_DMA,
+	.flags = 0,
 };
 
 static const struct tegra_udc_soc_info tegra124_udc_soc_info = {
-	.flags = CI_HDRC_REQUIRES_ALIGNED_DMA,
+	.flags = 0,
 };
 
 static const struct of_device_id tegra_udc_of_match[] = {

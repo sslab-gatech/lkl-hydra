@@ -49,26 +49,22 @@
 struct spi_bitbang_cs {
 	unsigned	nsecs;	/* (clock cycle time)/2 */
 	u32		(*txrx_word)(struct spi_device *spi, unsigned nsecs,
-					u32 word, u8 bits, unsigned flags);
+					u32 word, u8 bits);
 	unsigned	(*txrx_bufs)(struct spi_device *,
 					u32 (*txrx_word)(
 						struct spi_device *spi,
 						unsigned nsecs,
-						u32 word, u8 bits,
-						unsigned flags),
-					unsigned, struct spi_transfer *,
-					unsigned);
+						u32 word, u8 bits),
+					unsigned, struct spi_transfer *);
 };
 
 static unsigned bitbang_txrx_8(
 	struct spi_device	*spi,
 	u32			(*txrx_word)(struct spi_device *spi,
 					unsigned nsecs,
-					u32 word, u8 bits,
-					unsigned flags),
+					u32 word, u8 bits),
 	unsigned		ns,
-	struct spi_transfer	*t,
-	unsigned flags
+	struct spi_transfer	*t
 ) {
 	unsigned		bits = t->bits_per_word;
 	unsigned		count = t->len;
@@ -80,7 +76,7 @@ static unsigned bitbang_txrx_8(
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits, flags);
+		word = txrx_word(spi, ns, word, bits);
 		if (rx)
 			*rx++ = word;
 		count -= 1;
@@ -92,11 +88,9 @@ static unsigned bitbang_txrx_16(
 	struct spi_device	*spi,
 	u32			(*txrx_word)(struct spi_device *spi,
 					unsigned nsecs,
-					u32 word, u8 bits,
-					unsigned flags),
+					u32 word, u8 bits),
 	unsigned		ns,
-	struct spi_transfer	*t,
-	unsigned flags
+	struct spi_transfer	*t
 ) {
 	unsigned		bits = t->bits_per_word;
 	unsigned		count = t->len;
@@ -108,7 +102,7 @@ static unsigned bitbang_txrx_16(
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits, flags);
+		word = txrx_word(spi, ns, word, bits);
 		if (rx)
 			*rx++ = word;
 		count -= 2;
@@ -120,11 +114,9 @@ static unsigned bitbang_txrx_32(
 	struct spi_device	*spi,
 	u32			(*txrx_word)(struct spi_device *spi,
 					unsigned nsecs,
-					u32 word, u8 bits,
-					unsigned flags),
+					u32 word, u8 bits),
 	unsigned		ns,
-	struct spi_transfer	*t,
-	unsigned flags
+	struct spi_transfer	*t
 ) {
 	unsigned		bits = t->bits_per_word;
 	unsigned		count = t->len;
@@ -136,7 +128,7 @@ static unsigned bitbang_txrx_32(
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits, flags);
+		word = txrx_word(spi, ns, word, bits);
 		if (rx)
 			*rx++ = word;
 		count -= 4;
@@ -243,24 +235,8 @@ static int spi_bitbang_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
 	struct spi_bitbang_cs	*cs = spi->controller_state;
 	unsigned		nsecs = cs->nsecs;
-	struct spi_bitbang	*bitbang;
 
-	bitbang = spi_master_get_devdata(spi->master);
-	if (bitbang->set_line_direction) {
-		int err;
-
-		err = bitbang->set_line_direction(spi, !!(t->tx_buf));
-		if (err < 0)
-			return err;
-	}
-
-	if (spi->mode & SPI_3WIRE) {
-		unsigned flags;
-
-		flags = t->tx_buf ? SPI_MASTER_NO_RX : SPI_MASTER_NO_TX;
-		return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t, flags);
-	}
-	return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t, 0);
+	return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t);
 }
 
 /*----------------------------------------------------------------------*/

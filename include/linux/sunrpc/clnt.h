@@ -66,7 +66,6 @@ struct rpc_clnt {
 	struct rpc_rtt		cl_rtt_default;
 	struct rpc_timeout	cl_timeout_default;
 	const struct rpc_program *cl_program;
-	const char *		cl_principal;	/* use for machine cred */
 #if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 	struct dentry		*cl_debugfs;	/* debugfs directory */
 #endif
@@ -128,8 +127,8 @@ struct rpc_create_args {
 };
 
 struct rpc_add_xprt_test {
-	void (*add_xprt_test)(struct rpc_clnt *clnt,
-		struct rpc_xprt *xprt,
+	int (*add_xprt_test)(struct rpc_clnt *,
+		struct rpc_xprt *,
 		void *calldata);
 	void *data;
 };
@@ -157,7 +156,6 @@ int		rpc_switch_client_transport(struct rpc_clnt *,
 
 void		rpc_shutdown_client(struct rpc_clnt *);
 void		rpc_release_client(struct rpc_clnt *);
-void		rpc_task_release_transport(struct rpc_task *);
 void		rpc_task_release_client(struct rpc_task *);
 
 int		rpcb_create_local(struct net *);
@@ -219,12 +217,5 @@ void rpc_clnt_xprt_switch_add_xprt(struct rpc_clnt *, struct rpc_xprt *);
 bool rpc_clnt_xprt_switch_has_addr(struct rpc_clnt *clnt,
 			const struct sockaddr *sap);
 void rpc_cleanup_clids(void);
-
-static inline int rpc_reply_expected(struct rpc_task *task)
-{
-	return (task->tk_msg.rpc_proc != NULL) &&
-		(task->tk_msg.rpc_proc->p_decode != NULL);
-}
-
 #endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_CLNT_H */

@@ -26,13 +26,13 @@
 #include <asm/cputype.h>
 
 /* arm64 compatibility macros */
-#define PSR_AA32_MODE_ABT	ABT_MODE
-#define PSR_AA32_MODE_UND	UND_MODE
-#define PSR_AA32_T_BIT		PSR_T_BIT
-#define PSR_AA32_I_BIT		PSR_I_BIT
-#define PSR_AA32_A_BIT		PSR_A_BIT
-#define PSR_AA32_E_BIT		PSR_E_BIT
-#define PSR_AA32_IT_MASK	PSR_IT_MASK
+#define COMPAT_PSR_MODE_ABT	ABT_MODE
+#define COMPAT_PSR_MODE_UND	UND_MODE
+#define COMPAT_PSR_T_BIT	PSR_T_BIT
+#define COMPAT_PSR_I_BIT	PSR_I_BIT
+#define COMPAT_PSR_A_BIT	PSR_A_BIT
+#define COMPAT_PSR_E_BIT	PSR_E_BIT
+#define COMPAT_PSR_IT_MASK	PSR_IT_MASK
 
 unsigned long *vcpu_reg(struct kvm_vcpu *vcpu, u8 reg_num);
 
@@ -41,17 +41,7 @@ static inline unsigned long *vcpu_reg32(struct kvm_vcpu *vcpu, u8 reg_num)
 	return vcpu_reg(vcpu, reg_num);
 }
 
-unsigned long *__vcpu_spsr(struct kvm_vcpu *vcpu);
-
-static inline unsigned long vpcu_read_spsr(struct kvm_vcpu *vcpu)
-{
-	return *__vcpu_spsr(vcpu);
-}
-
-static inline void vcpu_write_spsr(struct kvm_vcpu *vcpu, unsigned long v)
-{
-	*__vcpu_spsr(vcpu) = v;
-}
+unsigned long *vcpu_spsr(struct kvm_vcpu *vcpu);
 
 static inline unsigned long vcpu_get_reg(struct kvm_vcpu *vcpu,
 					 u8 reg_num)
@@ -102,24 +92,19 @@ static inline void vcpu_reset_hcr(struct kvm_vcpu *vcpu)
 	vcpu->arch.hcr = HCR_GUEST_MASK;
 }
 
-static inline unsigned long *vcpu_hcr(const struct kvm_vcpu *vcpu)
+static inline unsigned long vcpu_get_hcr(const struct kvm_vcpu *vcpu)
 {
-	return (unsigned long *)&vcpu->arch.hcr;
+	return vcpu->arch.hcr;
 }
 
-static inline void vcpu_clear_wfe_traps(struct kvm_vcpu *vcpu)
+static inline void vcpu_set_hcr(struct kvm_vcpu *vcpu, unsigned long hcr)
 {
-	vcpu->arch.hcr &= ~HCR_TWE;
-}
-
-static inline void vcpu_set_wfe_traps(struct kvm_vcpu *vcpu)
-{
-	vcpu->arch.hcr |= HCR_TWE;
+	vcpu->arch.hcr = hcr;
 }
 
 static inline bool vcpu_mode_is_32bit(const struct kvm_vcpu *vcpu)
 {
-	return true;
+	return 1;
 }
 
 static inline unsigned long *vcpu_pc(struct kvm_vcpu *vcpu)

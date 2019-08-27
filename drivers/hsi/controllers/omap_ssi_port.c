@@ -20,7 +20,6 @@
  * 02110-1301 USA
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/pm_runtime.h>
@@ -57,7 +56,7 @@ static void ssi_debug_remove_port(struct hsi_port *port)
 	debugfs_remove_recursive(omap_port->dir);
 }
 
-static int ssi_port_regs_show(struct seq_file *m, void *p __maybe_unused)
+static int ssi_debug_port_show(struct seq_file *m, void *p __maybe_unused)
 {
 	struct hsi_port *port = m->private;
 	struct omap_ssi_port *omap_port = hsi_port_drvdata(port);
@@ -132,7 +131,17 @@ static int ssi_port_regs_show(struct seq_file *m, void *p __maybe_unused)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(ssi_port_regs);
+static int ssi_port_regs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ssi_debug_port_show, inode->i_private);
+}
+
+static const struct file_operations ssi_port_regs_fops = {
+	.open		= ssi_port_regs_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static int ssi_div_get(void *data, u64 *val)
 {

@@ -15,7 +15,7 @@
 
 #define __ipset_dereference_protected(p, c)	rcu_dereference_protected(p, c)
 #define ipset_dereference_protected(p, set) \
-	__ipset_dereference_protected(p, lockdep_is_held(&(set)->lock))
+	__ipset_dereference_protected(p, spin_is_locked(&(set)->lock))
 
 #define rcu_dereference_bh_nfnl(p)	rcu_dereference_bh_check(p, 1)
 
@@ -67,7 +67,7 @@ tune_ahash_max(u8 curr, u32 multi)
 
 /* A hash bucket */
 struct hbucket {
-	struct rcu_head rcu;	/* for call_rcu */
+	struct rcu_head rcu;	/* for call_rcu_bh */
 	/* Which positions are used in the array */
 	DECLARE_BITMAP(used, AHASH_MAX_TUNED);
 	u8 size;		/* size of the array */
@@ -664,7 +664,7 @@ retry:
 	spin_unlock_bh(&set->lock);
 
 	/* Give time to other readers of the set */
-	synchronize_rcu();
+	synchronize_rcu_bh();
 
 	pr_debug("set %s resized from %u (%p) to %u (%p)\n", set->name,
 		 orig->htable_bits, orig, t->htable_bits, t);
@@ -1234,10 +1234,7 @@ IPSET_TOKEN(HTYPE, _create)(struct net *net, struct ip_set *set,
 	pr_debug("Create set %s with family %s\n",
 		 set->name, set->family == NFPROTO_IPV4 ? "inet" : "inet6");
 
-#ifdef IP_SET_PROTO_UNDEF
-	if (set->family != NFPROTO_UNSPEC)
-		return -IPSET_ERR_INVALID_FAMILY;
-#else
+#ifndef IP_SET_PROTO_UNDEF
 	if (!(set->family == NFPROTO_IPV4 || set->family == NFPROTO_IPV6))
 		return -IPSET_ERR_INVALID_FAMILY;
 #endif

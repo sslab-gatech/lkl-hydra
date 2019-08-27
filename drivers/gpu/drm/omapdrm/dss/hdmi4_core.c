@@ -922,13 +922,8 @@ int hdmi4_core_init(struct platform_device *pdev, struct hdmi_core_data *core)
 {
 	const struct hdmi4_features *features;
 	struct resource *res;
-	const struct soc_device_attribute *soc;
 
-	soc = soc_device_match(hdmi4_soc_devices);
-	if (!soc)
-		return -ENODEV;
-
-	features = soc->data;
+	features = soc_device_match(hdmi4_soc_devices)->data;
 	core->cts_swmode = features->cts_swmode;
 	core->audio_use_mclk = features->audio_use_mclk;
 

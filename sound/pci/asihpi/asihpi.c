@@ -69,27 +69,27 @@ static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 static bool enable_hpi_hwdep = 1;
 
-module_param_array(index, int, NULL, 0444);
+module_param_array(index, int, NULL, S_IRUGO);
 MODULE_PARM_DESC(index, "ALSA index value for AudioScience soundcard.");
 
-module_param_array(id, charp, NULL, 0444);
+module_param_array(id, charp, NULL, S_IRUGO);
 MODULE_PARM_DESC(id, "ALSA ID string for AudioScience soundcard.");
 
-module_param_array(enable, bool, NULL, 0444);
+module_param_array(enable, bool, NULL, S_IRUGO);
 MODULE_PARM_DESC(enable, "ALSA enable AudioScience soundcard.");
 
-module_param(enable_hpi_hwdep, bool, 0644);
+module_param(enable_hpi_hwdep, bool, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(enable_hpi_hwdep,
 		"ALSA enable HPI hwdep for AudioScience soundcard ");
 
 /* identify driver */
 #ifdef KERNEL_ALSA_BUILD
 static char *build_info = "Built using headers from kernel source";
-module_param(build_info, charp, 0444);
+module_param(build_info, charp, S_IRUGO);
 MODULE_PARM_DESC(build_info, "Built using headers from kernel source");
 #else
 static char *build_info = "Built within ALSA source";
-module_param(build_info, charp, 0444);
+module_param(build_info, charp, S_IRUGO);
 MODULE_PARM_DESC(build_info, "Built within ALSA source");
 #endif
 
@@ -311,29 +311,27 @@ static void print_hwparams(struct snd_pcm_substream *substream,
 		snd_pcm_format_width(params_format(p)) / 8);
 }
 
-#define INVALID_FORMAT	(__force snd_pcm_format_t)(-1)
-
 static snd_pcm_format_t hpi_to_alsa_formats[] = {
-	INVALID_FORMAT,		/* INVALID */
+	-1,			/* INVALID */
 	SNDRV_PCM_FORMAT_U8,	/* HPI_FORMAT_PCM8_UNSIGNED        1 */
 	SNDRV_PCM_FORMAT_S16,	/* HPI_FORMAT_PCM16_SIGNED         2 */
-	INVALID_FORMAT,		/* HPI_FORMAT_MPEG_L1              3 */
+	-1,			/* HPI_FORMAT_MPEG_L1              3 */
 	SNDRV_PCM_FORMAT_MPEG,	/* HPI_FORMAT_MPEG_L2              4 */
 	SNDRV_PCM_FORMAT_MPEG,	/* HPI_FORMAT_MPEG_L3              5 */
-	INVALID_FORMAT,		/* HPI_FORMAT_DOLBY_AC2            6 */
-	INVALID_FORMAT,		/* HPI_FORMAT_DOLBY_AC3            7 */
+	-1,			/* HPI_FORMAT_DOLBY_AC2            6 */
+	-1,			/* HPI_FORMAT_DOLBY_AC3            7 */
 	SNDRV_PCM_FORMAT_S16_BE,/* HPI_FORMAT_PCM16_BIGENDIAN      8 */
-	INVALID_FORMAT,		/* HPI_FORMAT_AA_TAGIT1_HITS       9 */
-	INVALID_FORMAT,		/* HPI_FORMAT_AA_TAGIT1_INSERTS   10 */
+	-1,			/* HPI_FORMAT_AA_TAGIT1_HITS       9 */
+	-1,			/* HPI_FORMAT_AA_TAGIT1_INSERTS   10 */
 	SNDRV_PCM_FORMAT_S32,	/* HPI_FORMAT_PCM32_SIGNED        11 */
-	INVALID_FORMAT,		/* HPI_FORMAT_RAW_BITSTREAM       12 */
-	INVALID_FORMAT,		/* HPI_FORMAT_AA_TAGIT1_HITS_EX1  13 */
+	-1,			/* HPI_FORMAT_RAW_BITSTREAM       12 */
+	-1,			/* HPI_FORMAT_AA_TAGIT1_HITS_EX1  13 */
 	SNDRV_PCM_FORMAT_FLOAT,	/* HPI_FORMAT_PCM32_FLOAT         14 */
 #if 1
 	/* ALSA can't handle 3 byte sample size together with power-of-2
 	 *  constraint on buffer_bytes, so disable this format
 	 */
-	INVALID_FORMAT
+	-1
 #else
 	/* SNDRV_PCM_FORMAT_S24_3LE */ /* HPI_FORMAT_PCM24_SIGNED 15 */
 #endif
@@ -1025,7 +1023,7 @@ static u64 snd_card_asihpi_playback_formats(struct snd_card_asihpi *asihpi,
 					format, sample_rate, 128000, 0);
 		if (!err)
 			err = hpi_outstream_query_format(h_stream, &hpi_format);
-		if (!err && (hpi_to_alsa_formats[format] != INVALID_FORMAT))
+		if (!err && (hpi_to_alsa_formats[format] != -1))
 			formats |= pcm_format_to_bits(hpi_to_alsa_formats[format]);
 	}
 	return formats;
@@ -1183,7 +1181,7 @@ static int snd_card_asihpi_capture_prepare(struct snd_pcm_substream *substream)
 static u64 snd_card_asihpi_capture_formats(struct snd_card_asihpi *asihpi,
 					u32 h_stream)
 {
-	struct hpi_format hpi_format;
+  struct hpi_format hpi_format;
 	u16 format;
 	u16 err;
 	u32 h_control;
@@ -1207,7 +1205,7 @@ static u64 snd_card_asihpi_capture_formats(struct snd_card_asihpi *asihpi,
 					format, sample_rate, 128000, 0);
 		if (!err)
 			err = hpi_instream_query_format(h_stream, &hpi_format);
-		if (!err && (hpi_to_alsa_formats[format] != INVALID_FORMAT))
+		if (!err && (hpi_to_alsa_formats[format] != -1))
 			formats |= pcm_format_to_bits(hpi_to_alsa_formats[format]);
 	}
 	return formats;

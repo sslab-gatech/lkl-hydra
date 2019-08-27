@@ -185,7 +185,7 @@ int hw_sm750_output_setMode(struct lynxfb_output *output,
 			    struct fb_fix_screeninfo *fix)
 {
 	int ret;
-	enum disp_output disp_set;
+	disp_output_t disp_set;
 	int channel;
 
 	ret = 0;
@@ -254,7 +254,7 @@ int hw_sm750_crtc_setMode(struct lynxfb_crtc *crtc,
 	int ret, fmt;
 	u32 reg;
 	struct mode_parameter modparm;
-	enum clock_type clock;
+	clock_type_t clock;
 	struct sm750_dev *sm750_dev;
 	struct lynxfb_par *par;
 

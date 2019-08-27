@@ -76,11 +76,10 @@ extern int pci_proc_domain(struct pci_bus *bus);
 
 struct vm_area_struct;
 
-/* Tell PCI code what kind of PCI resource mappings we support */
-#define HAVE_PCI_MMAP			1
-#define ARCH_GENERIC_PCI_MMAP_RESOURCE	1
-#define arch_can_pci_mmap_io()		1
-#define arch_can_pci_mmap_wc()		1
+/* Tell drivers/pci/proc.c that we have pci_mmap_page_range() and it does WC */
+#define HAVE_PCI_MMAP		1
+#define arch_can_pci_mmap_io()	1
+#define arch_can_pci_mmap_wc()	1
 
 extern int pci_legacy_read(struct pci_bus *bus, loff_t port, u32 *val,
 			   size_t count);
@@ -91,6 +90,24 @@ extern int pci_mmap_legacy_page_range(struct pci_bus *bus,
 				      enum pci_mmap_state mmap_state);
 
 #define HAVE_PCI_LEGACY	1
+
+#ifdef CONFIG_PPC64
+
+/* The PCI address space does not equal the physical memory address
+ * space (we have an IOMMU).  The IDE and SCSI device layers use
+ * this boolean for bounce buffer decisions.
+ */
+#define PCI_DMA_BUS_IS_PHYS	(0)
+
+#else /* 32-bit */
+
+/* The PCI address space does equal the physical memory
+ * address space (no IOMMU).  The IDE and SCSI device layers use
+ * this boolean for bounce buffer decisions.
+ */
+#define PCI_DMA_BUS_IS_PHYS     (1)
+
+#endif /* CONFIG_PPC64 */
 
 extern void pcibios_claim_one_bus(struct pci_bus *b);
 
@@ -129,9 +146,5 @@ extern void pcibios_scan_phb(struct pci_controller *hose);
 
 extern struct pci_dev *pnv_pci_get_gpu_dev(struct pci_dev *npdev);
 extern struct pci_dev *pnv_pci_get_npu_dev(struct pci_dev *gpdev, int index);
-extern int pnv_npu2_init(struct pci_controller *hose);
-extern int pnv_npu2_map_lpar_dev(struct pci_dev *gpdev, unsigned int lparid,
-		unsigned long msr);
-extern int pnv_npu2_unmap_lpar_dev(struct pci_dev *gpdev);
 
 #endif /* __ASM_POWERPC_PCI_H */

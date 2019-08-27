@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * xhci-dbgtty.c - tty glue for xHCI debug capability
  *
@@ -321,11 +320,9 @@ int xhci_dbc_tty_register_driver(struct xhci_hcd *xhci)
 
 void xhci_dbc_tty_unregister_driver(void)
 {
-	if (dbc_tty_driver) {
-		tty_unregister_driver(dbc_tty_driver);
-		put_tty_driver(dbc_tty_driver);
-		dbc_tty_driver = NULL;
-	}
+	tty_unregister_driver(dbc_tty_driver);
+	put_tty_driver(dbc_tty_driver);
+	dbc_tty_driver = NULL;
 }
 
 static void dbc_rx_push(unsigned long _port)
@@ -450,10 +447,9 @@ int xhci_dbc_tty_register_device(struct xhci_hcd *xhci)
 	xhci_dbc_tty_init_port(xhci, port);
 	tty_dev = tty_port_register_device(&port->port,
 					   dbc_tty_driver, 0, NULL);
-	if (IS_ERR(tty_dev)) {
-		ret = PTR_ERR(tty_dev);
+	ret = IS_ERR_OR_NULL(tty_dev);
+	if (ret)
 		goto register_fail;
-	}
 
 	ret = kfifo_alloc(&port->write_fifo, DBC_WRITE_BUF_SIZE, GFP_KERNEL);
 	if (ret)

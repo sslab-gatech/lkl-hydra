@@ -11,6 +11,8 @@
 #include "dc_link_dp.h"
 #include "dc_link_ddc.h"
 #include "dm_helpers.h"
+#include "dce/dce_link_encoder.h"
+#include "dce/dce_stream_encoder.h"
 #include "dpcd_defs.h"
 
 enum dc_status core_link_read_dpcd(
@@ -96,12 +98,11 @@ void dp_enable_link_phy(
 						link_settings,
 						clock_source);
 	}
-	link->cur_link_settings = *link_settings;
 
 	dp_receiver_power_ctrl(link, true);
 }
 
-bool edp_receiver_ready_T9(struct dc_link *link)
+static bool edp_receiver_ready_T9(struct dc_link *link)
 {
 	unsigned int tries = 0;
 	unsigned char sinkstatus = 0;
@@ -122,28 +123,6 @@ bool edp_receiver_ready_T9(struct dc_link *link)
 	} while (++tries < 50);
 	return result;
 }
-bool edp_receiver_ready_T7(struct dc_link *link)
-{
-	unsigned int tries = 0;
-	unsigned char sinkstatus = 0;
-	unsigned char edpRev = 0;
-	enum dc_status result = DC_OK;
-
-	result = core_link_read_dpcd(link, DP_EDP_DPCD_REV, &edpRev, sizeof(edpRev));
-	if (result == DC_OK && edpRev < DP_EDP_12)
-		return true;
-	/* start from eDP version 1.2, SINK_STAUS indicate the sink is ready.*/
-	do {
-		sinkstatus = 0;
-		result = core_link_read_dpcd(link, DP_SINK_STATUS, &sinkstatus, sizeof(sinkstatus));
-		if (sinkstatus == 1)
-			break;
-		if (result != DC_OK)
-			break;
-		udelay(25); //MAx T7 is 50ms
-	} while (++tries < 300);
-	return result;
-}
 
 void dp_disable_link_phy(struct dc_link *link, enum signal_type signal)
 {
@@ -151,6 +130,7 @@ void dp_disable_link_phy(struct dc_link *link, enum signal_type signal)
 		dp_receiver_power_ctrl(link, false);
 
 	if (signal == SIGNAL_TYPE_EDP) {
+		edp_receiver_ready_T9(link);
 		link->link_enc->funcs->disable_output(link->link_enc, signal);
 		link->dc->hwss.edp_power_control(link, false);
 	} else
@@ -278,7 +258,6 @@ void dp_retrain_link_dp_test(struct dc_link *link,
 
 	for (i = 0; i < MAX_PIPES; i++) {
 		if (pipes[i].stream != NULL &&
-			!pipes[i].top_pipe &&
 			pipes[i].stream->sink != NULL &&
 			pipes[i].stream->sink->link != NULL &&
 			pipes[i].stream_res.stream_enc != NULL &&
@@ -308,7 +287,6 @@ void dp_retrain_link_dp_test(struct dc_link *link,
 						link->link_enc,
 						link_setting,
 						pipes[i].clock_source->id);
-			link->cur_link_settings = *link_setting;
 
 			dp_receiver_power_ctrl(link, true);
 
@@ -318,6 +296,7 @@ void dp_retrain_link_dp_test(struct dc_link *link,
 					skip_video_pattern,
 					LINK_TRAINING_ATTEMPTS);
 
+			link->cur_link_settings = *link_setting;
 
 			link->dc->hwss.enable_stream(&pipes[i]);
 

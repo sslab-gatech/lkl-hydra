@@ -14,9 +14,12 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/platform_data/i2c-omap.h>
+#include <linux/i2c-omap.h>
 
 #include "omap_hwmod.h"
+#include <linux/platform_data/gpio-omap.h>
+#include <linux/platform_data/spi-omap2-mcspi.h>
+
 #include "omap_hwmod_common_data.h"
 
 #include "control.h"
@@ -249,6 +252,7 @@ static struct omap_hwmod am33xx_gpio0_hwmod = {
 	},
 	.opt_clks	= gpio0_opt_clks,
 	.opt_clks_cnt	= ARRAY_SIZE(gpio0_opt_clks),
+	.dev_attr	= &gpio_dev_attr,
 };
 
 /* lcdc */

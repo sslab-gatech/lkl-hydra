@@ -10,14 +10,6 @@ menu "Library routines"
 config RAID6_PQ
 	tristate
 
-config RAID6_PQ_BENCHMARK
-	bool "Automatically choose fastest RAID6 PQ functions"
-	depends on RAID6_PQ
-	default y
-	help
-	  Benchmark all available RAID6 PQ functions on init and choose the
-	  fastest one.
-
 config BITREVERSE
 	tristate
 
@@ -62,22 +54,6 @@ config ARCH_USE_CMPXCHG_LOCKREF
 
 config ARCH_HAS_FAST_MULTIPLIER
 	bool
-
-config INDIRECT_PIO
-	bool "Access I/O in non-MMIO mode"
-	depends on ARM64
-	help
-	  On some platforms where no separate I/O space exists, there are I/O
-	  hosts which can not be accessed in MMIO mode. Using the logical PIO
-	  mechanism, the host-local I/O resource can be mapped into system
-	  logic PIO space shared with MMIO hosts, such as PCI/PCIe, then the
-	  system can access the I/O devices with the mapped-logic PIO through
-	  I/O accessors.
-
-	  This way has relatively little I/O performance cost. Please make
-	  sure your devices really need this configure item enabled.
-
-	  When in doubt, say N.
 
 config CRC_CCITT
 	tristate "CRC-CCITT functions"
@@ -177,14 +153,6 @@ config CRC32_BIT
 	  Only choose this option if you are debugging crc32.
 
 endchoice
-
-config CRC64
-	tristate "CRC64 functions"
-	help
-	  This option is provided for the case where no in-kernel-tree
-	  modules require CRC64 functions, but a module built outside
-	  the kernel tree does. Such modules that use library CRC64
-	  functions require M here.
 
 config CRC4
 	tristate "CRC4 functions"
@@ -408,11 +376,8 @@ config INTERVAL_TREE
 
 	  for more information.
 
-config XARRAY_MULTI
+config RADIX_TREE_MULTIORDER
 	bool
-	help
-	  Support entries which occupy multiple consecutive indices in the
-	  XArray.
 
 config ASSOCIATIVE_ARRAY
 	bool
@@ -424,7 +389,7 @@ config ASSOCIATIVE_ARRAY
 
 	  See:
 
-		Documentation/core-api/assoc_array.rst
+		Documentation/assoc_array.txt
 
 	  for more information.
 
@@ -439,14 +404,24 @@ config HAS_IOPORT_MAP
 	depends on HAS_IOMEM && !NO_IOPORT_MAP
 	default y
 
-source "kernel/dma/Kconfig"
+config HAS_DMA
+	bool
+	depends on !NO_DMA
+	default y
 
 config SGL_ALLOC
 	bool
 	default n
 
-config IOMMU_HELPER
+config DMA_DIRECT_OPS
 	bool
+	depends on HAS_DMA && (!64BIT || ARCH_DMA_ADDR_T_64BIT)
+	default n
+
+config DMA_VIRT_OPS
+	bool
+	depends on HAS_DMA && (!64BIT || ARCH_DMA_ADDR_T_64BIT)
+	default n
 
 config CHECK_SIGNATURE
 	bool
@@ -586,16 +561,13 @@ config SG_POOL
 # sg chaining option
 #
 
-config ARCH_NO_SG_CHAIN
+config ARCH_HAS_SG_CHAIN
 	def_bool n
 
 config ARCH_HAS_PMEM_API
 	bool
 
 config ARCH_HAS_UACCESS_FLUSHCACHE
-	bool
-
-config ARCH_HAS_UACCESS_MCSAFE
 	bool
 
 config STACKDEPOT
@@ -616,23 +588,20 @@ config STRING_SELFTEST
 
 endmenu
 
-config GENERIC_LIB_ASHLDI3
+config GENERIC_ASHLDI3
 	bool
 
-config GENERIC_LIB_ASHRDI3
+config GENERIC_ASHRDI3
 	bool
 
-config GENERIC_LIB_LSHRDI3
+config GENERIC_LSHRDI3
 	bool
 
-config GENERIC_LIB_MULDI3
+config GENERIC_MULDI3
 	bool
 
-config GENERIC_LIB_CMPDI2
+config GENERIC_CMPDI2
 	bool
 
-config GENERIC_LIB_UCMPDI2
+config GENERIC_UCMPDI2
 	bool
-
-config OBJAGG
-	tristate "objagg" if COMPILE_TEST

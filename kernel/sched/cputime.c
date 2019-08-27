@@ -1,6 +1,10 @@
-/*
- * Simple CPU accounting cgroup controller
- */
+#include <linux/export.h>
+#include <linux/sched.h>
+#include <linux/tsacct_kern.h>
+#include <linux/kernel_stat.h>
+#include <linux/static_key.h>
+#include <linux/context_tracking.h>
+#include <linux/sched/cputime.h>
 #include "sched.h"
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
@@ -109,9 +113,9 @@ static inline void task_group_account_field(struct task_struct *p, int index,
 }
 
 /*
- * Account user CPU time to a process.
- * @p: the process that the CPU time gets accounted to
- * @cputime: the CPU time spent in user space since the last update
+ * Account user cpu time to a process.
+ * @p: the process that the cpu time gets accounted to
+ * @cputime: the cpu time spent in user space since the last update
  */
 void account_user_time(struct task_struct *p, u64 cputime)
 {
@@ -131,9 +135,9 @@ void account_user_time(struct task_struct *p, u64 cputime)
 }
 
 /*
- * Account guest CPU time to a process.
- * @p: the process that the CPU time gets accounted to
- * @cputime: the CPU time spent in virtual machine since the last update
+ * Account guest cpu time to a process.
+ * @p: the process that the cpu time gets accounted to
+ * @cputime: the cpu time spent in virtual machine since the last update
  */
 void account_guest_time(struct task_struct *p, u64 cputime)
 {
@@ -155,9 +159,9 @@ void account_guest_time(struct task_struct *p, u64 cputime)
 }
 
 /*
- * Account system CPU time to a process and desired cpustat field
- * @p: the process that the CPU time gets accounted to
- * @cputime: the CPU time spent in kernel space since the last update
+ * Account system cpu time to a process and desired cpustat field
+ * @p: the process that the cpu time gets accounted to
+ * @cputime: the cpu time spent in kernel space since the last update
  * @index: pointer to cpustat field that has to be updated
  */
 void account_system_index_time(struct task_struct *p,
@@ -175,10 +179,10 @@ void account_system_index_time(struct task_struct *p,
 }
 
 /*
- * Account system CPU time to a process.
- * @p: the process that the CPU time gets accounted to
+ * Account system cpu time to a process.
+ * @p: the process that the cpu time gets accounted to
  * @hardirq_offset: the offset to subtract from hardirq_count()
- * @cputime: the CPU time spent in kernel space since the last update
+ * @cputime: the cpu time spent in kernel space since the last update
  */
 void account_system_time(struct task_struct *p, int hardirq_offset, u64 cputime)
 {
@@ -201,7 +205,7 @@ void account_system_time(struct task_struct *p, int hardirq_offset, u64 cputime)
 
 /*
  * Account for involuntary wait time.
- * @cputime: the CPU time spent in involuntary wait
+ * @cputime: the cpu time spent in involuntary wait
  */
 void account_steal_time(u64 cputime)
 {
@@ -212,7 +216,7 @@ void account_steal_time(u64 cputime)
 
 /*
  * Account for idle time.
- * @cputime: the CPU time spent in idle wait
+ * @cputime: the cpu time spent in idle wait
  */
 void account_idle_time(u64 cputime)
 {
@@ -334,7 +338,7 @@ void thread_group_cputime(struct task_struct *tsk, struct task_cputime *times)
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 /*
  * Account a tick to a process and cpustat
- * @p: the process that the CPU time gets accounted to
+ * @p: the process that the cpu time gets accounted to
  * @user_tick: is the tick from userspace
  * @rq: the pointer to rq
  *
@@ -396,16 +400,17 @@ static void irqtime_account_idle_ticks(int ticks)
 	irqtime_account_process_tick(current, 0, rq, ticks);
 }
 #else /* CONFIG_IRQ_TIME_ACCOUNTING */
-static inline void irqtime_account_idle_ticks(int ticks) { }
+static inline void irqtime_account_idle_ticks(int ticks) {}
 static inline void irqtime_account_process_tick(struct task_struct *p, int user_tick,
-						struct rq *rq, int nr_ticks) { }
+						struct rq *rq, int nr_ticks) {}
 #endif /* CONFIG_IRQ_TIME_ACCOUNTING */
 
 /*
  * Use precise platform statistics if available:
  */
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
-# ifndef __ARCH_HAS_VTIME_TASK_SWITCH
+
+#ifndef __ARCH_HAS_VTIME_TASK_SWITCH
 void vtime_common_task_switch(struct task_struct *prev)
 {
 	if (is_idle_task(prev))
@@ -416,7 +421,8 @@ void vtime_common_task_switch(struct task_struct *prev)
 	vtime_flush(prev);
 	arch_vtime_task_switch(prev);
 }
-# endif
+#endif
+
 #endif /* CONFIG_VIRT_CPU_ACCOUNTING */
 
 
@@ -463,12 +469,10 @@ void thread_group_cputime_adjusted(struct task_struct *p, u64 *ut, u64 *st)
 	*ut = cputime.utime;
 	*st = cputime.stime;
 }
-
-#else /* !CONFIG_VIRT_CPU_ACCOUNTING_NATIVE: */
-
+#else /* !CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 /*
- * Account a single tick of CPU time.
- * @p: the process that the CPU time gets accounted to
+ * Account a single tick of cpu time.
+ * @p: the process that the cpu time gets accounted to
  * @user_tick: indicates if the tick is a user or a system tick
  */
 void account_process_tick(struct task_struct *p, int user_tick)
@@ -525,7 +529,7 @@ void account_idle_ticks(unsigned long ticks)
 
 /*
  * Perform (stime * rtime) / total, but avoid multiplication overflow by
- * losing precision when the numbers are big.
+ * loosing precision when the numbers are big.
  */
 static u64 scale_stime(u64 stime, u64 rtime, u64 total)
 {

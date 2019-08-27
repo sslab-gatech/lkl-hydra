@@ -109,7 +109,6 @@ static inline struct f_midi *func_to_midi(struct usb_function *f)
 
 static void f_midi_transmit(struct f_midi *midi);
 static void f_midi_rmidi_free(struct snd_rawmidi *rmidi);
-static void f_midi_free_inst(struct usb_function_instance *f);
 
 DECLARE_UAC_AC_HEADER_DESCRIPTOR(1);
 DECLARE_USB_MIDI_OUT_JACK_DESCRIPTOR(1);
@@ -405,8 +404,7 @@ static int f_midi_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		if (err) {
 			ERROR(midi, "%s: couldn't enqueue request: %d\n",
 				    midi->out_ep->name, err);
-			if (req->buf != NULL)
-				free_ep_req(midi->out_ep, req);
+			free_ep_req(midi->out_ep, req);
 			return err;
 		}
 	}
@@ -1103,7 +1101,7 @@ static ssize_t f_midi_opts_##name##_store(struct config_item *item,	\
 	u32 num;							\
 									\
 	mutex_lock(&opts->lock);					\
-	if (opts->refcnt > 1) {						\
+	if (opts->refcnt) {						\
 		ret = -EBUSY;						\
 		goto end;						\
 	}								\
@@ -1158,7 +1156,7 @@ static ssize_t f_midi_opts_id_store(struct config_item *item,
 	char *c;
 
 	mutex_lock(&opts->lock);
-	if (opts->refcnt > 1) {
+	if (opts->refcnt) {
 		ret = -EBUSY;
 		goto end;
 	}
@@ -1199,21 +1197,13 @@ static const struct config_item_type midi_func_type = {
 static void f_midi_free_inst(struct usb_function_instance *f)
 {
 	struct f_midi_opts *opts;
-	bool free = false;
 
 	opts = container_of(f, struct f_midi_opts, func_inst);
 
-	mutex_lock(&opts->lock);
-	if (!--opts->refcnt) {
-		free = true;
-	}
-	mutex_unlock(&opts->lock);
+	if (opts->id_allocated)
+		kfree(opts->id);
 
-	if (free) {
-		if (opts->id_allocated)
-			kfree(opts->id);
-		kfree(opts);
-	}
+	kfree(opts);
 }
 
 static struct usb_function_instance *f_midi_alloc_inst(void)
@@ -1232,7 +1222,6 @@ static struct usb_function_instance *f_midi_alloc_inst(void)
 	opts->qlen = 32;
 	opts->in_ports = 1;
 	opts->out_ports = 1;
-	opts->refcnt = 1;
 
 	config_group_init_type_name(&opts->func_inst.group, "",
 				    &midi_func_type);
@@ -1244,7 +1233,6 @@ static void f_midi_free(struct usb_function *f)
 {
 	struct f_midi *midi;
 	struct f_midi_opts *opts;
-	bool free = false;
 
 	midi = func_to_midi(f);
 	opts = container_of(f->fi, struct f_midi_opts, func_inst);
@@ -1253,12 +1241,9 @@ static void f_midi_free(struct usb_function *f)
 		kfree(midi->id);
 		kfifo_free(&midi->in_req_fifo);
 		kfree(midi);
-		free = true;
+		--opts->refcnt;
 	}
 	mutex_unlock(&opts->lock);
-
-	if (free)
-		f_midi_free_inst(&opts->func_inst);
 }
 
 static void f_midi_rmidi_free(struct snd_rawmidi *rmidi)
@@ -1301,8 +1286,9 @@ static struct usb_function *f_midi_alloc(struct usb_function_instance *fi)
 	}
 
 	/* allocate and initialize one new instance */
-	midi = kzalloc(struct_size(midi, in_ports_array, opts->in_ports),
-		       GFP_KERNEL);
+	midi = kzalloc(
+		sizeof(*midi) + opts->in_ports * sizeof(*midi->in_ports_array),
+		GFP_KERNEL);
 	if (!midi) {
 		status = -ENOMEM;
 		goto setup_fail;

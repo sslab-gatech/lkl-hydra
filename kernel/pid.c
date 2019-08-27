@@ -31,7 +31,7 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/rculist.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/hash.h>
 #include <linux/pid_namespace.h>
 #include <linux/init_task.h>
@@ -70,7 +70,7 @@ int pid_max_max = PID_MAX_LIMIT;
  */
 struct pid_namespace init_pid_ns = {
 	.kref = KREF_INIT(2),
-	.idr = IDR_INIT(init_pid_ns.idr),
+	.idr = IDR_INIT,
 	.pid_allocated = PIDNS_ADDING,
 	.level = 0,
 	.child_reaper = &init_task,
@@ -195,7 +195,7 @@ struct pid *alloc_pid(struct pid_namespace *ns)
 		idr_preload_end();
 
 		if (nr < 0) {
-			retval = (nr == -ENOSPC) ? -EAGAIN : nr;
+			retval = nr;
 			goto out_free;
 		}
 
@@ -233,10 +233,8 @@ out_unlock:
 
 out_free:
 	spin_lock_irq(&pidmap_lock);
-	while (++i <= ns->level) {
-		upid = pid->numbers + i;
-		idr_remove(&upid->ns->idr, upid->nr);
-	}
+	while (++i <= ns->level)
+		idr_remove(&ns->idr, (pid->numbers + i)->nr);
 
 	/* On failure to allocate the first pid, reset the state */
 	if (ns->pid_allocated == PIDNS_ADDING)
@@ -267,33 +265,27 @@ struct pid *find_vpid(int nr)
 }
 EXPORT_SYMBOL_GPL(find_vpid);
 
-static struct pid **task_pid_ptr(struct task_struct *task, enum pid_type type)
-{
-	return (type == PIDTYPE_PID) ?
-		&task->thread_pid :
-		&task->signal->pids[type];
-}
-
 /*
  * attach_pid() must be called with the tasklist_lock write-held.
  */
 void attach_pid(struct task_struct *task, enum pid_type type)
 {
-	struct pid *pid = *task_pid_ptr(task, type);
-	hlist_add_head_rcu(&task->pid_links[type], &pid->tasks[type]);
+	struct pid_link *link = &task->pids[type];
+	hlist_add_head_rcu(&link->node, &link->pid->tasks[type]);
 }
 
 static void __change_pid(struct task_struct *task, enum pid_type type,
 			struct pid *new)
 {
-	struct pid **pid_ptr = task_pid_ptr(task, type);
+	struct pid_link *link;
 	struct pid *pid;
 	int tmp;
 
-	pid = *pid_ptr;
+	link = &task->pids[type];
+	pid = link->pid;
 
-	hlist_del_rcu(&task->pid_links[type]);
-	*pid_ptr = new;
+	hlist_del_rcu(&link->node);
+	link->pid = new;
 
 	for (tmp = PIDTYPE_MAX; --tmp >= 0; )
 		if (!hlist_empty(&pid->tasks[tmp]))
@@ -318,9 +310,8 @@ void change_pid(struct task_struct *task, enum pid_type type,
 void transfer_pid(struct task_struct *old, struct task_struct *new,
 			   enum pid_type type)
 {
-	if (type == PIDTYPE_PID)
-		new->thread_pid = old->thread_pid;
-	hlist_replace_rcu(&old->pid_links[type], &new->pid_links[type]);
+	new->pids[type].pid = old->pids[type].pid;
+	hlist_replace_rcu(&old->pids[type].node, &new->pids[type].node);
 }
 
 struct task_struct *pid_task(struct pid *pid, enum pid_type type)
@@ -331,7 +322,7 @@ struct task_struct *pid_task(struct pid *pid, enum pid_type type)
 		first = rcu_dereference_check(hlist_first_rcu(&pid->tasks[type]),
 					      lockdep_tasklist_lock_is_held());
 		if (first)
-			result = hlist_entry(first, struct task_struct, pid_links[(type)]);
+			result = hlist_entry(first, struct task_struct, pids[(type)].node);
 	}
 	return result;
 }
@@ -369,7 +360,9 @@ struct pid *get_task_pid(struct task_struct *task, enum pid_type type)
 {
 	struct pid *pid;
 	rcu_read_lock();
-	pid = get_pid(rcu_dereference(*task_pid_ptr(task, type)));
+	if (type != PIDTYPE_PID)
+		task = task->group_leader;
+	pid = get_pid(rcu_dereference(task->pids[type].pid));
 	rcu_read_unlock();
 	return pid;
 }
@@ -427,8 +420,15 @@ pid_t __task_pid_nr_ns(struct task_struct *task, enum pid_type type,
 	rcu_read_lock();
 	if (!ns)
 		ns = task_active_pid_ns(current);
-	if (likely(pid_alive(task)))
-		nr = pid_nr_ns(rcu_dereference(*task_pid_ptr(task, type)), ns);
+	if (likely(pid_alive(task))) {
+		if (type != PIDTYPE_PID) {
+			if (type == __PIDTYPE_TGID)
+				type = PIDTYPE_PID;
+
+			task = task->group_leader;
+		}
+		nr = pid_nr_ns(rcu_dereference(task->pids[type].pid), ns);
+	}
 	rcu_read_unlock();
 
 	return nr;

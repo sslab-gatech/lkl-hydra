@@ -213,6 +213,7 @@ do_entArith(unsigned long summary, unsigned long write_mask,
 	    struct pt_regs *regs)
 {
 	long si_code = FPE_FLTINV;
+	siginfo_t info;
 
 	if (summary & 1) {
 		/* Software-completion summary bit is set, so try to
@@ -227,12 +228,17 @@ do_entArith(unsigned long summary, unsigned long write_mask,
 	}
 	die_if_kernel("Arithmetic fault", regs, 0, NULL);
 
-	send_sig_fault(SIGFPE, si_code, (void __user *) regs->pc, 0, current);
+	info.si_signo = SIGFPE;
+	info.si_errno = 0;
+	info.si_code = si_code;
+	info.si_addr = (void __user *) regs->pc;
+	send_sig_info(SIGFPE, &info, current);
 }
 
 asmlinkage void
 do_entIF(unsigned long type, struct pt_regs *regs)
 {
+	siginfo_t info;
 	int signo, code;
 
 	if ((regs->ps & ~IPL_MAX) == 0) {
@@ -264,20 +270,31 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 
 	switch (type) {
 	      case 0: /* breakpoint */
+		info.si_signo = SIGTRAP;
+		info.si_errno = 0;
+		info.si_code = TRAP_BRKPT;
+		info.si_trapno = 0;
+		info.si_addr = (void __user *) regs->pc;
+
 		if (ptrace_cancel_bpt(current)) {
 			regs->pc -= 4;	/* make pc point to former bpt */
 		}
 
-		send_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *)regs->pc, 0,
-			       current);
+		send_sig_info(SIGTRAP, &info, current);
 		return;
 
 	      case 1: /* bugcheck */
-		send_sig_fault(SIGTRAP, TRAP_UNK, (void __user *) regs->pc, 0,
-			       current);
+		info.si_signo = SIGTRAP;
+		info.si_errno = 0;
+		info.si_code = TRAP_FIXME;
+		info.si_addr = (void __user *) regs->pc;
+		info.si_trapno = 0;
+		send_sig_info(SIGTRAP, &info, current);
 		return;
 		
 	      case 2: /* gentrap */
+		info.si_addr = (void __user *) regs->pc;
+		info.si_trapno = regs->r16;
 		switch ((long) regs->r16) {
 		case GEN_INTOVF:
 			signo = SIGFPE;
@@ -309,7 +326,7 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 			break;
 		case GEN_ROPRAND:
 			signo = SIGFPE;
-			code = FPE_FLTUNK;
+			code = FPE_FIXME;
 			break;
 
 		case GEN_DECOVF:
@@ -331,12 +348,15 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 		case GEN_SUBRNG7:
 		default:
 			signo = SIGTRAP;
-			code = TRAP_UNK;
+			code = TRAP_FIXME;
 			break;
 		}
 
-		send_sig_fault(signo, code, (void __user *) regs->pc, regs->r16,
-			       current);
+		info.si_signo = signo;
+		info.si_errno = 0;
+		info.si_code = code;
+		info.si_addr = (void __user *) regs->pc;
+		send_sig_info(signo, &info, current);
 		return;
 
 	      case 4: /* opDEC */
@@ -360,9 +380,11 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 			if (si_code == 0)
 				return;
 			if (si_code > 0) {
-				send_sig_fault(SIGFPE, si_code,
-					       (void __user *) regs->pc, 0,
-					       current);
+				info.si_signo = SIGFPE;
+				info.si_errno = 0;
+				info.si_code = si_code;
+				info.si_addr = (void __user *) regs->pc;
+				send_sig_info(SIGFPE, &info, current);
 				return;
 			}
 		}
@@ -387,7 +409,11 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 		      ;
 	}
 
-	send_sig_fault(SIGILL, ILL_ILLOPC, (void __user *)regs->pc, 0, current);
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code = ILL_ILLOPC;
+	info.si_addr = (void __user *) regs->pc;
+	send_sig_info(SIGILL, &info, current);
 }
 
 /* There is an ifdef in the PALcode in MILO that enables a 
@@ -400,9 +426,15 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 asmlinkage void
 do_entDbg(struct pt_regs *regs)
 {
+	siginfo_t info;
+
 	die_if_kernel("Instruction fault", regs, 0, NULL);
 
-	force_sig_fault(SIGILL, ILL_ILLOPC, (void __user *)regs->pc, 0, current);
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code = ILL_ILLOPC;
+	info.si_addr = (void __user *) regs->pc;
+	force_sig_info(SIGILL, &info, current);
 }
 
 
@@ -726,7 +758,7 @@ do_entUnaUser(void __user * va, unsigned long opcode,
 
 	unsigned long tmp1, tmp2, tmp3, tmp4;
 	unsigned long fake_reg, *reg_addr = &fake_reg;
-	int si_code;
+	siginfo_t info;
 	long error;
 
 	/* Check the UAC bits to decide what the user wants us to do
@@ -949,27 +981,34 @@ do_entUnaUser(void __user * va, unsigned long opcode,
 
 give_sigsegv:
 	regs->pc -= 4;  /* make pc point to faulting insn */
+	info.si_signo = SIGSEGV;
+	info.si_errno = 0;
 
 	/* We need to replicate some of the logic in mm/fault.c,
 	   since we don't have access to the fault code in the
 	   exception handling return path.  */
 	if ((unsigned long)va >= TASK_SIZE)
-		si_code = SEGV_ACCERR;
+		info.si_code = SEGV_ACCERR;
 	else {
 		struct mm_struct *mm = current->mm;
 		down_read(&mm->mmap_sem);
 		if (find_vma(mm, (unsigned long)va))
-			si_code = SEGV_ACCERR;
+			info.si_code = SEGV_ACCERR;
 		else
-			si_code = SEGV_MAPERR;
+			info.si_code = SEGV_MAPERR;
 		up_read(&mm->mmap_sem);
 	}
-	send_sig_fault(SIGSEGV, si_code, va, 0, current);
+	info.si_addr = va;
+	send_sig_info(SIGSEGV, &info, current);
 	return;
 
 give_sigbus:
 	regs->pc -= 4;
-	send_sig_fault(SIGBUS, BUS_ADRALN, va, 0, current);
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRALN;
+	info.si_addr = va;
+	send_sig_info(SIGBUS, &info, current);
 	return;
 }
 

@@ -20,7 +20,6 @@
 #include <asm/firmware.h>
 
 #include "cacheinfo.h"
-#include "setup.h"
 
 #ifdef CONFIG_PPC64
 #include <asm/paca.h>
@@ -457,7 +456,7 @@ static ssize_t __used \
 #define HAS_PPC_PMC_CLASSIC	1
 #define HAS_PPC_PMC_IBM		1
 #define HAS_PPC_PMC_PA6T	1
-#elif defined(CONFIG_PPC_BOOK3S_32)
+#elif defined(CONFIG_6xx)
 #define HAS_PPC_PMC_CLASSIC	1
 #define HAS_PPC_PMC_IBM		1
 #define HAS_PPC_PMC_G4		1
@@ -589,18 +588,21 @@ static DEVICE_ATTR(dscr_default, 0600,
 
 static void sysfs_create_dscr_default(void)
 {
-	if (cpu_has_feature(CPU_FTR_DSCR)) {
-		int err = 0;
-		int cpu;
-
-		dscr_default = spr_default_dscr;
-		for_each_possible_cpu(cpu)
-			paca_ptrs[cpu]->dscr_default = dscr_default;
-
+	int err = 0;
+	if (cpu_has_feature(CPU_FTR_DSCR))
 		err = device_create_file(cpu_subsys.dev_root, &dev_attr_dscr_default);
-	}
 }
 
+void __init record_spr_defaults(void)
+{
+	int cpu;
+
+	if (cpu_has_feature(CPU_FTR_DSCR)) {
+		dscr_default = mfspr(SPRN_DSCR);
+		for (cpu = 0; cpu < nr_cpu_ids; cpu++)
+			paca[cpu].dscr_default = dscr_default;
+	}
+}
 #endif /* CONFIG_PPC64 */
 
 #ifdef HAS_PPC_PMC_PA6T

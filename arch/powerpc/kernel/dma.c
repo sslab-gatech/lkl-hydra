@@ -50,8 +50,7 @@ static int dma_nommu_dma_supported(struct device *dev, u64 mask)
 		return 1;
 
 #ifdef CONFIG_FSL_SOC
-	/*
-	 * Freescale gets another chance via ZONE_DMA, however
+	/* Freescale gets another chance via ZONE_DMA/ZONE_DMA32, however
 	 * that will have to be refined if/when they support iommus
 	 */
 	return 1;
@@ -63,12 +62,18 @@ static int dma_nommu_dma_supported(struct device *dev, u64 mask)
 #endif
 }
 
-#ifndef CONFIG_NOT_COHERENT_CACHE
 void *__dma_nommu_alloc_coherent(struct device *dev, size_t size,
 				  dma_addr_t *dma_handle, gfp_t flag,
 				  unsigned long attrs)
 {
 	void *ret;
+#ifdef CONFIG_NOT_COHERENT_CACHE
+	ret = __dma_alloc_coherent(dev, size, dma_handle, flag);
+	if (ret == NULL)
+		return NULL;
+	*dma_handle += get_dma_offset(dev);
+	return ret;
+#else
 	struct page *page;
 	int node = dev_to_node(dev);
 #ifdef CONFIG_FSL_SOC
@@ -89,9 +94,12 @@ void *__dma_nommu_alloc_coherent(struct device *dev, size_t size,
 	}
 
 	switch (zone) {
-#ifdef CONFIG_ZONE_DMA
 	case ZONE_DMA:
 		flag |= GFP_DMA;
+		break;
+#ifdef CONFIG_ZONE_DMA32
+	case ZONE_DMA32:
+		flag |= GFP_DMA32;
 		break;
 #endif
 	};
@@ -105,15 +113,19 @@ void *__dma_nommu_alloc_coherent(struct device *dev, size_t size,
 	*dma_handle = __pa(ret) + get_dma_offset(dev);
 
 	return ret;
+#endif
 }
 
 void __dma_nommu_free_coherent(struct device *dev, size_t size,
 				void *vaddr, dma_addr_t dma_handle,
 				unsigned long attrs)
 {
+#ifdef CONFIG_NOT_COHERENT_CACHE
+	__dma_free_coherent(size, vaddr);
+#else
 	free_pages((unsigned long)vaddr, get_order(size));
+#endif
 }
-#endif /* !CONFIG_NOT_COHERENT_CACHE */
 
 static void *dma_nommu_alloc_coherent(struct device *dev, size_t size,
 				       dma_addr_t *dma_handle, gfp_t flag,
@@ -198,15 +210,10 @@ static int dma_nommu_map_sg(struct device *dev, struct scatterlist *sgl,
 	return nents;
 }
 
-static void dma_nommu_unmap_sg(struct device *dev, struct scatterlist *sgl,
+static void dma_nommu_unmap_sg(struct device *dev, struct scatterlist *sg,
 				int nents, enum dma_data_direction direction,
 				unsigned long attrs)
 {
-	struct scatterlist *sg;
-	int i;
-
-	for_each_sg(sgl, sg, nents, i)
-		__dma_sync_page(sg_page(sg), sg->offset, sg->length, direction);
 }
 
 static u64 dma_nommu_get_required_mask(struct device *dev)
@@ -228,6 +235,8 @@ static inline dma_addr_t dma_nommu_map_page(struct device *dev,
 					     enum dma_data_direction dir,
 					     unsigned long attrs)
 {
+	BUG_ON(dir == DMA_NONE);
+
 	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
 		__dma_sync_page(page, offset, size, dir);
 
@@ -240,8 +249,6 @@ static inline void dma_nommu_unmap_page(struct device *dev,
 					 enum dma_data_direction direction,
 					 unsigned long attrs)
 {
-	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
-		__dma_sync(bus_to_virt(dma_address), size, direction);
 }
 
 #ifdef CONFIG_NOT_COHERENT_CACHE
@@ -302,6 +309,8 @@ int dma_set_coherent_mask(struct device *dev, u64 mask)
 }
 EXPORT_SYMBOL(dma_set_coherent_mask);
 
+#define PREALLOC_DMA_DEBUG_ENTRIES (1 << 16)
+
 int dma_set_mask(struct device *dev, u64 dma_mask)
 {
 	if (ppc_md.dma_set_mask)
@@ -352,6 +361,10 @@ EXPORT_SYMBOL_GPL(dma_get_required_mask);
 
 static int __init dma_init(void)
 {
+	dma_debug_init(PREALLOC_DMA_DEBUG_ENTRIES);
+#ifdef CONFIG_PCI
+	dma_debug_add_bus(&pci_bus_type);
+#endif
 #ifdef CONFIG_IBMVIO
 	dma_debug_add_bus(&vio_bus_type);
 #endif

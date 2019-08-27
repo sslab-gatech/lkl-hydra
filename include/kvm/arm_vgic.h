@@ -28,7 +28,7 @@
 
 #include <linux/irqchip/arm-gic-v4.h>
 
-#define VGIC_V3_MAX_CPUS	512
+#define VGIC_V3_MAX_CPUS	255
 #define VGIC_V2_MAX_CPUS	8
 #define VGIC_NR_IRQS_LEGACY     256
 #define VGIC_NR_SGIS		16
@@ -57,15 +57,11 @@ struct vgic_global {
 	/* Physical address of vgic virtual cpu interface */
 	phys_addr_t		vcpu_base;
 
-	/* GICV mapping, kernel VA */
+	/* GICV mapping */
 	void __iomem		*vcpu_base_va;
-	/* GICV mapping, HYP VA */
-	void __iomem		*vcpu_hyp_va;
 
-	/* virtual control interface mapping, kernel VA */
+	/* virtual control interface mapping */
 	void __iomem		*vctrl_base;
-	/* virtual control interface mapping, HYP VA */
-	void __iomem		*vctrl_hyp;
 
 	/* Number of implemented list registers */
 	int			nr_lr;
@@ -100,7 +96,7 @@ enum vgic_irq_config {
 };
 
 struct vgic_irq {
-	raw_spinlock_t irq_lock;	/* Protects the content of the struct */
+	spinlock_t irq_lock;		/* Protects the content of the struct */
 	struct list_head lpi_list;	/* Used to link all LPIs together */
 	struct list_head ap_list;
 
@@ -131,9 +127,7 @@ struct vgic_irq {
 		u32 mpidr;			/* GICv3 target VCPU */
 	};
 	u8 source;			/* GICv2 SGIs only */
-	u8 active_source;		/* GICv2 SGIs only */
 	u8 priority;
-	u8 group;			/* 0 == group 0, 1 == group 1 */
 	enum vgic_irq_config config;	/* Level or edge */
 
 	/*
@@ -202,14 +196,6 @@ struct vgic_its {
 
 struct vgic_state_iter;
 
-struct vgic_redist_region {
-	u32 index;
-	gpa_t base;
-	u32 count; /* number of redistributors or 0 if single region */
-	u32 free_index; /* index of the next free redistributor */
-	struct list_head list;
-};
-
 struct vgic_dist {
 	bool			in_kernel;
 	bool			ready;
@@ -218,16 +204,14 @@ struct vgic_dist {
 	/* vGIC model the kernel emulates for the guest (GICv2 or GICv3) */
 	u32			vgic_model;
 
-	/* Implementation revision as reported in the GICD_IIDR */
-	u32			implementation_rev;
-
-	/* Userspace can write to GICv2 IGROUPR */
-	bool			v2_groups_user_writable;
-
 	/* Do injected MSIs require an additional device ID? */
 	bool			msis_require_devid;
 
 	int			nr_spis;
+
+	/* TODO: Consider moving to global state */
+	/* Virtual control interface mapping */
+	void __iomem		*vctrl_base;
 
 	/* base addresses in guest physical address space: */
 	gpa_t			vgic_dist_base;		/* distributor */
@@ -235,7 +219,10 @@ struct vgic_dist {
 		/* either a GICv2 CPU interface */
 		gpa_t			vgic_cpu_base;
 		/* or a number of GICv3 redistributor regions */
-		struct list_head rd_regions;
+		struct {
+			gpa_t		vgic_redist_base;
+			gpa_t		vgic_redist_free_offset;
+		};
 	};
 
 	/* distributor enabled */
@@ -256,7 +243,7 @@ struct vgic_dist {
 	u64			propbaser;
 
 	/* Protects the lpi_list and the count value below. */
-	raw_spinlock_t		lpi_list_lock;
+	spinlock_t		lpi_list_lock;
 	struct list_head	lpi_list_head;
 	int			lpi_list_count;
 
@@ -276,6 +263,7 @@ struct vgic_dist {
 struct vgic_v2_cpu_if {
 	u32		vgic_hcr;
 	u32		vgic_vmcr;
+	u64		vgic_elrsr;	/* Saved only */
 	u32		vgic_apr;
 	u32		vgic_lr[VGIC_V2_MAX_LRS];
 };
@@ -284,6 +272,7 @@ struct vgic_v3_cpu_if {
 	u32		vgic_hcr;
 	u32		vgic_vmcr;
 	u32		vgic_sre;	/* Restored only, change ignored */
+	u32		vgic_elrsr;	/* Saved only */
 	u32		vgic_ap0r[4];
 	u32		vgic_ap1r[4];
 	u64		vgic_lr[VGIC_V3_MAX_LRS];
@@ -307,7 +296,7 @@ struct vgic_cpu {
 	unsigned int used_lrs;
 	struct vgic_irq private_irqs[VGIC_NR_PRIVATE_IRQS];
 
-	raw_spinlock_t ap_list_lock;	/* Protects the ap_list */
+	spinlock_t ap_list_lock;	/* Protects the ap_list */
 
 	/*
 	 * List of IRQs that this VCPU should consider because they are either
@@ -323,7 +312,6 @@ struct vgic_cpu {
 	 */
 	struct vgic_io_device	rd_iodev;
 	struct vgic_io_device	sgi_iodev;
-	struct vgic_redist_region *rdreg;
 
 	/* Contains the attributes and gpa of the LPI pending tables. */
 	u64 pendbaser;
@@ -345,6 +333,7 @@ void kvm_vgic_early_init(struct kvm *kvm);
 int kvm_vgic_vcpu_init(struct kvm_vcpu *vcpu);
 int kvm_vgic_create(struct kvm *kvm, u32 type);
 void kvm_vgic_destroy(struct kvm *kvm);
+void kvm_vgic_vcpu_early_init(struct kvm_vcpu *vcpu);
 void kvm_vgic_vcpu_destroy(struct kvm_vcpu *vcpu);
 int kvm_vgic_map_resources(struct kvm *kvm);
 int kvm_vgic_hyp_init(void);
@@ -373,7 +362,7 @@ void kvm_vgic_sync_hwstate(struct kvm_vcpu *vcpu);
 void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu);
 void kvm_vgic_reset_mapped_irq(struct kvm_vcpu *vcpu, u32 vintid);
 
-void vgic_v3_dispatch_sgi(struct kvm_vcpu *vcpu, u64 reg, bool allow_group1);
+void vgic_v3_dispatch_sgi(struct kvm_vcpu *vcpu, u64 reg);
 
 /**
  * kvm_vgic_get_max_vcpus - Get the maximum number of VCPUs allowed by HW

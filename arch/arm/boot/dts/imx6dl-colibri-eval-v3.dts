@@ -53,12 +53,6 @@
 	compatible = "toradex,colibri_imx6dl-eval-v3", "toradex,colibri_imx6dl",
 		     "fsl,imx6dl";
 
-	/* Will be filled by the bootloader */
-	memory@10000000 {
-		device_type = "memory";
-		reg = <0x10000000 0>;
-	};
-
 	aliases {
 		i2c0 = &i2c2;
 		i2c1 = &i2c3;
@@ -69,16 +63,15 @@
 		rtc1 = &snvs_rtc;
 	};
 
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	/* Fixed crystal dedicated to mcp251x */
-	clk16m: clock-16m {
-		compatible = "fixed-clock";
-		#clock-cells = <0>;
-		clock-frequency = <16000000>;
-		clock-output-names = "clk16m";
+	clocks {
+		/* Fixed crystal dedicated to mcp251x */
+		clk16m: clk@1 {
+			compatible = "fixed-clock";
+			reg = <1>;
+			#clock-cells = <0>;
+			clock-frequency = <16000000>;
+			clock-output-names = "clk16m";
+		};
 	};
 
 	gpio-keys {
@@ -147,7 +140,7 @@
 &ecspi4 {
 	status = "okay";
 
-	mcp251x0: mcp251x@0 {
+	mcp251x0: mcp251x@1 {
 		compatible = "microchip,mcp2515";
 		reg = <0>;
 		clocks = <&clk16m>;
@@ -222,6 +215,9 @@
 
 /* Colibri MMC */
 &usdhc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_mmc_cd>;
+	cd-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>; /* MMCD */
 	status = "okay";
 };
 

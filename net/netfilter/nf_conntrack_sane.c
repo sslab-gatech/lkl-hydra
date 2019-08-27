@@ -173,7 +173,8 @@ static const struct nf_conntrack_expect_policy sane_exp_policy = {
 	.timeout	= 5 * 60,
 };
 
-static void __exit nf_conntrack_sane_fini(void)
+/* don't make this __exit, since it's called from __init ! */
+static void nf_conntrack_sane_fini(void)
 {
 	nf_conntrack_helpers_unregister(sane, ports_c * 2);
 	kfree(sane_buffer);

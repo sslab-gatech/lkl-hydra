@@ -186,7 +186,7 @@ static const struct file_operations xenvif_dbg_io_ring_ops_fops = {
 	.write = xenvif_write_io_ring,
 };
 
-static int xenvif_ctrl_show(struct seq_file *m, void *v)
+static int xenvif_read_ctrl(struct seq_file *m, void *v)
 {
 	struct xenvif *vif = m->private;
 
@@ -194,7 +194,19 @@ static int xenvif_ctrl_show(struct seq_file *m, void *v)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(xenvif_ctrl);
+
+static int xenvif_ctrl_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, xenvif_read_ctrl, inode->i_private);
+}
+
+static const struct file_operations xenvif_dbg_ctrl_ops_fops = {
+	.owner = THIS_MODULE,
+	.open = xenvif_ctrl_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 static void xenvif_debugfs_addif(struct xenvif *vif)
 {
@@ -212,7 +224,7 @@ static void xenvif_debugfs_addif(struct xenvif *vif)
 
 			snprintf(filename, sizeof(filename), "io_ring_q%d", i);
 			pfile = debugfs_create_file(filename,
-						    0600,
+						    S_IRUSR | S_IWUSR,
 						    vif->xenvif_dbg_root,
 						    &vif->queues[i],
 						    &xenvif_dbg_io_ring_ops_fops);
@@ -223,10 +235,10 @@ static void xenvif_debugfs_addif(struct xenvif *vif)
 
 		if (vif->ctrl_irq) {
 			pfile = debugfs_create_file("ctrl",
-						    0400,
+						    S_IRUSR,
 						    vif->xenvif_dbg_root,
 						    vif,
-						    &xenvif_ctrl_fops);
+						    &xenvif_dbg_ctrl_ops_fops);
 			if (IS_ERR_OR_NULL(pfile))
 				pr_warn("Creation of ctrl file returned %ld!\n",
 					PTR_ERR(pfile));
@@ -242,7 +254,8 @@ static void xenvif_debugfs_delif(struct xenvif *vif)
 	if (IS_ERR_OR_NULL(xen_netback_dbg_root))
 		return;
 
-	debugfs_remove_recursive(vif->xenvif_dbg_root);
+	if (!IS_ERR_OR_NULL(vif->xenvif_dbg_root))
+		debugfs_remove_recursive(vif->xenvif_dbg_root);
 	vif->xenvif_dbg_root = NULL;
 }
 #endif /* CONFIG_DEBUG_FS */
@@ -964,8 +977,8 @@ static void connect(struct backend_info *be)
 	}
 
 	/* Use the number of queues requested by the frontend */
-	be->vif->queues = vzalloc(array_size(requested_num_queues,
-					     sizeof(struct xenvif_queue)));
+	be->vif->queues = vzalloc(requested_num_queues *
+				  sizeof(struct xenvif_queue));
 	if (!be->vif->queues) {
 		xenbus_dev_fatal(dev, -ENOMEM,
 				 "allocating queues");

@@ -219,7 +219,6 @@ static int __init dummy_init_module(void)
 {
 	int i, err = 0;
 
-	down_write(&pernet_ops_rwsem);
 	rtnl_lock();
 	err = __rtnl_link_register(&dummy_link_ops);
 	if (err < 0)
@@ -234,7 +233,6 @@ static int __init dummy_init_module(void)
 
 out:
 	rtnl_unlock();
-	up_write(&pernet_ops_rwsem);
 
 	return err;
 }

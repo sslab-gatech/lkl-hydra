@@ -40,11 +40,8 @@ following properties:
 - #interrupt-cells: must be identical to the that of the parent interrupt
   controller.
 
-
-Optional nodes:
-
-- nodes defining the restart and poweroff syscon children
-
+- interrupt-parent: a phandle indicating which interrupt controller
+  this PMU signals interrupts to.
 
 Example :
 pmu_system_controller: system-controller@10040000 {

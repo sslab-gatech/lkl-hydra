@@ -46,10 +46,13 @@ static inline void emergency_stack_init(void) { };
 #endif
 
 #ifdef CONFIG_PPC64
-u64 ppc64_bolted_size(void);
+void record_spr_defaults(void);
+#else
+static inline void record_spr_defaults(void) { };
+#endif
 
-/* Default SPR values from firmware/kexec */
-extern unsigned long spr_default_dscr;
+#ifdef CONFIG_PPC64
+u64 ppc64_bolted_size(void);
 #endif
 
 /*
@@ -61,11 +64,5 @@ void kvm_cma_reserve(void);
 #else
 static inline void kvm_cma_reserve(void) { };
 #endif
-
-#ifdef CONFIG_TAU
-u32 cpu_temp(unsigned long cpu);
-u32 cpu_temp_both(unsigned long cpu);
-u32 tau_interrupts(unsigned long cpu);
-#endif /* CONFIG_TAU */
 
 #endif /* __ARCH_POWERPC_KERNEL_SETUP_H */

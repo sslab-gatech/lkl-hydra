@@ -40,6 +40,7 @@
 #include "exynos_drm_crtc.h"
 #include "exynos_drm_fb.h"
 #include "exynos_drm_plane.h"
+#include "exynos_drm_iommu.h"
 
 #define MIXER_WIN_NR		3
 #define VP_DEFAULT_WIN		2
@@ -130,18 +131,14 @@ static const struct exynos_drm_plane_config plane_configs[MIXER_WIN_NR] = {
 		.pixel_formats = mixer_formats,
 		.num_pixel_formats = ARRAY_SIZE(mixer_formats),
 		.capabilities = EXYNOS_DRM_PLANE_CAP_DOUBLE |
-				EXYNOS_DRM_PLANE_CAP_ZPOS |
-				EXYNOS_DRM_PLANE_CAP_PIX_BLEND |
-				EXYNOS_DRM_PLANE_CAP_WIN_BLEND,
+				EXYNOS_DRM_PLANE_CAP_ZPOS,
 	}, {
 		.zpos = 1,
 		.type = DRM_PLANE_TYPE_CURSOR,
 		.pixel_formats = mixer_formats,
 		.num_pixel_formats = ARRAY_SIZE(mixer_formats),
 		.capabilities = EXYNOS_DRM_PLANE_CAP_DOUBLE |
-				EXYNOS_DRM_PLANE_CAP_ZPOS |
-				EXYNOS_DRM_PLANE_CAP_PIX_BLEND |
-				EXYNOS_DRM_PLANE_CAP_WIN_BLEND,
+				EXYNOS_DRM_PLANE_CAP_ZPOS,
 	}, {
 		.zpos = 2,
 		.type = DRM_PLANE_TYPE_OVERLAY,
@@ -149,8 +146,7 @@ static const struct exynos_drm_plane_config plane_configs[MIXER_WIN_NR] = {
 		.num_pixel_formats = ARRAY_SIZE(vp_formats),
 		.capabilities = EXYNOS_DRM_PLANE_CAP_SCALE |
 				EXYNOS_DRM_PLANE_CAP_ZPOS |
-				EXYNOS_DRM_PLANE_CAP_TILE |
-				EXYNOS_DRM_PLANE_CAP_WIN_BLEND,
+				EXYNOS_DRM_PLANE_CAP_TILE,
 	},
 };
 
@@ -182,6 +178,18 @@ static const u8 filter_cr_horiz_tap4[] = {
 	127,	126,	124,	118,	111,	102,	92,	81,
 	70,	59,	48,	37,	27,	19,	11,	5,
 };
+
+static inline bool is_alpha_format(unsigned int pixel_format)
+{
+	switch (pixel_format) {
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_ARGB1555:
+	case DRM_FORMAT_ARGB4444:
+		return true;
+	default:
+		return false;
+	}
+}
 
 static inline u32 vp_reg_read(struct mixer_context *ctx, u32 reg_id)
 {
@@ -313,42 +321,31 @@ static void vp_default_filter(struct mixer_context *ctx)
 }
 
 static void mixer_cfg_gfx_blend(struct mixer_context *ctx, unsigned int win,
-				unsigned int pixel_alpha, unsigned int alpha)
+				bool alpha)
 {
-	u32 win_alpha = alpha >> 8;
 	u32 val;
 
 	val  = MXR_GRP_CFG_COLOR_KEY_DISABLE; /* no blank key */
-	switch (pixel_alpha) {
-	case DRM_MODE_BLEND_PIXEL_NONE:
-		break;
-	case DRM_MODE_BLEND_COVERAGE:
-		val |= MXR_GRP_CFG_PIXEL_BLEND_EN;
-		break;
-	case DRM_MODE_BLEND_PREMULTI:
-	default:
+	if (alpha) {
+		/* blending based on pixel alpha */
 		val |= MXR_GRP_CFG_BLEND_PRE_MUL;
 		val |= MXR_GRP_CFG_PIXEL_BLEND_EN;
-		break;
-	}
-
-	if (alpha != DRM_BLEND_ALPHA_OPAQUE) {
-		val |= MXR_GRP_CFG_WIN_BLEND_EN;
-		val |= win_alpha;
 	}
 	mixer_reg_writemask(ctx, MXR_GRAPHIC_CFG(win),
 			    val, MXR_GRP_CFG_MISC_MASK);
 }
 
-static void mixer_cfg_vp_blend(struct mixer_context *ctx, unsigned int alpha)
+static void mixer_cfg_vp_blend(struct mixer_context *ctx)
 {
-	u32 win_alpha = alpha >> 8;
-	u32 val = 0;
+	u32 val;
 
-	if (alpha != DRM_BLEND_ALPHA_OPAQUE) {
-		val |= MXR_VID_CFG_BLEND_EN;
-		val |= win_alpha;
-	}
+	/*
+	 * No blending at the moment since the NV12/NV21 pixelformats don't
+	 * have an alpha channel. However the mixer supports a global alpha
+	 * value for a layer. Once this functionality is exposed, we can
+	 * support blending of the video layer through this.
+	 */
+	val = 0;
 	mixer_reg_write(ctx, MXR_VIDEO_CFG, val);
 }
 
@@ -380,16 +377,19 @@ static void mixer_cfg_scan(struct mixer_context *ctx, int width, int height)
 	mixer_reg_writemask(ctx, MXR_CFG, val, MXR_CFG_SCAN_MASK);
 }
 
-static void mixer_cfg_rgb_fmt(struct mixer_context *ctx, struct drm_display_mode *mode)
+static void mixer_cfg_rgb_fmt(struct mixer_context *ctx, unsigned int height)
 {
-	enum hdmi_quantization_range range = drm_default_rgb_quant_range(mode);
 	u32 val;
 
-	if (mode->vdisplay < 720) {
-		val = MXR_CFG_RGB601;
-	} else {
-		val = MXR_CFG_RGB709;
-
+	switch (height) {
+	case 480:
+	case 576:
+		val = MXR_CFG_RGB601_0_255;
+		break;
+	case 720:
+	case 1080:
+	default:
+		val = MXR_CFG_RGB709_16_235;
 		/* Configure the BT.709 CSC matrix for full range RGB. */
 		mixer_reg_write(ctx, MXR_CM_COEFF_Y,
 			MXR_CSC_CT( 0.184,  0.614,  0.063) |
@@ -398,12 +398,8 @@ static void mixer_cfg_rgb_fmt(struct mixer_context *ctx, struct drm_display_mode
 			MXR_CSC_CT(-0.102, -0.338,  0.440));
 		mixer_reg_write(ctx, MXR_CM_COEFF_CR,
 			MXR_CSC_CT( 0.440, -0.399, -0.040));
+		break;
 	}
-
-	if (range == HDMI_QUANTIZATION_RANGE_FULL)
-		val |= MXR_CFG_QUANT_RANGE_FULL;
-	else
-		val |= MXR_CFG_QUANT_RANGE_LIMITED;
 
 	mixer_reg_writemask(ctx, MXR_CFG, val, MXR_CFG_RGB_FMT_MASK);
 }
@@ -461,7 +457,7 @@ static void mixer_commit(struct mixer_context *ctx)
 	struct drm_display_mode *mode = &ctx->crtc->base.state->adjusted_mode;
 
 	mixer_cfg_scan(ctx, mode->hdisplay, mode->vdisplay);
-	mixer_cfg_rgb_fmt(ctx, mode);
+	mixer_cfg_rgb_fmt(ctx, mode->vdisplay);
 	mixer_run(ctx);
 }
 
@@ -489,7 +485,7 @@ static void vp_video_buffer(struct mixer_context *ctx,
 			chroma_addr[1] = chroma_addr[0] + 0x40;
 		} else {
 			luma_addr[1] = luma_addr[0] + fb->pitches[0];
-			chroma_addr[1] = chroma_addr[0] + fb->pitches[1];
+			chroma_addr[1] = chroma_addr[0] + fb->pitches[0];
 		}
 	} else {
 		luma_addr[1] = 0;
@@ -498,7 +494,6 @@ static void vp_video_buffer(struct mixer_context *ctx,
 
 	spin_lock_irqsave(&ctx->reg_slock, flags);
 
-	vp_reg_write(ctx, VP_SHADOW_UPDATE, 1);
 	/* interlace or progressive scan mode */
 	val = (test_bit(MXR_BIT_INTERLACE, &ctx->flags) ? ~0 : 0);
 	vp_reg_writemask(ctx, VP_MODE, val, VP_MODE_LINE_SKIP);
@@ -512,23 +507,21 @@ static void vp_video_buffer(struct mixer_context *ctx,
 	vp_reg_write(ctx, VP_IMG_SIZE_Y, VP_IMG_HSIZE(fb->pitches[0]) |
 		VP_IMG_VSIZE(fb->height));
 	/* chroma plane for NV12/NV21 is half the height of the luma plane */
-	vp_reg_write(ctx, VP_IMG_SIZE_C, VP_IMG_HSIZE(fb->pitches[1]) |
+	vp_reg_write(ctx, VP_IMG_SIZE_C, VP_IMG_HSIZE(fb->pitches[0]) |
 		VP_IMG_VSIZE(fb->height / 2));
 
 	vp_reg_write(ctx, VP_SRC_WIDTH, state->src.w);
+	vp_reg_write(ctx, VP_SRC_HEIGHT, state->src.h);
 	vp_reg_write(ctx, VP_SRC_H_POSITION,
 			VP_SRC_H_POSITION_VAL(state->src.x));
+	vp_reg_write(ctx, VP_SRC_V_POSITION, state->src.y);
+
 	vp_reg_write(ctx, VP_DST_WIDTH, state->crtc.w);
 	vp_reg_write(ctx, VP_DST_H_POSITION, state->crtc.x);
-
 	if (test_bit(MXR_BIT_INTERLACE, &ctx->flags)) {
-		vp_reg_write(ctx, VP_SRC_HEIGHT, state->src.h / 2);
-		vp_reg_write(ctx, VP_SRC_V_POSITION, state->src.y / 2);
 		vp_reg_write(ctx, VP_DST_HEIGHT, state->crtc.h / 2);
 		vp_reg_write(ctx, VP_DST_V_POSITION, state->crtc.y / 2);
 	} else {
-		vp_reg_write(ctx, VP_SRC_HEIGHT, state->src.h);
-		vp_reg_write(ctx, VP_SRC_V_POSITION, state->src.y);
 		vp_reg_write(ctx, VP_DST_HEIGHT, state->crtc.h);
 		vp_reg_write(ctx, VP_DST_V_POSITION, state->crtc.y);
 	}
@@ -545,7 +538,7 @@ static void vp_video_buffer(struct mixer_context *ctx,
 	vp_reg_write(ctx, VP_BOT_C_PTR, chroma_addr[1]);
 
 	mixer_cfg_layer(ctx, plane->index, priority, true);
-	mixer_cfg_vp_blend(ctx, state->base.alpha);
+	mixer_cfg_vp_blend(ctx);
 
 	spin_unlock_irqrestore(&ctx->reg_slock, flags);
 
@@ -569,15 +562,9 @@ static void mixer_graph_buffer(struct mixer_context *ctx,
 	unsigned int win = plane->index;
 	unsigned int x_ratio = 0, y_ratio = 0;
 	unsigned int dst_x_offset, dst_y_offset;
-	unsigned int pixel_alpha;
 	dma_addr_t dma_addr;
 	unsigned int fmt;
 	u32 val;
-
-	if (fb->format->has_alpha)
-		pixel_alpha = state->base.pixel_blend_mode;
-	else
-		pixel_alpha = DRM_MODE_BLEND_PIXEL_NONE;
 
 	switch (fb->format->format) {
 	case DRM_FORMAT_XRGB4444:
@@ -638,7 +625,7 @@ static void mixer_graph_buffer(struct mixer_context *ctx,
 	mixer_reg_write(ctx, MXR_GRAPHIC_BASE(win), dma_addr);
 
 	mixer_cfg_layer(ctx, win, priority, true);
-	mixer_cfg_gfx_blend(ctx, win, pixel_alpha, state->base.alpha);
+	mixer_cfg_gfx_blend(ctx, win, is_alpha_format(fb->format->format));
 
 	/* layer update mandatory for mixer 16.0.33.0 */
 	if (ctx->mxr_ver == MXR_VER_16_0_33_0 ||
@@ -724,15 +711,6 @@ static irqreturn_t mixer_irq_handler(int irq, void *arg)
 
 		/* interlace scan need to check shadow register */
 		if (test_bit(MXR_BIT_INTERLACE, &ctx->flags)) {
-			if (test_bit(MXR_BIT_VP_ENABLED, &ctx->flags) &&
-			    vp_reg_read(ctx, VP_SHADOW_UPDATE))
-				goto out;
-
-			base = mixer_reg_read(ctx, MXR_CFG);
-			shadow = mixer_reg_read(ctx, MXR_CFG_S);
-			if (base != shadow)
-				goto out;
-
 			base = mixer_reg_read(ctx, MXR_GRAPHIC_BASE(0));
 			shadow = mixer_reg_read(ctx, MXR_GRAPHIC_BASE_S(0));
 			if (base != shadow)
@@ -859,6 +837,8 @@ static int mixer_initialize(struct mixer_context *mixer_ctx,
 			struct drm_device *drm_dev)
 {
 	int ret;
+	struct exynos_drm_private *priv;
+	priv = drm_dev->dev_private;
 
 	mixer_ctx->drm_dev = drm_dev;
 
@@ -878,12 +858,12 @@ static int mixer_initialize(struct mixer_context *mixer_ctx,
 		}
 	}
 
-	return exynos_drm_register_dma(drm_dev, mixer_ctx->dev);
+	return drm_iommu_attach_device(drm_dev, mixer_ctx->dev);
 }
 
 static void mixer_ctx_remove(struct mixer_context *mixer_ctx)
 {
-	exynos_drm_unregister_dma(mixer_ctx->drm_dev, mixer_ctx->dev);
+	drm_iommu_detach_device(mixer_ctx->drm_dev, mixer_ctx->dev);
 }
 
 static int mixer_enable_vblank(struct exynos_drm_crtc *crtc)
@@ -1291,8 +1271,6 @@ static int __maybe_unused exynos_mixer_resume(struct device *dev)
 
 static const struct dev_pm_ops exynos_mixer_pm_ops = {
 	SET_RUNTIME_PM_OPS(exynos_mixer_suspend, exynos_mixer_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
 };
 
 struct platform_driver mixer_driver = {

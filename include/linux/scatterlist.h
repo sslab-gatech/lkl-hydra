@@ -9,6 +9,9 @@
 #include <asm/io.h>
 
 struct scatterlist {
+#ifdef CONFIG_DEBUG_SG
+	unsigned long	sg_magic;
+#endif
 	unsigned long	page_link;
 	unsigned int	offset;
 	unsigned int	length;
@@ -61,18 +64,17 @@ struct sg_table {
  *
  */
 
-#define SG_CHAIN	0x01UL
-#define SG_END		0x02UL
+#define SG_MAGIC	0x87654321
 
 /*
  * We overload the LSB of the page pointer to indicate whether it's
  * a valid sg entry, or whether it points to the start of a new scatterlist.
  * Those low bits are there for everyone! (thanks mason :-)
  */
-#define sg_is_chain(sg)		((sg)->page_link & SG_CHAIN)
-#define sg_is_last(sg)		((sg)->page_link & SG_END)
+#define sg_is_chain(sg)		((sg)->page_link & 0x01)
+#define sg_is_last(sg)		((sg)->page_link & 0x02)
 #define sg_chain_ptr(sg)	\
-	((struct scatterlist *) ((sg)->page_link & ~(SG_CHAIN | SG_END)))
+	((struct scatterlist *) ((sg)->page_link & ~0x03))
 
 /**
  * sg_assign_page - Assign a given page to an SG entry
@@ -86,14 +88,15 @@ struct sg_table {
  **/
 static inline void sg_assign_page(struct scatterlist *sg, struct page *page)
 {
-	unsigned long page_link = sg->page_link & (SG_CHAIN | SG_END);
+	unsigned long page_link = sg->page_link & 0x3;
 
 	/*
 	 * In order for the low bit stealing approach to work, pages
 	 * must be aligned at a 32-bit boundary as a minimum.
 	 */
-	BUG_ON((unsigned long) page & (SG_CHAIN | SG_END));
+	BUG_ON((unsigned long) page & 0x03);
 #ifdef CONFIG_DEBUG_SG
+	BUG_ON(sg->sg_magic != SG_MAGIC);
 	BUG_ON(sg_is_chain(sg));
 #endif
 	sg->page_link = page_link | (unsigned long) page;
@@ -124,9 +127,10 @@ static inline void sg_set_page(struct scatterlist *sg, struct page *page,
 static inline struct page *sg_page(struct scatterlist *sg)
 {
 #ifdef CONFIG_DEBUG_SG
+	BUG_ON(sg->sg_magic != SG_MAGIC);
 	BUG_ON(sg_is_chain(sg));
 #endif
-	return (struct page *)((sg)->page_link & ~(SG_CHAIN | SG_END));
+	return (struct page *)((sg)->page_link & ~0x3);
 }
 
 /**
@@ -174,8 +178,7 @@ static inline void sg_chain(struct scatterlist *prv, unsigned int prv_nents,
 	 * Set lowest bit to indicate a link pointer, and make sure to clear
 	 * the termination bit if it happens to be set.
 	 */
-	prv[prv_nents - 1].page_link = ((unsigned long) sgl | SG_CHAIN)
-					& ~SG_END;
+	prv[prv_nents - 1].page_link = ((unsigned long) sgl | 0x01) & ~0x02;
 }
 
 /**
@@ -189,11 +192,14 @@ static inline void sg_chain(struct scatterlist *prv, unsigned int prv_nents,
  **/
 static inline void sg_mark_end(struct scatterlist *sg)
 {
+#ifdef CONFIG_DEBUG_SG
+	BUG_ON(sg->sg_magic != SG_MAGIC);
+#endif
 	/*
 	 * Set termination bit, clear potential chain bit
 	 */
-	sg->page_link |= SG_END;
-	sg->page_link &= ~SG_CHAIN;
+	sg->page_link |= 0x02;
+	sg->page_link &= ~0x01;
 }
 
 /**
@@ -206,7 +212,10 @@ static inline void sg_mark_end(struct scatterlist *sg)
  **/
 static inline void sg_unmark_end(struct scatterlist *sg)
 {
-	sg->page_link &= ~SG_END;
+#ifdef CONFIG_DEBUG_SG
+	BUG_ON(sg->sg_magic != SG_MAGIC);
+#endif
+	sg->page_link &= ~0x02;
 }
 
 /**
@@ -237,18 +246,6 @@ static inline dma_addr_t sg_phys(struct scatterlist *sg)
 static inline void *sg_virt(struct scatterlist *sg)
 {
 	return page_address(sg_page(sg)) + sg->offset;
-}
-
-/**
- * sg_init_marker - Initialize markers in sg table
- * @sgl:	   The SG table
- * @nents:	   Number of entries in table
- *
- **/
-static inline void sg_init_marker(struct scatterlist *sgl,
-				  unsigned int nents)
-{
-	sg_mark_end(&sgl[nents - 1]);
 }
 
 int sg_nents(struct scatterlist *sg);
@@ -324,10 +321,10 @@ size_t sg_zero_buffer(struct scatterlist *sgl, unsigned int nents,
  * Like SG_CHUNK_SIZE, but for archs that have sg chaining. This limit
  * is totally arbitrary, a setting of 2048 will get you at least 8mb ios.
  */
-#ifdef CONFIG_ARCH_NO_SG_CHAIN
-#define SG_MAX_SEGMENTS	SG_CHUNK_SIZE
-#else
+#ifdef CONFIG_ARCH_HAS_SG_CHAIN
 #define SG_MAX_SEGMENTS	2048
+#else
+#define SG_MAX_SEGMENTS	SG_CHUNK_SIZE
 #endif
 
 #ifdef CONFIG_SG_POOL

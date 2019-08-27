@@ -43,7 +43,7 @@ config PWM_AB8500
 
 config PWM_ATMEL
 	tristate "Atmel PWM support"
-	depends on ARCH_AT91
+	depends on ARCH_AT91 || AVR32
 	help
 	  Generic PWM framework driver for Atmel SoC.
 
@@ -88,9 +88,7 @@ config PWM_BCM_IPROC
 
 config PWM_BCM_KONA
 	tristate "Kona PWM support"
-	depends on ARCH_BCM_MOBILE || ARCH_BCM_CYGNUS || COMPILE_TEST
-	depends on HAVE_CLK && HAS_IOMEM
-	default ARCH_BCM_MOBILE || ARCH_BCM_CYGNUS
+	depends on ARCH_BCM_MOBILE
 	help
 	  Generic PWM framework driver for Broadcom Kona PWM block.
 
@@ -114,6 +112,15 @@ config PWM_BERLIN
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-berlin.
+
+config PWM_BFIN
+	tristate "Blackfin PWM support"
+	depends on BFIN_GPTIMERS
+	help
+	  Generic PWM framework driver for Blackfin.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-bfin.
 
 config PWM_BRCMSTB
 	tristate "Broadcom STB PWM support"
@@ -202,10 +209,10 @@ config PWM_IMX
 	  will be called pwm-imx.
 
 config PWM_JZ4740
-	tristate "Ingenic JZ47xx PWM support"
-	depends on MACH_INGENIC
+	tristate "Ingenic JZ4740 PWM support"
+	depends on MACH_JZ4740
 	help
-	  Generic PWM framework driver for Ingenic JZ47xx based
+	  Generic PWM framework driver for Ingenic JZ4740 based
 	  machines.
 
 	  To compile this driver as a module, choose M here: the module
@@ -288,7 +295,7 @@ config PWM_MTK_DISP
 
 config PWM_MEDIATEK
 	tristate "MediaTek PWM support"
-	depends on ARCH_MEDIATEK || RALINK || COMPILE_TEST
+	depends on ARCH_MEDIATEK || COMPILE_TEST
 	help
 	  Generic PWM framework driver for Mediatek ARM SoC.
 
@@ -403,7 +410,7 @@ config PWM_STI
 
 config PWM_STM32
 	tristate "STMicroelectronics STM32 PWM"
-	depends on MFD_STM32_TIMERS
+	depends on MFD_STM32_TIMERS || COMPILE_TEST
 	help
 	  Generic PWM framework driver for STM32 SoCs.
 
@@ -449,9 +456,10 @@ config PWM_TEGRA
 
 config  PWM_TIECAP
 	tristate "ECAP PWM support"
-	depends on ARCH_OMAP2PLUS || ARCH_DAVINCI_DA8XX || ARCH_KEYSTONE || ARCH_K3
+	depends on ARCH_OMAP2PLUS || ARCH_DAVINCI_DA8XX || ARCH_KEYSTONE
 	help
-	  PWM driver support for the ECAP APWM controller found on TI SOCs
+	  PWM driver support for the ECAP APWM controller found on AM33XX
+	  TI SOC
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-tiecap.

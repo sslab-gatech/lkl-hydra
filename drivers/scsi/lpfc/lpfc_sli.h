@@ -1,8 +1,8 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2018 Broadcom. All Rights Reserved. The term *
- * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
+ * Copyright (C) 2017 Broadcom. All Rights Reserved. The term      *
+ * “Broadcom” refers to Broadcom Limited and/or its subsidiaries.  *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.broadcom.com                                                *
@@ -61,8 +61,9 @@ struct lpfc_iocbq {
 	struct lpfc_wcqe_complete wcqe_cmpl;	/* WQE cmpl */
 	uint64_t isr_timestamp;
 
-	union lpfc_wqe128 wqe;	/* SLI-4 */
-	IOCB_t iocb;		/* SLI-3 */
+	/* Be careful here */
+	union lpfc_wqe wqe;	/* WQE cmd */
+	IOCB_t iocb;		/* For IOCB cmd or if we want 128 byte WQE */
 
 	uint8_t rsvd2;
 	uint8_t priority;	/* OAS priority */
@@ -144,10 +145,9 @@ typedef struct lpfcMboxq {
 		MAILBOX_t mb;		/* Mailbox cmd */
 		struct lpfc_mqe mqe;
 	} u;
-	struct lpfc_vport *vport; /* virtual port pointer */
-	void *ctx_ndlp;		  /* caller ndlp information */
-	void *ctx_buf;		  /* caller buffer information */
-	void *context3;
+	struct lpfc_vport *vport;/* virtual port pointer */
+	void *context1;		/* caller context information */
+	void *context2;		/* caller context information */
 
 	void (*mbox_cmpl) (struct lpfc_hba *, struct lpfcMboxq *);
 	uint8_t mbox_flag;
@@ -339,7 +339,7 @@ struct lpfc_sli {
 	struct lpfc_iocbq ** iocbq_lookup; /* array to lookup IOCB by IOTAG */
 	size_t iocbq_lookup_len;           /* current lengs of the array */
 	uint16_t  last_iotag;              /* last allocated IOTAG */
-	time64_t  stats_start;		   /* in seconds */
+	unsigned long  stats_start;        /* in seconds */
 	struct lpfc_lnk_stat lnk_stat_offsets;
 };
 

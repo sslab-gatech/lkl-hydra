@@ -45,7 +45,6 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <locale.h>
 #include <poll.h>
 #include <unistd.h>
 #include <sched.h>
@@ -71,6 +70,7 @@ struct record {
 	struct auxtrace_record	*itr;
 	struct perf_evlist	*evlist;
 	struct perf_session	*session;
+	const char		*progname;
 	int			realtime_prio;
 	bool			no_buildid;
 	bool			no_buildid_set;
@@ -106,12 +106,9 @@ static bool switch_output_time(struct record *rec)
 	       trigger_is_ready(&switch_output_trigger);
 }
 
-static int record__write(struct record *rec, struct perf_mmap *map __maybe_unused,
-			 void *bf, size_t size)
+static int record__write(struct record *rec, void *bf, size_t size)
 {
-	struct perf_data_file *file = &rec->session->data->file;
-
-	if (perf_data_file__write(file, bf, size) < 0) {
+	if (perf_data__write(rec->session->data, bf, size) < 0) {
 		pr_err("failed to write perf data, error: %m\n");
 		return -1;
 	}
@@ -124,225 +121,21 @@ static int record__write(struct record *rec, struct perf_mmap *map __maybe_unuse
 	return 0;
 }
 
-#ifdef HAVE_AIO_SUPPORT
-static int record__aio_write(struct aiocb *cblock, int trace_fd,
-		void *buf, size_t size, off_t off)
-{
-	int rc;
-
-	cblock->aio_fildes = trace_fd;
-	cblock->aio_buf    = buf;
-	cblock->aio_nbytes = size;
-	cblock->aio_offset = off;
-	cblock->aio_sigevent.sigev_notify = SIGEV_NONE;
-
-	do {
-		rc = aio_write(cblock);
-		if (rc == 0) {
-			break;
-		} else if (errno != EAGAIN) {
-			cblock->aio_fildes = -1;
-			pr_err("failed to queue perf data, error: %m\n");
-			break;
-		}
-	} while (1);
-
-	return rc;
-}
-
-static int record__aio_complete(struct perf_mmap *md, struct aiocb *cblock)
-{
-	void *rem_buf;
-	off_t rem_off;
-	size_t rem_size;
-	int rc, aio_errno;
-	ssize_t aio_ret, written;
-
-	aio_errno = aio_error(cblock);
-	if (aio_errno == EINPROGRESS)
-		return 0;
-
-	written = aio_ret = aio_return(cblock);
-	if (aio_ret < 0) {
-		if (aio_errno != EINTR)
-			pr_err("failed to write perf data, error: %m\n");
-		written = 0;
-	}
-
-	rem_size = cblock->aio_nbytes - written;
-
-	if (rem_size == 0) {
-		cblock->aio_fildes = -1;
-		/*
-		 * md->refcount is incremented in perf_mmap__push() for
-		 * every enqueued aio write request so decrement it because
-		 * the request is now complete.
-		 */
-		perf_mmap__put(md);
-		rc = 1;
-	} else {
-		/*
-		 * aio write request may require restart with the
-		 * reminder if the kernel didn't write whole
-		 * chunk at once.
-		 */
-		rem_off = cblock->aio_offset + written;
-		rem_buf = (void *)(cblock->aio_buf + written);
-		record__aio_write(cblock, cblock->aio_fildes,
-				rem_buf, rem_size, rem_off);
-		rc = 0;
-	}
-
-	return rc;
-}
-
-static int record__aio_sync(struct perf_mmap *md, bool sync_all)
-{
-	struct aiocb **aiocb = md->aio.aiocb;
-	struct aiocb *cblocks = md->aio.cblocks;
-	struct timespec timeout = { 0, 1000 * 1000  * 1 }; /* 1ms */
-	int i, do_suspend;
-
-	do {
-		do_suspend = 0;
-		for (i = 0; i < md->aio.nr_cblocks; ++i) {
-			if (cblocks[i].aio_fildes == -1 || record__aio_complete(md, &cblocks[i])) {
-				if (sync_all)
-					aiocb[i] = NULL;
-				else
-					return i;
-			} else {
-				/*
-				 * Started aio write is not complete yet
-				 * so it has to be waited before the
-				 * next allocation.
-				 */
-				aiocb[i] = &cblocks[i];
-				do_suspend = 1;
-			}
-		}
-		if (!do_suspend)
-			return -1;
-
-		while (aio_suspend((const struct aiocb **)aiocb, md->aio.nr_cblocks, &timeout)) {
-			if (!(errno == EAGAIN || errno == EINTR))
-				pr_err("failed to sync perf data, error: %m\n");
-		}
-	} while (1);
-}
-
-static int record__aio_pushfn(void *to, struct aiocb *cblock, void *bf, size_t size, off_t off)
-{
-	struct record *rec = to;
-	int ret, trace_fd = rec->session->data->file.fd;
-
-	rec->samples++;
-
-	ret = record__aio_write(cblock, trace_fd, bf, size, off);
-	if (!ret) {
-		rec->bytes_written += size;
-		if (switch_output_size(rec))
-			trigger_hit(&switch_output_trigger);
-	}
-
-	return ret;
-}
-
-static off_t record__aio_get_pos(int trace_fd)
-{
-	return lseek(trace_fd, 0, SEEK_CUR);
-}
-
-static void record__aio_set_pos(int trace_fd, off_t pos)
-{
-	lseek(trace_fd, pos, SEEK_SET);
-}
-
-static void record__aio_mmap_read_sync(struct record *rec)
-{
-	int i;
-	struct perf_evlist *evlist = rec->evlist;
-	struct perf_mmap *maps = evlist->mmap;
-
-	if (!rec->opts.nr_cblocks)
-		return;
-
-	for (i = 0; i < evlist->nr_mmaps; i++) {
-		struct perf_mmap *map = &maps[i];
-
-		if (map->base)
-			record__aio_sync(map, true);
-	}
-}
-
-static int nr_cblocks_default = 1;
-static int nr_cblocks_max = 4;
-
-static int record__aio_parse(const struct option *opt,
-			     const char *str,
-			     int unset)
-{
-	struct record_opts *opts = (struct record_opts *)opt->value;
-
-	if (unset) {
-		opts->nr_cblocks = 0;
-	} else {
-		if (str)
-			opts->nr_cblocks = strtol(str, NULL, 0);
-		if (!opts->nr_cblocks)
-			opts->nr_cblocks = nr_cblocks_default;
-	}
-
-	return 0;
-}
-#else /* HAVE_AIO_SUPPORT */
-static int nr_cblocks_max = 0;
-
-static int record__aio_sync(struct perf_mmap *md __maybe_unused, bool sync_all __maybe_unused)
-{
-	return -1;
-}
-
-static int record__aio_pushfn(void *to __maybe_unused, struct aiocb *cblock __maybe_unused,
-		void *bf __maybe_unused, size_t size __maybe_unused, off_t off __maybe_unused)
-{
-	return -1;
-}
-
-static off_t record__aio_get_pos(int trace_fd __maybe_unused)
-{
-	return -1;
-}
-
-static void record__aio_set_pos(int trace_fd __maybe_unused, off_t pos __maybe_unused)
-{
-}
-
-static void record__aio_mmap_read_sync(struct record *rec __maybe_unused)
-{
-}
-#endif
-
-static int record__aio_enabled(struct record *rec)
-{
-	return rec->opts.nr_cblocks > 0;
-}
-
 static int process_synthesized_event(struct perf_tool *tool,
 				     union perf_event *event,
 				     struct perf_sample *sample __maybe_unused,
 				     struct machine *machine __maybe_unused)
 {
 	struct record *rec = container_of(tool, struct record, tool);
-	return record__write(rec, NULL, event, event->header.size);
+	return record__write(rec, event, event->header.size);
 }
 
-static int record__pushfn(struct perf_mmap *map, void *to, void *bf, size_t size)
+static int record__pushfn(void *to, void *bf, size_t size)
 {
 	struct record *rec = to;
 
 	rec->samples++;
-	return record__write(rec, map, bf, size);
+	return record__write(rec, bf, size);
 }
 
 static volatile int done;
@@ -377,7 +170,6 @@ static void record__sig_exit(void)
 #ifdef HAVE_AUXTRACE_SUPPORT
 
 static int record__process_auxtrace(struct perf_tool *tool,
-				    struct perf_mmap *map,
 				    union perf_event *event, void *data1,
 				    size_t len1, void *data2, size_t len2)
 {
@@ -405,21 +197,21 @@ static int record__process_auxtrace(struct perf_tool *tool,
 	if (padding)
 		padding = 8 - padding;
 
-	record__write(rec, map, event, event->header.size);
-	record__write(rec, map, data1, len1);
+	record__write(rec, event, event->header.size);
+	record__write(rec, data1, len1);
 	if (len2)
-		record__write(rec, map, data2, len2);
-	record__write(rec, map, &pad, padding);
+		record__write(rec, data2, len2);
+	record__write(rec, &pad, padding);
 
 	return 0;
 }
 
 static int record__auxtrace_mmap_read(struct record *rec,
-				      struct perf_mmap *map)
+				      struct auxtrace_mmap *mm)
 {
 	int ret;
 
-	ret = auxtrace_mmap__read(map, rec->itr, &rec->tool,
+	ret = auxtrace_mmap__read(mm, rec->itr, &rec->tool,
 				  record__process_auxtrace);
 	if (ret < 0)
 		return ret;
@@ -431,11 +223,11 @@ static int record__auxtrace_mmap_read(struct record *rec,
 }
 
 static int record__auxtrace_mmap_read_snapshot(struct record *rec,
-					       struct perf_mmap *map)
+					       struct auxtrace_mmap *mm)
 {
 	int ret;
 
-	ret = auxtrace_mmap__read_snapshot(map, rec->itr, &rec->tool,
+	ret = auxtrace_mmap__read_snapshot(mm, rec->itr, &rec->tool,
 					   record__process_auxtrace,
 					   rec->opts.auxtrace_snapshot_size);
 	if (ret < 0)
@@ -453,12 +245,13 @@ static int record__auxtrace_read_snapshot_all(struct record *rec)
 	int rc = 0;
 
 	for (i = 0; i < rec->evlist->nr_mmaps; i++) {
-		struct perf_mmap *map = &rec->evlist->mmap[i];
+		struct auxtrace_mmap *mm =
+				&rec->evlist->mmap[i].auxtrace_mmap;
 
-		if (!map->auxtrace_mmap.base)
+		if (!mm->base)
 			continue;
 
-		if (record__auxtrace_mmap_read_snapshot(rec, map) != 0) {
+		if (record__auxtrace_mmap_read_snapshot(rec, mm) != 0) {
 			rc = -1;
 			goto out;
 		}
@@ -480,29 +273,11 @@ static void record__read_auxtrace_snapshot(struct record *rec)
 	}
 }
 
-static int record__auxtrace_init(struct record *rec)
-{
-	int err;
-
-	if (!rec->itr) {
-		rec->itr = auxtrace_record__init(rec->evlist, &err);
-		if (err)
-			return err;
-	}
-
-	err = auxtrace_parse_snapshot_options(rec->itr, &rec->opts,
-					      rec->opts.auxtrace_snapshot_opts);
-	if (err)
-		return err;
-
-	return auxtrace_parse_filters(rec->evlist);
-}
-
 #else
 
 static inline
 int record__auxtrace_mmap_read(struct record *rec __maybe_unused,
-			       struct perf_mmap *map __maybe_unused)
+			       struct auxtrace_mmap *mm __maybe_unused)
 {
 	return 0;
 }
@@ -518,11 +293,6 @@ int auxtrace_record__snapshot_start(struct auxtrace_record *itr __maybe_unused)
 	return 0;
 }
 
-static int record__auxtrace_init(struct record *rec __maybe_unused)
-{
-	return 0;
-}
-
 #endif
 
 static int record__mmap_evlist(struct record *rec,
@@ -533,7 +303,7 @@ static int record__mmap_evlist(struct record *rec,
 
 	if (perf_evlist__mmap_ex(evlist, opts->mmap_pages,
 				 opts->auxtrace_mmap_pages,
-				 opts->auxtrace_snapshot_mode, opts->nr_cblocks) < 0) {
+				 opts->auxtrace_snapshot_mode) < 0) {
 		if (errno == EPERM) {
 			pr_err("Permission error mapping pages.\n"
 			       "Consider increasing "
@@ -595,12 +365,7 @@ try_again:
 					ui__warning("%s\n", msg);
 				goto try_again;
 			}
-			if ((errno == EINVAL || errno == EBADF) &&
-			    pos->leader != pos &&
-			    pos->weak_group) {
-			        pos = perf_evlist__reset_weak_group(evlist, pos);
-				goto try_again;
-			}
+
 			rc = -errno;
 			perf_evsel__open_strerror(pos, &opts->target,
 						  errno, msg, sizeof(msg));
@@ -729,8 +494,6 @@ static int record__mmap_read_evlist(struct record *rec, struct perf_evlist *evli
 	int i;
 	int rc = 0;
 	struct perf_mmap *maps;
-	int trace_fd = rec->data.file.fd;
-	off_t off;
 
 	if (!evlist)
 		return 0;
@@ -742,49 +505,29 @@ static int record__mmap_read_evlist(struct record *rec, struct perf_evlist *evli
 	if (overwrite && evlist->bkw_mmap_state != BKW_MMAP_DATA_PENDING)
 		return 0;
 
-	if (record__aio_enabled(rec))
-		off = record__aio_get_pos(trace_fd);
-
 	for (i = 0; i < evlist->nr_mmaps; i++) {
-		struct perf_mmap *map = &maps[i];
+		struct auxtrace_mmap *mm = &maps[i].auxtrace_mmap;
 
-		if (map->base) {
-			if (!record__aio_enabled(rec)) {
-				if (perf_mmap__push(map, rec, record__pushfn) != 0) {
-					rc = -1;
-					goto out;
-				}
-			} else {
-				int idx;
-				/*
-				 * Call record__aio_sync() to wait till map->data buffer
-				 * becomes available after previous aio write request.
-				 */
-				idx = record__aio_sync(map, false);
-				if (perf_mmap__aio_push(map, rec, idx, record__aio_pushfn, &off) != 0) {
-					record__aio_set_pos(trace_fd, off);
-					rc = -1;
-					goto out;
-				}
+		if (maps[i].base) {
+			if (perf_mmap__push(&maps[i], overwrite, rec, record__pushfn) != 0) {
+				rc = -1;
+				goto out;
 			}
 		}
 
-		if (map->auxtrace_mmap.base && !rec->opts.auxtrace_snapshot_mode &&
-		    record__auxtrace_mmap_read(rec, map) != 0) {
+		if (mm->base && !rec->opts.auxtrace_snapshot_mode &&
+		    record__auxtrace_mmap_read(rec, mm) != 0) {
 			rc = -1;
 			goto out;
 		}
 	}
-
-	if (record__aio_enabled(rec))
-		record__aio_set_pos(trace_fd, off);
 
 	/*
 	 * Mark the round finished in case we wrote
 	 * at least one event.
 	 */
 	if (bytes_written != rec->bytes_written)
-		rc = record__write(rec, NULL, &finished_round_event, sizeof(finished_round_event));
+		rc = record__write(rec, &finished_round_event, sizeof(finished_round_event));
 
 	if (overwrite)
 		perf_evlist__toggle_bkw_mmap(evlist, BKW_MMAP_EMPTY);
@@ -822,9 +565,6 @@ static void record__init_features(struct record *rec)
 
 	if (!rec->opts.full_auxtrace)
 		perf_header__clear_feat(&session->header, HEADER_AUXTRACE);
-
-	if (!(rec->opts.use_clockid && rec->opts.clockid_res_ns))
-		perf_header__clear_feat(&session->header, HEADER_CLOCKID);
 
 	perf_header__clear_feat(&session->header, HEADER_STAT);
 }
@@ -867,7 +607,8 @@ static int record__synthesize_workload(struct record *rec, bool tail)
 	err = perf_event__synthesize_thread_map(&rec->tool, thread_map,
 						 process_synthesized_event,
 						 &rec->session->machines.host,
-						 rec->opts.sample_address);
+						 rec->opts.sample_address,
+						 rec->opts.proc_map_timeout);
 	thread_map__put(thread_map);
 	return err;
 }
@@ -882,8 +623,6 @@ record__switch_output(struct record *rec, bool at_exit)
 
 	/* Same Size:      "2015122520103046"*/
 	char timestamp[] = "InvalidTimestamp";
-
-	record__aio_mmap_read_sync(rec);
 
 	record__synthesize(rec, true);
 	if (target__none(&rec->opts.target))
@@ -992,22 +731,18 @@ static int record__synthesize(struct record *rec, bool tail)
 		return 0;
 
 	if (data->is_pipe) {
-		/*
-		 * We need to synthesize events first, because some
-		 * features works on top of them (on report side).
-		 */
-		err = perf_event__synthesize_attrs(tool, rec->evlist,
+		err = perf_event__synthesize_features(
+			tool, session, rec->evlist, process_synthesized_event);
+		if (err < 0) {
+			pr_err("Couldn't synthesize features.\n");
+			return err;
+		}
+
+		err = perf_event__synthesize_attrs(tool, session,
 						   process_synthesized_event);
 		if (err < 0) {
 			pr_err("Couldn't synthesize attrs.\n");
 			goto out;
-		}
-
-		err = perf_event__synthesize_features(tool, session, rec->evlist,
-						      process_synthesized_event);
-		if (err < 0) {
-			pr_err("Couldn't synthesize features.\n");
-			return err;
 		}
 
 		if (have_tracepoints(&rec->evlist->entries)) {
@@ -1084,7 +819,7 @@ static int record__synthesize(struct record *rec, bool tail)
 
 	err = __machine__synthesize_threads(machine, tool, &opts->target, rec->evlist->threads,
 					    process_synthesized_event, opts->sample_address,
-					    1);
+					    opts->proc_map_timeout, 1);
 out:
 	return err;
 }
@@ -1095,12 +830,15 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 	int status = 0;
 	unsigned long waking = 0;
 	const bool forks = argc > 0;
+	struct machine *machine;
 	struct perf_tool *tool = &rec->tool;
 	struct record_opts *opts = &rec->opts;
 	struct perf_data *data = &rec->data;
 	struct perf_session *session;
 	bool disabled = false, draining = false;
 	int fd;
+
+	rec->progname = argv[0];
 
 	atexit(record__sig_exit);
 	signal(SIGCHLD, sig_handler);
@@ -1131,9 +869,6 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 	rec->session = session;
 
 	record__init_features(rec);
-
-	if (rec->opts.use_clockid && rec->opts.clockid_res_ns)
-		session->header.env.clockid_res_ns = rec->opts.clockid_res_ns;
 
 	if (forks) {
 		err = perf_evlist__prepare_workload(rec->evlist, &opts->target,
@@ -1200,6 +935,8 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 		goto out_child;
 	}
 
+	machine = &session->machines.host;
+
 	err = record__synthesize(rec, false);
 	if (err < 0)
 		goto out_child;
@@ -1227,7 +964,6 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 	 * Let the child rip
 	 */
 	if (forks) {
-		struct machine *machine = &session->machines.host;
 		union perf_event *event;
 		pid_t tgid;
 
@@ -1395,8 +1131,6 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 		record__synthesize_workload(rec, true);
 
 out_child:
-	record__aio_mmap_read_sync(rec);
-
 	if (forks) {
 		int exit_status;
 
@@ -1526,19 +1260,10 @@ static int perf_record_config(const char *var, const char *value, void *cb)
 			return -1;
 		return 0;
 	}
-	if (!strcmp(var, "record.call-graph")) {
-		var = "call-graph.record-mode";
-		return perf_default_config(var, value, cb);
-	}
-#ifdef HAVE_AIO_SUPPORT
-	if (!strcmp(var, "record.aio")) {
-		rec->opts.nr_cblocks = strtol(value, NULL, 0);
-		if (!rec->opts.nr_cblocks)
-			rec->opts.nr_cblocks = nr_cblocks_default;
-	}
-#endif
+	if (!strcmp(var, "record.call-graph"))
+		var = "call-graph.record-mode"; /* fall-through */
 
-	return 0;
+	return perf_default_config(var, value, cb);
 }
 
 struct clockid_map {
@@ -1584,19 +1309,6 @@ static const struct clockid_map clockids[] = {
 	CLOCKID_END,
 };
 
-static int get_clockid_res(clockid_t clk_id, u64 *res_ns)
-{
-	struct timespec res;
-
-	*res_ns = 0;
-	if (!clock_getres(clk_id, &res))
-		*res_ns = res.tv_nsec + res.tv_sec * NSEC_PER_SEC;
-	else
-		pr_warning("WARNING: Failed to determine specified clock resolution.\n");
-
-	return 0;
-}
-
 static int parse_clockid(const struct option *opt, const char *str, int unset)
 {
 	struct record_opts *opts = (struct record_opts *)opt->value;
@@ -1620,7 +1332,7 @@ static int parse_clockid(const struct option *opt, const char *str, int unset)
 
 	/* if its a number, we're done */
 	if (sscanf(str, "%d", &opts->clockid) == 1)
-		return get_clockid_res(opts->clockid, &opts->clockid_res_ns);
+		return 0;
 
 	/* allow a "CLOCK_" prefix to the name */
 	if (!strncasecmp(str, "CLOCK_", 6))
@@ -1629,8 +1341,7 @@ static int parse_clockid(const struct option *opt, const char *str, int unset)
 	for (cm = clockids; cm->name; cm++) {
 		if (!strcasecmp(str, cm->name)) {
 			opts->clockid = cm->clockid;
-			return get_clockid_res(opts->clockid,
-					       &opts->clockid_res_ns);
+			return 0;
 		}
 	}
 
@@ -1782,6 +1493,7 @@ static struct record record = {
 			.uses_mmap   = true,
 			.default_per_cpu = true,
 		},
+		.proc_map_timeout     = 500,
 	},
 	.tool = {
 		.sample		= process_sample_event,
@@ -1839,11 +1551,7 @@ static struct option __record_options[] = {
 	OPT_BOOLEAN(0, "tail-synthesize", &record.opts.tail_synthesize,
 		    "synthesize non-sample events at the end of output"),
 	OPT_BOOLEAN(0, "overwrite", &record.opts.overwrite, "use overwrite mode"),
-	OPT_BOOLEAN(0, "strict-freq", &record.opts.strict_freq,
-		    "Fail if the specified frequency can't be used"),
-	OPT_CALLBACK('F', "freq", &record.opts, "freq or 'max'",
-		     "profile at this frequency",
-		      record__parse_freq),
+	OPT_UINTEGER('F', "freq", &record.opts.user_freq, "profile at this frequency"),
 	OPT_CALLBACK('m', "mmap-pages", &record.opts, "pages[,pages]",
 		     "number of mmap data pages and AUX area tracing mmap pages",
 		     record__parse_mmap_pages),
@@ -1911,7 +1619,7 @@ static struct option __record_options[] = {
 	parse_clockid),
 	OPT_STRING_OPTARG('S', "snapshot", &record.opts.auxtrace_snapshot_opts,
 			  "opts", "AUX area tracing Snapshot Mode", ""),
-	OPT_UINTEGER(0, "proc-map-timeout", &proc_map_timeout,
+	OPT_UINTEGER(0, "proc-map-timeout", &record.opts.proc_map_timeout,
 			"per thread proc mmap processing timeout in ms"),
 	OPT_BOOLEAN(0, "namespaces", &record.opts.record_namespaces,
 		    "Record namespaces events"),
@@ -1941,11 +1649,6 @@ static struct option __record_options[] = {
 			  "signal"),
 	OPT_BOOLEAN(0, "dry-run", &dry_run,
 		    "Parse options then exit"),
-#ifdef HAVE_AIO_SUPPORT
-	OPT_CALLBACK_OPTARG(0, "aio", &record.opts,
-		     &nr_cblocks_default, "n", "Use <n> control blocks in asynchronous trace writing mode (default: 1, max: 4)",
-		     record__aio_parse),
-#endif
 	OPT_END()
 };
 
@@ -1956,8 +1659,6 @@ int cmd_record(int argc, const char **argv)
 	int err;
 	struct record *rec = &record;
 	char errbuf[BUFSIZ];
-
-	setlocale(LC_ALL, "");
 
 #ifndef HAVE_LIBBPF_SUPPORT
 # define set_nobuild(s, l, c) set_option_nobuild(record_options, s, l, "NO_LIBBPF=1", c)
@@ -2019,6 +1720,17 @@ int cmd_record(int argc, const char **argv)
 		alarm(rec->switch_output.time);
 	}
 
+	if (!rec->itr) {
+		rec->itr = auxtrace_record__init(rec->evlist, &err);
+		if (err)
+			goto out;
+	}
+
+	err = auxtrace_parse_snapshot_options(rec->itr, &rec->opts,
+					      rec->opts.auxtrace_snapshot_opts);
+	if (err)
+		goto out;
+
 	/*
 	 * Allow aliases to facilitate the lookup of symbols for address
 	 * filters. Refer to auxtrace_parse_filters().
@@ -2027,7 +1739,7 @@ int cmd_record(int argc, const char **argv)
 
 	symbol__init(NULL);
 
-	err = record__auxtrace_init(rec);
+	err = auxtrace_parse_filters(rec->evlist);
 	if (err)
 		goto out;
 
@@ -2100,7 +1812,7 @@ int cmd_record(int argc, const char **argv)
 	err = target__validate(&rec->opts.target);
 	if (err) {
 		target__strerror(&rec->opts.target, err, errbuf, BUFSIZ);
-		ui__warning("%s\n", errbuf);
+		ui__warning("%s", errbuf);
 	}
 
 	err = target__parse_uid(&rec->opts.target);
@@ -2137,11 +1849,6 @@ int cmd_record(int argc, const char **argv)
 		err = -EINVAL;
 		goto out;
 	}
-
-	if (rec->opts.nr_cblocks > nr_cblocks_max)
-		rec->opts.nr_cblocks = nr_cblocks_max;
-	if (verbose > 0)
-		pr_info("nr_cblocks: %d\n", rec->opts.nr_cblocks);
 
 	err = __cmd_record(&record, argc, argv);
 out:

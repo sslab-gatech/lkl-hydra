@@ -9,7 +9,6 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/irqflags.h>
@@ -175,7 +174,6 @@ bool mcpm_is_available(void)
 {
 	return (platform_ops) ? true : false;
 }
-EXPORT_SYMBOL_GPL(mcpm_is_available);
 
 /*
  * We can't use regular spinlocks. In the switcher case, it is possible

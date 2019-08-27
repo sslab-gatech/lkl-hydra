@@ -39,7 +39,6 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 	};
 	struct cpu_map *cpus;
 	struct thread_map *threads;
-	struct perf_mmap *md;
 
 	attr.sample_freq = 500;
 
@@ -94,11 +93,7 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 
 	perf_evlist__disable(evlist);
 
-	md = &evlist->mmap[0];
-	if (perf_mmap__read_init(md) < 0)
-		goto out_init;
-
-	while ((event = perf_mmap__read_event(md)) != NULL) {
+	while ((event = perf_evlist__mmap_read(evlist, 0)) != NULL) {
 		struct perf_sample sample;
 
 		if (event->header.type != PERF_RECORD_SAMPLE)
@@ -113,11 +108,9 @@ static int __test__sw_clock_freq(enum perf_sw_ids clock_id)
 		total_periods += sample.period;
 		nr_samples++;
 next_event:
-		perf_mmap__consume(md);
+		perf_evlist__mmap_consume(evlist, 0);
 	}
-	perf_mmap__read_done(md);
 
-out_init:
 	if ((u64) nr_samples == total_periods) {
 		pr_debug("All (%d) samples have period value of 1!\n",
 			 nr_samples);

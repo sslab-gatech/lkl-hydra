@@ -119,7 +119,6 @@ enum ieee80211_sta_info_flags {
 #define HT_AGG_STATE_START_CB		6
 #define HT_AGG_STATE_STOP_CB		7
 
-DECLARE_EWMA(avg_signal, 10, 8)
 enum ieee80211_agg_stop_reason {
 	AGG_STOP_DECLINED,
 	AGG_STOP_LOCAL_REQUEST,
@@ -170,7 +169,7 @@ struct tid_ampdu_tx {
 	u8 dialog_token;
 	u8 stop_initiator;
 	bool tx_stop;
-	u16 buf_size;
+	u8 buf_size;
 
 	u16 failed_bar_ssn;
 	bool bar_pending;
@@ -364,7 +363,6 @@ DECLARE_EWMA(mesh_fail_avg, 20, 8)
  * @nonpeer_pm: STA power save mode towards non-peer neighbors
  * @processed_beacon: set to true after peer rates and capabilities are
  *	processed
- * @connected_to_gate: true if mesh STA has a path to a mesh gate
  * @fail_avg: moving percentage of failed MSDUs
  */
 struct mesh_sta {
@@ -382,7 +380,6 @@ struct mesh_sta {
 	u8 plink_retries;
 
 	bool processed_beacon;
-	bool connected_to_gate;
 
 	enum nl80211_plink_state plink_state;
 	u32 plink_timeout;
@@ -407,7 +404,7 @@ struct ieee80211_sta_rx_stats {
 	int last_signal;
 	u8 chains;
 	s8 chain_signal_last[IEEE80211_MAX_CHAINS];
-	u32 last_rate;
+	u16 last_rate;
 	struct u64_stats_sync syncp;
 	u64 bytes;
 	u64 msdu[IEEE80211_NUM_TIDS + 1];
@@ -551,9 +548,6 @@ struct sta_info {
 		u64 msdu_retries[IEEE80211_NUM_TIDS + 1];
 		u64 msdu_failed[IEEE80211_NUM_TIDS + 1];
 		unsigned long last_ack;
-		s8 last_ack_signal;
-		bool ack_signal_filled;
-		struct ewma_avg_signal avg_ack_signal;
 	} status_stats;
 
 	/* Updated from TX path only, no locking requirements */
@@ -746,8 +740,7 @@ static inline int sta_info_flush(struct ieee80211_sub_if_data *sdata)
 void sta_set_rate_info_tx(struct sta_info *sta,
 			  const struct ieee80211_tx_rate *rate,
 			  struct rate_info *rinfo);
-void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
-		   bool tidstats);
+void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo);
 
 u32 sta_get_expected_throughput(struct sta_info *sta);
 
@@ -766,7 +759,6 @@ enum sta_stats_type {
 	STA_STATS_RATE_TYPE_LEGACY,
 	STA_STATS_RATE_TYPE_HT,
 	STA_STATS_RATE_TYPE_VHT,
-	STA_STATS_RATE_TYPE_HE,
 };
 
 #define STA_STATS_FIELD_HT_MCS		GENMASK( 7,  0)
@@ -774,14 +766,9 @@ enum sta_stats_type {
 #define STA_STATS_FIELD_LEGACY_BAND	GENMASK( 7,  4)
 #define STA_STATS_FIELD_VHT_MCS		GENMASK( 3,  0)
 #define STA_STATS_FIELD_VHT_NSS		GENMASK( 7,  4)
-#define STA_STATS_FIELD_HE_MCS		GENMASK( 3,  0)
-#define STA_STATS_FIELD_HE_NSS		GENMASK( 7,  4)
 #define STA_STATS_FIELD_BW		GENMASK(11,  8)
 #define STA_STATS_FIELD_SGI		GENMASK(12, 12)
 #define STA_STATS_FIELD_TYPE		GENMASK(15, 13)
-#define STA_STATS_FIELD_HE_RU		GENMASK(18, 16)
-#define STA_STATS_FIELD_HE_GI		GENMASK(20, 19)
-#define STA_STATS_FIELD_HE_DCM		GENMASK(21, 21)
 
 #define STA_STATS_FIELD(_n, _v)		FIELD_PREP(STA_STATS_FIELD_ ## _n, _v)
 #define STA_STATS_GET(_n, _v)		FIELD_GET(STA_STATS_FIELD_ ## _n, _v)
@@ -790,7 +777,7 @@ enum sta_stats_type {
 
 static inline u32 sta_stats_encode_rate(struct ieee80211_rx_status *s)
 {
-	u32 r;
+	u16 r;
 
 	r = STA_STATS_FIELD(BW, s->bw);
 
@@ -811,14 +798,6 @@ static inline u32 sta_stats_encode_rate(struct ieee80211_rx_status *s)
 		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_LEGACY);
 		r |= STA_STATS_FIELD(LEGACY_BAND, s->band);
 		r |= STA_STATS_FIELD(LEGACY_IDX, s->rate_idx);
-		break;
-	case RX_ENC_HE:
-		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_HE);
-		r |= STA_STATS_FIELD(HE_NSS, s->nss);
-		r |= STA_STATS_FIELD(HE_MCS, s->rate_idx);
-		r |= STA_STATS_FIELD(HE_GI, s->he_gi);
-		r |= STA_STATS_FIELD(HE_RU, s->he_ru);
-		r |= STA_STATS_FIELD(HE_DCM, s->he_dcm);
 		break;
 	default:
 		WARN_ON(1);

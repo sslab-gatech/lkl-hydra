@@ -161,10 +161,10 @@ static void print_misc_parameters_hdrs(struct trace_seq *p,
 	PRINT_MASKED_VAL(name, p, format);		   \
 }
 	DECLARE_MASK_VAL(u64, gre_key) = {
-		.m = MLX5_GET(fte_match_set_misc, mask, gre_key.nvgre.hi) << 8 |
-		     MLX5_GET(fte_match_set_misc, mask, gre_key.nvgre.lo),
-		.v = MLX5_GET(fte_match_set_misc, value, gre_key.nvgre.hi) << 8 |
-		     MLX5_GET(fte_match_set_misc, value, gre_key.nvgre.lo)};
+		.m = MLX5_GET(fte_match_set_misc, mask, gre_key_h) << 8 |
+		     MLX5_GET(fte_match_set_misc, mask, gre_key_l),
+		.v = MLX5_GET(fte_match_set_misc, value, gre_key_h) << 8 |
+		     MLX5_GET(fte_match_set_misc, value, gre_key_l)};
 
 	PRINT_MASKED_VAL(gre_key, p, "%llu");
 	PRINT_MASKED_VAL_MISC(u32, source_sqn, source_sqn, p, "%u");
@@ -235,22 +235,16 @@ const char *parse_fs_dst(struct trace_seq *p,
 
 	switch (dst->type) {
 	case MLX5_FLOW_DESTINATION_TYPE_VPORT:
-		trace_seq_printf(p, "vport=%u\n", dst->vport.num);
+		trace_seq_printf(p, "vport=%u\n", dst->vport_num);
 		break;
 	case MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE:
 		trace_seq_printf(p, "ft=%p\n", dst->ft);
-		break;
-	case MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE_NUM:
-		trace_seq_printf(p, "ft_num=%u\n", dst->ft_num);
 		break;
 	case MLX5_FLOW_DESTINATION_TYPE_TIR:
 		trace_seq_printf(p, "tir=%u\n", dst->tir_num);
 		break;
 	case MLX5_FLOW_DESTINATION_TYPE_COUNTER:
 		trace_seq_printf(p, "counter_id=%u\n", counter_id);
-		break;
-	case MLX5_FLOW_DESTINATION_TYPE_PORT:
-		trace_seq_printf(p, "port\n");
 		break;
 	}
 

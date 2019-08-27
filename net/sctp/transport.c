@@ -207,8 +207,7 @@ void sctp_transport_reset_hb_timer(struct sctp_transport *transport)
 
 	/* When a data chunk is sent, reset the heartbeat interval.  */
 	expires = jiffies + sctp_transport_timeout(transport);
-	if ((time_before(transport->hb_timer.expires, expires) ||
-	     !timer_pending(&transport->hb_timer)) &&
+	if (time_before(transport->hb_timer.expires, expires) &&
 	    !mod_timer(&transport->hb_timer,
 		       expires + prandom_u32_max(transport->rto)))
 		sctp_transport_hold(transport);
@@ -243,25 +242,15 @@ void sctp_transport_pmtu(struct sctp_transport *transport, struct sock *sk)
 						&transport->fl, sk);
 	}
 
-	if (transport->param_flags & SPP_PMTUD_DISABLE) {
-		struct sctp_association *asoc = transport->asoc;
-
-		if (!transport->pathmtu && asoc && asoc->pathmtu)
-			transport->pathmtu = asoc->pathmtu;
-		if (transport->pathmtu)
-			return;
-	}
-
-	if (transport->dst)
-		transport->pathmtu = sctp_dst_mtu(transport->dst);
-	else
+	if (transport->dst) {
+		transport->pathmtu = SCTP_TRUNC4(dst_mtu(transport->dst));
+	} else
 		transport->pathmtu = SCTP_DEFAULT_MAXSEGMENT;
 }
 
 bool sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
 {
 	struct dst_entry *dst = sctp_transport_dst_check(t);
-	struct sock *sk = t->asoc->base.sk;
 	bool change = true;
 
 	if (unlikely(pmtu < SCTP_DEFAULT_MINSEGMENT)) {
@@ -273,25 +262,18 @@ bool sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
 	pmtu = SCTP_TRUNC4(pmtu);
 
 	if (dst) {
-		struct sctp_pf *pf = sctp_get_pf_specific(dst->ops->family);
-		union sctp_addr addr;
-
-		pf->af->from_sk(&addr, sk);
-		pf->to_sk_daddr(&t->ipaddr, sk);
-		dst->ops->update_pmtu(dst, sk, NULL, pmtu);
-		pf->to_sk_daddr(&addr, sk);
-
+		dst->ops->update_pmtu(dst, t->asoc->base.sk, NULL, pmtu);
 		dst = sctp_transport_dst_check(t);
 	}
 
 	if (!dst) {
-		t->af_specific->get_dst(t, &t->saddr, &t->fl, sk);
+		t->af_specific->get_dst(t, &t->saddr, &t->fl, t->asoc->base.sk);
 		dst = t->dst;
 	}
 
 	if (dst) {
 		/* Re-fetch, as under layers may have a higher minimum size */
-		pmtu = sctp_dst_mtu(dst);
+		pmtu = SCTP_TRUNC4(dst_mtu(dst));
 		change = t->pathmtu != pmtu;
 	}
 	t->pathmtu = pmtu;
@@ -308,7 +290,6 @@ void sctp_transport_route(struct sctp_transport *transport,
 	struct sctp_association *asoc = transport->asoc;
 	struct sctp_af *af = transport->af_specific;
 
-	sctp_transport_dst_release(transport);
 	af->get_dst(transport, saddr, &transport->fl, sctp_opt2sk(opt));
 
 	if (saddr)
@@ -316,14 +297,21 @@ void sctp_transport_route(struct sctp_transport *transport,
 	else
 		af->get_saddr(opt, transport, &transport->fl);
 
-	sctp_transport_pmtu(transport, sctp_opt2sk(opt));
+	if ((transport->param_flags & SPP_PMTUD_DISABLE) && transport->pathmtu) {
+		return;
+	}
+	if (transport->dst) {
+		transport->pathmtu = SCTP_TRUNC4(dst_mtu(transport->dst));
 
-	/* Initialize sk->sk_rcv_saddr, if the transport is the
-	 * association's active path for getsockname().
-	 */
-	if (transport->dst && asoc &&
-	    (!asoc->peer.primary_path || transport == asoc->peer.active_path))
-		opt->pf->to_sk_saddr(&transport->saddr, asoc->base.sk);
+		/* Initialize sk->sk_rcv_saddr, if the transport is the
+		 * association's active path for getsockname().
+		 */
+		if (asoc && (!asoc->peer.primary_path ||
+				(transport == asoc->peer.active_path)))
+			opt->pf->to_sk_saddr(&transport->saddr,
+					     asoc->base.sk);
+	} else
+		transport->pathmtu = SCTP_DEFAULT_MAXSEGMENT;
 }
 
 /* Hold a reference to a transport.  */
@@ -646,7 +634,7 @@ unsigned long sctp_transport_timeout(struct sctp_transport *trans)
 	    trans->state != SCTP_PF)
 		timeout += trans->hbinterval;
 
-	return max_t(unsigned long, timeout, HZ / 5);
+	return timeout;
 }
 
 /* Reset transport variables to their initial values */

@@ -117,7 +117,10 @@ static int sharp_nt_panel_disable(struct drm_panel *panel)
 	if (!sharp_nt->enabled)
 		return 0;
 
-	backlight_disable(sharp_nt->backlight);
+	if (sharp_nt->backlight) {
+		sharp_nt->backlight->props.power = FB_BLANK_POWERDOWN;
+		backlight_update_status(sharp_nt->backlight);
+	}
 
 	sharp_nt->enabled = false;
 
@@ -200,7 +203,10 @@ static int sharp_nt_panel_enable(struct drm_panel *panel)
 	if (sharp_nt->enabled)
 		return 0;
 
-	backlight_enable(sharp_nt->backlight);
+	if (sharp_nt->backlight) {
+		sharp_nt->backlight->props.power = FB_BLANK_UNBLANK;
+		backlight_update_status(sharp_nt->backlight);
+	}
 
 	sharp_nt->enabled = true;
 
@@ -253,6 +259,8 @@ static const struct drm_panel_funcs sharp_nt_panel_funcs = {
 static int sharp_nt_panel_add(struct sharp_nt_panel *sharp_nt)
 {
 	struct device *dev = &sharp_nt->dsi->dev;
+	struct device_node *np;
+	int ret;
 
 	sharp_nt->mode = &default_mode;
 
@@ -269,22 +277,39 @@ static int sharp_nt_panel_add(struct sharp_nt_panel *sharp_nt)
 		gpiod_set_value(sharp_nt->reset_gpio, 0);
 	}
 
-	sharp_nt->backlight = devm_of_find_backlight(dev);
+	np = of_parse_phandle(dev->of_node, "backlight", 0);
+	if (np) {
+		sharp_nt->backlight = of_find_backlight_by_node(np);
+		of_node_put(np);
 
-	if (IS_ERR(sharp_nt->backlight))
-		return PTR_ERR(sharp_nt->backlight);
+		if (!sharp_nt->backlight)
+			return -EPROBE_DEFER;
+	}
 
 	drm_panel_init(&sharp_nt->base);
 	sharp_nt->base.funcs = &sharp_nt_panel_funcs;
 	sharp_nt->base.dev = &sharp_nt->dsi->dev;
 
-	return drm_panel_add(&sharp_nt->base);
+	ret = drm_panel_add(&sharp_nt->base);
+	if (ret < 0)
+		goto put_backlight;
+
+	return 0;
+
+put_backlight:
+	if (sharp_nt->backlight)
+		put_device(&sharp_nt->backlight->dev);
+
+	return ret;
 }
 
 static void sharp_nt_panel_del(struct sharp_nt_panel *sharp_nt)
 {
 	if (sharp_nt->base.dev)
 		drm_panel_remove(&sharp_nt->base);
+
+	if (sharp_nt->backlight)
+		put_device(&sharp_nt->backlight->dev);
 }
 
 static int sharp_nt_panel_probe(struct mipi_dsi_device *dsi)
@@ -327,6 +352,7 @@ static int sharp_nt_panel_remove(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", ret);
 
+	drm_panel_detach(&sharp_nt->base);
 	sharp_nt_panel_del(sharp_nt);
 
 	return 0;

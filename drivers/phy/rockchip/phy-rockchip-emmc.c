@@ -76,13 +76,6 @@
 #define PHYCTRL_OTAPDLYSEL_MASK		0xf
 #define PHYCTRL_OTAPDLYSEL_SHIFT	0x7
 
-#define PHYCTRL_IS_CALDONE(x) \
-	((((x) >> PHYCTRL_CALDONE_SHIFT) & \
-	  PHYCTRL_CALDONE_MASK) == PHYCTRL_CALDONE_DONE)
-#define PHYCTRL_IS_DLLRDY(x) \
-	((((x) >> PHYCTRL_DLLRDY_SHIFT) & \
-	  PHYCTRL_DLLRDY_MASK) == PHYCTRL_DLLRDY_DONE)
-
 struct rockchip_emmc_phy {
 	unsigned int	reg_offset;
 	struct regmap	*reg_base;
@@ -96,7 +89,7 @@ static int rockchip_emmc_phy_power(struct phy *phy, bool on_off)
 	unsigned int dllrdy;
 	unsigned int freqsel = PHYCTRL_FREQSEL_200M;
 	unsigned long rate;
-	int ret;
+	unsigned long timeout;
 
 	/*
 	 * Keep phyctrl_pdb and phyctrl_endll low to allow
@@ -167,19 +160,17 @@ static int rockchip_emmc_phy_power(struct phy *phy, bool on_off)
 				   PHYCTRL_PDB_SHIFT));
 
 	/*
-	 * According to the user manual, it asks driver to wait 5us for
-	 * calpad busy trimming. However it is documented that this value is
-	 * PVT(A.K.A process,voltage and temperature) relevant, so some
-	 * failure cases are found which indicates we should be more tolerant
-	 * to calpad busy trimming.
+	 * According to the user manual, it asks driver to
+	 * wait 5us for calpad busy trimming
 	 */
-	ret = regmap_read_poll_timeout(rk_phy->reg_base,
-				       rk_phy->reg_offset + GRF_EMMCPHY_STATUS,
-				       caldone, PHYCTRL_IS_CALDONE(caldone),
-				       0, 50);
-	if (ret) {
-		pr_err("%s: caldone failed, ret=%d\n", __func__, ret);
-		return ret;
+	udelay(5);
+	regmap_read(rk_phy->reg_base,
+		    rk_phy->reg_offset + GRF_EMMCPHY_STATUS,
+		    &caldone);
+	caldone = (caldone >> PHYCTRL_CALDONE_SHIFT) & PHYCTRL_CALDONE_MASK;
+	if (caldone != PHYCTRL_CALDONE_DONE) {
+		pr_err("rockchip_emmc_phy_power: caldone timeout.\n");
+		return -ETIMEDOUT;
 	}
 
 	/* Set the frequency of the DLL operation */
@@ -219,15 +210,28 @@ static int rockchip_emmc_phy_power(struct phy *phy, bool on_off)
 	 * NOTE: There appear to be corner cases where the DLL seems to take
 	 * extra long to lock for reasons that aren't understood.  In some
 	 * extreme cases we've seen it take up to over 10ms (!).  We'll be
-	 * generous and give it 50ms.
+	 * generous and give it 50ms.  We still busy wait here because:
+	 * - In most cases it should be super fast.
+	 * - This is not called lots during normal operation so it shouldn't
+	 *   be a power or performance problem to busy wait.  We expect it
+	 *   only at boot / resume.  In both cases, eMMC is probably on the
+	 *   critical path so busy waiting a little extra time should be OK.
 	 */
-	ret = regmap_read_poll_timeout(rk_phy->reg_base,
-				       rk_phy->reg_offset + GRF_EMMCPHY_STATUS,
-				       dllrdy, PHYCTRL_IS_DLLRDY(dllrdy),
-				       0, 50 * USEC_PER_MSEC);
-	if (ret) {
-		pr_err("%s: dllrdy failed. ret=%d\n", __func__, ret);
-		return ret;
+	timeout = jiffies + msecs_to_jiffies(50);
+	do {
+		udelay(1);
+
+		regmap_read(rk_phy->reg_base,
+			rk_phy->reg_offset + GRF_EMMCPHY_STATUS,
+			&dllrdy);
+		dllrdy = (dllrdy >> PHYCTRL_DLLRDY_SHIFT) & PHYCTRL_DLLRDY_MASK;
+		if (dllrdy == PHYCTRL_DLLRDY_DONE)
+			break;
+	} while (!time_after(jiffies, timeout));
+
+	if (dllrdy != PHYCTRL_DLLRDY_DONE) {
+		pr_err("rockchip_emmc_phy_power: dllrdy timeout.\n");
+		return -ETIMEDOUT;
 	}
 
 	return 0;
@@ -337,8 +341,8 @@ static int rockchip_emmc_phy_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	if (of_property_read_u32(dev->of_node, "reg", &reg_offset)) {
-		dev_err(dev, "missing reg property in node %pOFn\n",
-			dev->of_node);
+		dev_err(dev, "missing reg property in node %s\n",
+			dev->of_node->name);
 		return -EINVAL;
 	}
 

@@ -4,6 +4,8 @@
  *
  * Copyright (C) 2008 Bryan Wu <cooloney@kernel.org>
  * Copyright (C) 2008 Analog Devices, Inc
+ *
+ * Enter bugs at http://blackfin.uclinux.org/
  */
 
 #include <linux/kernel.h>

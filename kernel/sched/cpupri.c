@@ -14,7 +14,7 @@
  *
  *  going from the lowest priority to the highest.  CPUs in the INVALID state
  *  are not eligible for routing.  The system maintains this state with
- *  a 2 dimensional bitmap (the first for priority class, the second for CPUs
+ *  a 2 dimensional bitmap (the first for priority class, the second for cpus
  *  in that class).  Therefore a typical application without affinity
  *  restrictions can find a suitable CPU with O(1) complexity (e.g. two bit
  *  searches).  For tasks with affinity restrictions, the algorithm has a
@@ -26,7 +26,12 @@
  *  as published by the Free Software Foundation; version 2
  *  of the License.
  */
-#include "sched.h"
+
+#include <linux/gfp.h>
+#include <linux/sched.h>
+#include <linux/sched/rt.h>
+#include <linux/slab.h>
+#include "cpupri.h"
 
 /* Convert between a 140 based task->prio, and our 102 based cpupri */
 static int convert_prio(int prio)
@@ -123,9 +128,9 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 }
 
 /**
- * cpupri_set - update the CPU priority setting
+ * cpupri_set - update the cpu priority setting
  * @cp: The cpupri context
- * @cpu: The target CPU
+ * @cpu: The target cpu
  * @newpri: The priority (INVALID-RT99) to assign to this CPU
  *
  * Note: Assumes cpu_rq(cpu)->lock is locked
@@ -146,7 +151,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 		return;
 
 	/*
-	 * If the CPU was currently mapped to a different value, we
+	 * If the cpu was currently mapped to a different value, we
 	 * need to map it to the new value then remove the old value.
 	 * Note, we must add the new value first, otherwise we risk the
 	 * cpu being missed by the priority loop in cpupri_find.

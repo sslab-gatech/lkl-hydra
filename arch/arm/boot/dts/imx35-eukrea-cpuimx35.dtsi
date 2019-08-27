@@ -17,8 +17,7 @@
 	model = "Eukrea CPUIMX35";
 	compatible = "eukrea,cpuimx35", "fsl,imx35";
 
-	memory@80000000 {
-		device_type = "memory";
+	memory {
 		reg = <0x80000000 0x8000000>; /* 128M */
 	};
 };

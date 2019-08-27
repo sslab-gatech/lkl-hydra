@@ -99,11 +99,31 @@ MODULE_DEVICE_TABLE(of, pca9541_of_match);
 static int pca9541_reg_write(struct i2c_client *client, u8 command, u8 val)
 {
 	struct i2c_adapter *adap = client->adapter;
-	union i2c_smbus_data data = { .byte = val };
+	int ret;
 
-	return __i2c_smbus_xfer(adap, client->addr, client->flags,
-				I2C_SMBUS_WRITE, command,
-				I2C_SMBUS_BYTE_DATA, &data);
+	if (adap->algo->master_xfer) {
+		struct i2c_msg msg;
+		char buf[2];
+
+		msg.addr = client->addr;
+		msg.flags = 0;
+		msg.len = 2;
+		buf[0] = command;
+		buf[1] = val;
+		msg.buf = buf;
+		ret = __i2c_transfer(adap, &msg, 1);
+	} else {
+		union i2c_smbus_data data;
+
+		data.byte = val;
+		ret = adap->algo->smbus_xfer(adap, client->addr,
+					     client->flags,
+					     I2C_SMBUS_WRITE,
+					     command,
+					     I2C_SMBUS_BYTE_DATA, &data);
+	}
+
+	return ret;
 }
 
 /*
@@ -113,14 +133,41 @@ static int pca9541_reg_write(struct i2c_client *client, u8 command, u8 val)
 static int pca9541_reg_read(struct i2c_client *client, u8 command)
 {
 	struct i2c_adapter *adap = client->adapter;
-	union i2c_smbus_data data;
 	int ret;
+	u8 val;
 
-	ret = __i2c_smbus_xfer(adap, client->addr, client->flags,
-			       I2C_SMBUS_READ, command,
-			       I2C_SMBUS_BYTE_DATA, &data);
+	if (adap->algo->master_xfer) {
+		struct i2c_msg msg[2] = {
+			{
+				.addr = client->addr,
+				.flags = 0,
+				.len = 1,
+				.buf = &command
+			},
+			{
+				.addr = client->addr,
+				.flags = I2C_M_RD,
+				.len = 1,
+				.buf = &val
+			}
+		};
+		ret = __i2c_transfer(adap, msg, 2);
+		if (ret == 2)
+			ret = val;
+		else if (ret >= 0)
+			ret = -EIO;
+	} else {
+		union i2c_smbus_data data;
 
-	return ret ?: data.byte;
+		ret = adap->algo->smbus_xfer(adap, client->addr,
+					     client->flags,
+					     I2C_SMBUS_READ,
+					     command,
+					     I2C_SMBUS_BYTE_DATA, &data);
+		if (!ret)
+			ret = data.byte;
+	}
+	return ret;
 }
 
 /*
@@ -298,11 +345,11 @@ static int pca9541_probe(struct i2c_client *client,
 
 	/*
 	 * I2C accesses are unprotected here.
-	 * We have to lock the I2C segment before releasing the bus.
+	 * We have to lock the adapter before releasing the bus.
 	 */
-	i2c_lock_bus(adap, I2C_LOCK_SEGMENT);
+	i2c_lock_adapter(adap);
 	pca9541_release_bus(client);
-	i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
+	i2c_unlock_adapter(adap);
 
 	/* Create mux adapter */
 

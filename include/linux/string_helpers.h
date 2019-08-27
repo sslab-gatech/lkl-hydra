@@ -5,7 +5,6 @@
 #include <linux/types.h>
 
 struct file;
-struct task_struct;
 
 /* Descriptions of the types of units to
  * print in */

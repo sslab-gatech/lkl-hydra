@@ -3,7 +3,6 @@
  */
 
 #include <linux/init.h>
-#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -622,6 +621,23 @@ int snd_hdac_power_down_pm(struct hdac_device *codec)
 EXPORT_SYMBOL_GPL(snd_hdac_power_down_pm);
 #endif
 
+/**
+ * snd_hdac_link_power - Enable/disable the link power for a codec
+ * @codec: the codec object
+ * @bool: enable or disable the link power
+ */
+int snd_hdac_link_power(struct hdac_device *codec, bool enable)
+{
+	if  (!codec->link_power_control)
+		return 0;
+
+	if  (codec->bus->ops->link_power)
+		return codec->bus->ops->link_power(codec->bus, enable);
+	else
+		return -EINVAL;
+}
+EXPORT_SYMBOL_GPL(snd_hdac_link_power);
+
 /* codec vendor labels */
 struct hda_vendor_id {
 	unsigned int id;
@@ -721,7 +737,7 @@ static struct hda_rate_tbl rate_bits[] = {
  */
 unsigned int snd_hdac_calc_stream_format(unsigned int rate,
 					 unsigned int channels,
-					 snd_pcm_format_t format,
+					 unsigned int format,
 					 unsigned int maxbps,
 					 unsigned short spdif_ctls)
 {
@@ -1048,37 +1064,3 @@ bool snd_hdac_check_power_state(struct hdac_device *hdac,
 	return (state == target_state);
 }
 EXPORT_SYMBOL_GPL(snd_hdac_check_power_state);
-/**
- * snd_hdac_sync_power_state - wait until actual power state matches
- * with the target state
- *
- * @hdac: the HDAC device
- * @nid: NID to send the command
- * @target_state: target state to check for
- *
- * Return power state or PS_ERROR if codec rejects GET verb.
- */
-unsigned int snd_hdac_sync_power_state(struct hdac_device *codec,
-			hda_nid_t nid, unsigned int power_state)
-{
-	unsigned long end_time = jiffies + msecs_to_jiffies(500);
-	unsigned int state, actual_state, count;
-
-	for (count = 0; count < 500; count++) {
-		state = snd_hdac_codec_read(codec, nid, 0,
-				AC_VERB_GET_POWER_STATE, 0);
-		if (state & AC_PWRST_ERROR) {
-			msleep(20);
-			break;
-		}
-		actual_state = (state >> 4) & 0x0f;
-		if (actual_state == power_state)
-			break;
-		if (time_after_eq(jiffies, end_time))
-			break;
-		/* wait until the codec reachs to the target state */
-		msleep(1);
-	}
-	return state;
-}
-EXPORT_SYMBOL_GPL(snd_hdac_sync_power_state);

@@ -126,24 +126,6 @@
 #include "xgbe.h"
 #include "xgbe-common.h"
 
-static int xgbe_phy_module_eeprom(struct xgbe_prv_data *pdata,
-				  struct ethtool_eeprom *eeprom, u8 *data)
-{
-	if (!pdata->phy_if.phy_impl.module_eeprom)
-		return -ENXIO;
-
-	return pdata->phy_if.phy_impl.module_eeprom(pdata, eeprom, data);
-}
-
-static int xgbe_phy_module_info(struct xgbe_prv_data *pdata,
-				struct ethtool_modinfo *modinfo)
-{
-	if (!pdata->phy_if.phy_impl.module_info)
-		return -ENXIO;
-
-	return pdata->phy_if.phy_impl.module_info(pdata, modinfo);
-}
-
 static void xgbe_an37_clear_interrupts(struct xgbe_prv_data *pdata)
 {
 	int reg;
@@ -216,8 +198,31 @@ static void xgbe_an_clear_interrupts_all(struct xgbe_prv_data *pdata)
 	xgbe_an37_clear_interrupts(pdata);
 }
 
+static void xgbe_an73_enable_kr_training(struct xgbe_prv_data *pdata)
+{
+	unsigned int reg;
+
+	reg = XMDIO_READ(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL);
+
+	reg |= XGBE_KR_TRAINING_ENABLE;
+	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL, reg);
+}
+
+static void xgbe_an73_disable_kr_training(struct xgbe_prv_data *pdata)
+{
+	unsigned int reg;
+
+	reg = XMDIO_READ(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL);
+
+	reg &= ~XGBE_KR_TRAINING_ENABLE;
+	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL, reg);
+}
+
 static void xgbe_kr_mode(struct xgbe_prv_data *pdata)
 {
+	/* Enable KR training */
+	xgbe_an73_enable_kr_training(pdata);
+
 	/* Set MAC to 10G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_10000);
 
@@ -227,6 +232,9 @@ static void xgbe_kr_mode(struct xgbe_prv_data *pdata)
 
 static void xgbe_kx_2500_mode(struct xgbe_prv_data *pdata)
 {
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 2.5G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_2500);
 
@@ -236,6 +244,9 @@ static void xgbe_kx_2500_mode(struct xgbe_prv_data *pdata)
 
 static void xgbe_kx_1000_mode(struct xgbe_prv_data *pdata)
 {
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 1G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_1000);
 
@@ -249,6 +260,9 @@ static void xgbe_sfi_mode(struct xgbe_prv_data *pdata)
 	if (pdata->kr_redrv)
 		return xgbe_kr_mode(pdata);
 
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 10G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_10000);
 
@@ -258,6 +272,9 @@ static void xgbe_sfi_mode(struct xgbe_prv_data *pdata)
 
 static void xgbe_x_mode(struct xgbe_prv_data *pdata)
 {
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 1G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_1000);
 
@@ -267,6 +284,9 @@ static void xgbe_x_mode(struct xgbe_prv_data *pdata)
 
 static void xgbe_sgmii_1000_mode(struct xgbe_prv_data *pdata)
 {
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 1G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_1000);
 
@@ -276,6 +296,9 @@ static void xgbe_sgmii_1000_mode(struct xgbe_prv_data *pdata)
 
 static void xgbe_sgmii_100_mode(struct xgbe_prv_data *pdata)
 {
+	/* Disable KR training */
+	xgbe_an73_disable_kr_training(pdata);
+
 	/* Set MAC to 1G speed */
 	pdata->hw_if.set_speed(pdata, SPEED_1000);
 
@@ -331,15 +354,13 @@ static void xgbe_switch_mode(struct xgbe_prv_data *pdata)
 	xgbe_change_mode(pdata, pdata->phy_if.phy_impl.switch_mode(pdata));
 }
 
-static bool xgbe_set_mode(struct xgbe_prv_data *pdata,
+static void xgbe_set_mode(struct xgbe_prv_data *pdata,
 			  enum xgbe_mode mode)
 {
 	if (mode == xgbe_cur_mode(pdata))
-		return false;
+		return;
 
 	xgbe_change_mode(pdata, mode);
-
-	return true;
 }
 
 static bool xgbe_use_mode(struct xgbe_prv_data *pdata,
@@ -386,12 +407,6 @@ static void xgbe_an73_set(struct xgbe_prv_data *pdata, bool enable,
 {
 	unsigned int reg;
 
-	/* Disable KR training for now */
-	reg = XMDIO_READ(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL);
-	reg &= ~XGBE_KR_TRAINING_ENABLE;
-	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL, reg);
-
-	/* Update AN settings */
 	reg = XMDIO_READ(pdata, MDIO_MMD_AN, MDIO_CTRL1);
 	reg &= ~MDIO_AN_CTRL1_ENABLE;
 
@@ -417,16 +432,11 @@ static void xgbe_an73_disable(struct xgbe_prv_data *pdata)
 	xgbe_an73_set(pdata, false, false);
 	xgbe_an73_disable_interrupts(pdata);
 
-	pdata->an_start = 0;
-
 	netif_dbg(pdata, link, pdata->netdev, "CL73 AN disabled\n");
 }
 
 static void xgbe_an_restart(struct xgbe_prv_data *pdata)
 {
-	if (pdata->phy_if.phy_impl.an_pre)
-		pdata->phy_if.phy_impl.an_pre(pdata);
-
 	switch (pdata->an_mode) {
 	case XGBE_AN_MODE_CL73:
 	case XGBE_AN_MODE_CL73_REDRV:
@@ -443,9 +453,6 @@ static void xgbe_an_restart(struct xgbe_prv_data *pdata)
 
 static void xgbe_an_disable(struct xgbe_prv_data *pdata)
 {
-	if (pdata->phy_if.phy_impl.an_post)
-		pdata->phy_if.phy_impl.an_post(pdata);
-
 	switch (pdata->an_mode) {
 	case XGBE_AN_MODE_CL73:
 	case XGBE_AN_MODE_CL73_REDRV:
@@ -489,19 +496,21 @@ static enum xgbe_an xgbe_an73_tx_training(struct xgbe_prv_data *pdata,
 	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_FECCTRL, reg);
 
 	/* Start KR training */
-	if (pdata->phy_if.phy_impl.kr_training_pre)
-		pdata->phy_if.phy_impl.kr_training_pre(pdata);
-
 	reg = XMDIO_READ(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL);
-	reg |= XGBE_KR_TRAINING_ENABLE;
-	reg |= XGBE_KR_TRAINING_START;
-	XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL, reg);
+	if (reg & XGBE_KR_TRAINING_ENABLE) {
+		if (pdata->phy_if.phy_impl.kr_training_pre)
+			pdata->phy_if.phy_impl.kr_training_pre(pdata);
 
-	netif_dbg(pdata, link, pdata->netdev,
-		  "KR training initiated\n");
+		reg |= XGBE_KR_TRAINING_START;
+		XMDIO_WRITE(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_10GBR_PMD_CTRL,
+			    reg);
 
-	if (pdata->phy_if.phy_impl.kr_training_post)
-		pdata->phy_if.phy_impl.kr_training_post(pdata);
+		if (pdata->phy_if.phy_impl.kr_training_post)
+			pdata->phy_if.phy_impl.kr_training_post(pdata);
+
+		netif_dbg(pdata, link, pdata->netdev,
+			  "KR training initiated\n");
+	}
 
 	return XGBE_AN_PAGE_RECEIVED;
 }
@@ -628,11 +637,11 @@ static enum xgbe_an xgbe_an73_incompat_link(struct xgbe_prv_data *pdata)
 			return XGBE_AN_NO_LINK;
 	}
 
-	xgbe_an_disable(pdata);
+	xgbe_an73_disable(pdata);
 
 	xgbe_switch_mode(pdata);
 
-	xgbe_an_restart(pdata);
+	xgbe_an73_restart(pdata);
 
 	return XGBE_AN_INCOMPAT_LINK;
 }
@@ -811,9 +820,6 @@ static void xgbe_an37_state_machine(struct xgbe_prv_data *pdata)
 		pdata->an_result = pdata->an_state;
 		pdata->an_state = XGBE_AN_READY;
 
-		if (pdata->phy_if.phy_impl.an_post)
-			pdata->phy_if.phy_impl.an_post(pdata);
-
 		netif_dbg(pdata, link, pdata->netdev, "CL37 AN result: %s\n",
 			  xgbe_state_as_string(pdata->an_result));
 	}
@@ -896,9 +902,6 @@ again:
 		pdata->kr_state = XGBE_RX_BPA;
 		pdata->kx_state = XGBE_RX_BPA;
 		pdata->an_start = 0;
-
-		if (pdata->phy_if.phy_impl.an_post)
-			pdata->phy_if.phy_impl.an_post(pdata);
 
 		netif_dbg(pdata, link, pdata->netdev, "CL73 AN result: %s\n",
 			  xgbe_state_as_string(pdata->an_result));
@@ -1111,14 +1114,14 @@ static void xgbe_phy_adjust_link(struct xgbe_prv_data *pdata)
 
 		if (pdata->tx_pause != pdata->phy.tx_pause) {
 			new_state = 1;
-			pdata->tx_pause = pdata->phy.tx_pause;
 			pdata->hw_if.config_tx_flow_control(pdata);
+			pdata->tx_pause = pdata->phy.tx_pause;
 		}
 
 		if (pdata->rx_pause != pdata->phy.rx_pause) {
 			new_state = 1;
-			pdata->rx_pause = pdata->phy.rx_pause;
 			pdata->hw_if.config_rx_flow_control(pdata);
+			pdata->rx_pause = pdata->phy.rx_pause;
 		}
 
 		/* Speed support */
@@ -1180,23 +1183,21 @@ static int xgbe_phy_config_fixed(struct xgbe_prv_data *pdata)
 	return 0;
 }
 
-static int __xgbe_phy_config_aneg(struct xgbe_prv_data *pdata, bool set_mode)
+static int __xgbe_phy_config_aneg(struct xgbe_prv_data *pdata)
 {
 	int ret;
-
-	mutex_lock(&pdata->an_mutex);
 
 	set_bit(XGBE_LINK_INIT, &pdata->dev_state);
 	pdata->link_check = jiffies;
 
 	ret = pdata->phy_if.phy_impl.an_config(pdata);
 	if (ret)
-		goto out;
+		return ret;
 
 	if (pdata->phy.autoneg != AUTONEG_ENABLE) {
 		ret = xgbe_phy_config_fixed(pdata);
 		if (ret || !pdata->kr_redrv)
-			goto out;
+			return ret;
 
 		netif_dbg(pdata, link, pdata->netdev, "AN redriver support\n");
 	} else {
@@ -1206,27 +1207,24 @@ static int __xgbe_phy_config_aneg(struct xgbe_prv_data *pdata, bool set_mode)
 	/* Disable auto-negotiation interrupt */
 	disable_irq(pdata->an_irq);
 
-	if (set_mode) {
-		/* Start auto-negotiation in a supported mode */
-		if (xgbe_use_mode(pdata, XGBE_MODE_KR)) {
-			xgbe_set_mode(pdata, XGBE_MODE_KR);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_KX_2500)) {
-			xgbe_set_mode(pdata, XGBE_MODE_KX_2500);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_KX_1000)) {
-			xgbe_set_mode(pdata, XGBE_MODE_KX_1000);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_SFI)) {
-			xgbe_set_mode(pdata, XGBE_MODE_SFI);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_X)) {
-			xgbe_set_mode(pdata, XGBE_MODE_X);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_SGMII_1000)) {
-			xgbe_set_mode(pdata, XGBE_MODE_SGMII_1000);
-		} else if (xgbe_use_mode(pdata, XGBE_MODE_SGMII_100)) {
-			xgbe_set_mode(pdata, XGBE_MODE_SGMII_100);
-		} else {
-			enable_irq(pdata->an_irq);
-			ret = -EINVAL;
-			goto out;
-		}
+	/* Start auto-negotiation in a supported mode */
+	if (xgbe_use_mode(pdata, XGBE_MODE_KR)) {
+		xgbe_set_mode(pdata, XGBE_MODE_KR);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_KX_2500)) {
+		xgbe_set_mode(pdata, XGBE_MODE_KX_2500);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_KX_1000)) {
+		xgbe_set_mode(pdata, XGBE_MODE_KX_1000);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_SFI)) {
+		xgbe_set_mode(pdata, XGBE_MODE_SFI);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_X)) {
+		xgbe_set_mode(pdata, XGBE_MODE_X);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_SGMII_1000)) {
+		xgbe_set_mode(pdata, XGBE_MODE_SGMII_1000);
+	} else if (xgbe_use_mode(pdata, XGBE_MODE_SGMII_100)) {
+		xgbe_set_mode(pdata, XGBE_MODE_SGMII_100);
+	} else {
+		enable_irq(pdata->an_irq);
+		return -EINVAL;
 	}
 
 	/* Disable and stop any in progress auto-negotiation */
@@ -1246,7 +1244,16 @@ static int __xgbe_phy_config_aneg(struct xgbe_prv_data *pdata, bool set_mode)
 	xgbe_an_init(pdata);
 	xgbe_an_restart(pdata);
 
-out:
+	return 0;
+}
+
+static int xgbe_phy_config_aneg(struct xgbe_prv_data *pdata)
+{
+	int ret;
+
+	mutex_lock(&pdata->an_mutex);
+
+	ret = __xgbe_phy_config_aneg(pdata);
 	if (ret)
 		set_bit(XGBE_LINK_ERR, &pdata->dev_state);
 	else
@@ -1255,16 +1262,6 @@ out:
 	mutex_unlock(&pdata->an_mutex);
 
 	return ret;
-}
-
-static int xgbe_phy_config_aneg(struct xgbe_prv_data *pdata)
-{
-	return __xgbe_phy_config_aneg(pdata, true);
-}
-
-static int xgbe_phy_reconfig_aneg(struct xgbe_prv_data *pdata)
-{
-	return __xgbe_phy_config_aneg(pdata, false);
 }
 
 static bool xgbe_phy_aneg_done(struct xgbe_prv_data *pdata)
@@ -1323,8 +1320,7 @@ static void xgbe_phy_status_result(struct xgbe_prv_data *pdata)
 
 	pdata->phy.duplex = DUPLEX_FULL;
 
-	if (xgbe_set_mode(pdata, mode) && pdata->an_again)
-		xgbe_phy_reconfig_aneg(pdata);
+	xgbe_set_mode(pdata, mode);
 }
 
 static void xgbe_phy_status(struct xgbe_prv_data *pdata)
@@ -1629,7 +1625,4 @@ void xgbe_init_function_ptrs_phy(struct xgbe_phy_if *phy_if)
 	phy_if->phy_valid_speed = xgbe_phy_valid_speed;
 
 	phy_if->an_isr          = xgbe_an_combined_isr;
-
-	phy_if->module_info     = xgbe_phy_module_info;
-	phy_if->module_eeprom   = xgbe_phy_module_eeprom;
 }

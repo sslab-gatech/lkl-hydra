@@ -19,14 +19,11 @@
 #include "msm_gem.h"
 #include "msm_mmu.h"
 #include "msm_fence.h"
-#include "msm_gpu_trace.h"
-#include "adreno/adreno_gpu.h"
 
-#include <generated/utsrelease.h>
 #include <linux/string_helpers.h>
 #include <linux/pm_opp.h>
 #include <linux/devfreq.h>
-#include <linux/devcoredump.h>
+
 
 /*
  * Power Management:
@@ -43,11 +40,7 @@ static int msm_devfreq_target(struct device *dev, unsigned long *freq,
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 
-	if (gpu->funcs->gpu_set_freq)
-		gpu->funcs->gpu_set_freq(gpu, (u64)*freq);
-	else
-		clk_set_rate(gpu->core_clk, *freq);
-
+	clk_set_rate(gpu->core_clk, *freq);
 	dev_pm_opp_put(opp);
 
 	return 0;
@@ -57,14 +50,16 @@ static int msm_devfreq_get_dev_status(struct device *dev,
 		struct devfreq_dev_status *status)
 {
 	struct msm_gpu *gpu = platform_get_drvdata(to_platform_device(dev));
+	u64 cycles;
+	u32 freq = ((u32) status->current_frequency) / 1000000;
 	ktime_t time;
 
-	if (gpu->funcs->gpu_get_freq)
-		status->current_frequency = gpu->funcs->gpu_get_freq(gpu);
-	else
-		status->current_frequency = clk_get_rate(gpu->core_clk);
+	status->current_frequency = (unsigned long) clk_get_rate(gpu->core_clk);
+	gpu->funcs->gpu_busy(gpu, &cycles);
 
-	status->busy_time = gpu->funcs->gpu_busy(gpu);
+	status->busy_time = ((u32) (cycles - gpu->devfreq.busy_cycles)) / freq;
+
+	gpu->devfreq.busy_cycles = cycles;
 
 	time = ktime_get();
 	status->total_time = ktime_us_delta(time, gpu->devfreq.time);
@@ -77,10 +72,7 @@ static int msm_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
 {
 	struct msm_gpu *gpu = platform_get_drvdata(to_platform_device(dev));
 
-	if (gpu->funcs->gpu_get_freq)
-		*freq = gpu->funcs->gpu_get_freq(gpu);
-	else
-		*freq = clk_get_rate(gpu->core_clk);
+	*freq = (unsigned long) clk_get_rate(gpu->core_clk);
 
 	return 0;
 }
@@ -109,11 +101,9 @@ static void msm_devfreq_init(struct msm_gpu *gpu)
 			&msm_devfreq_profile, "simple_ondemand", NULL);
 
 	if (IS_ERR(gpu->devfreq.devfreq)) {
-		DRM_DEV_ERROR(&gpu->pdev->dev, "Couldn't initialize GPU devfreq\n");
+		dev_err(&gpu->pdev->dev, "Couldn't initialize GPU devfreq\n");
 		gpu->devfreq.devfreq = NULL;
 	}
-
-	devfreq_suspend_device(gpu->devfreq.devfreq);
 }
 
 static int enable_pwrrail(struct msm_gpu *gpu)
@@ -124,7 +114,7 @@ static int enable_pwrrail(struct msm_gpu *gpu)
 	if (gpu->gpu_reg) {
 		ret = regulator_enable(gpu->gpu_reg);
 		if (ret) {
-			DRM_DEV_ERROR(dev->dev, "failed to enable 'gpu_reg': %d\n", ret);
+			dev_err(dev->dev, "failed to enable 'gpu_reg': %d\n", ret);
 			return ret;
 		}
 	}
@@ -132,7 +122,7 @@ static int enable_pwrrail(struct msm_gpu *gpu)
 	if (gpu->gpu_cx) {
 		ret = regulator_enable(gpu->gpu_cx);
 		if (ret) {
-			DRM_DEV_ERROR(dev->dev, "failed to enable 'gpu_cx': %d\n", ret);
+			dev_err(dev->dev, "failed to enable 'gpu_cx': %d\n", ret);
 			return ret;
 		}
 	}
@@ -151,6 +141,8 @@ static int disable_pwrrail(struct msm_gpu *gpu)
 
 static int enable_clk(struct msm_gpu *gpu)
 {
+	int i;
+
 	if (gpu->core_clk && gpu->fast_rate)
 		clk_set_rate(gpu->core_clk, gpu->fast_rate);
 
@@ -158,12 +150,28 @@ static int enable_clk(struct msm_gpu *gpu)
 	if (gpu->rbbmtimer_clk)
 		clk_set_rate(gpu->rbbmtimer_clk, 19200000);
 
-	return clk_bulk_prepare_enable(gpu->nr_clocks, gpu->grp_clks);
+	for (i = gpu->nr_clocks - 1; i >= 0; i--)
+		if (gpu->grp_clks[i])
+			clk_prepare(gpu->grp_clks[i]);
+
+	for (i = gpu->nr_clocks - 1; i >= 0; i--)
+		if (gpu->grp_clks[i])
+			clk_enable(gpu->grp_clks[i]);
+
+	return 0;
 }
 
 static int disable_clk(struct msm_gpu *gpu)
 {
-	clk_bulk_disable_unprepare(gpu->nr_clocks, gpu->grp_clks);
+	int i;
+
+	for (i = gpu->nr_clocks - 1; i >= 0; i--)
+		if (gpu->grp_clks[i])
+			clk_disable(gpu->grp_clks[i]);
+
+	for (i = gpu->nr_clocks - 1; i >= 0; i--)
+		if (gpu->grp_clks[i])
+			clk_unprepare(gpu->grp_clks[i]);
 
 	/*
 	 * Set the clock to a deliberately low rate. On older targets the clock
@@ -193,14 +201,6 @@ static int disable_axi(struct msm_gpu *gpu)
 	return 0;
 }
 
-void msm_gpu_resume_devfreq(struct msm_gpu *gpu)
-{
-	gpu->devfreq.busy_cycles = 0;
-	gpu->devfreq.time = ktime_get();
-
-	devfreq_resume_device(gpu->devfreq.devfreq);
-}
-
 int msm_gpu_pm_resume(struct msm_gpu *gpu)
 {
 	int ret;
@@ -219,7 +219,12 @@ int msm_gpu_pm_resume(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	msm_gpu_resume_devfreq(gpu);
+	if (gpu->devfreq.devfreq) {
+		gpu->devfreq.busy_cycles = 0;
+		gpu->devfreq.time = ktime_get();
+
+		devfreq_resume_device(gpu->devfreq.devfreq);
+	}
 
 	gpu->needs_hw_init = true;
 
@@ -232,7 +237,8 @@ int msm_gpu_pm_suspend(struct msm_gpu *gpu)
 
 	DBG("%s", gpu->name);
 
-	devfreq_suspend_device(gpu->devfreq.devfreq);
+	if (gpu->devfreq.devfreq)
+		devfreq_suspend_device(gpu->devfreq.devfreq);
 
 	ret = disable_axi(gpu);
 	if (ret)
@@ -266,130 +272,6 @@ int msm_gpu_hw_init(struct msm_gpu *gpu)
 
 	return ret;
 }
-
-#ifdef CONFIG_DEV_COREDUMP
-static ssize_t msm_gpu_devcoredump_read(char *buffer, loff_t offset,
-		size_t count, void *data, size_t datalen)
-{
-	struct msm_gpu *gpu = data;
-	struct drm_print_iterator iter;
-	struct drm_printer p;
-	struct msm_gpu_state *state;
-
-	state = msm_gpu_crashstate_get(gpu);
-	if (!state)
-		return 0;
-
-	iter.data = buffer;
-	iter.offset = 0;
-	iter.start = offset;
-	iter.remain = count;
-
-	p = drm_coredump_printer(&iter);
-
-	drm_printf(&p, "---\n");
-	drm_printf(&p, "kernel: " UTS_RELEASE "\n");
-	drm_printf(&p, "module: " KBUILD_MODNAME "\n");
-	drm_printf(&p, "time: %lld.%09ld\n",
-		state->time.tv_sec, state->time.tv_nsec);
-	if (state->comm)
-		drm_printf(&p, "comm: %s\n", state->comm);
-	if (state->cmd)
-		drm_printf(&p, "cmdline: %s\n", state->cmd);
-
-	gpu->funcs->show(gpu, state, &p);
-
-	msm_gpu_crashstate_put(gpu);
-
-	return count - iter.remain;
-}
-
-static void msm_gpu_devcoredump_free(void *data)
-{
-	struct msm_gpu *gpu = data;
-
-	msm_gpu_crashstate_put(gpu);
-}
-
-static void msm_gpu_crashstate_get_bo(struct msm_gpu_state *state,
-		struct msm_gem_object *obj, u64 iova, u32 flags)
-{
-	struct msm_gpu_state_bo *state_bo = &state->bos[state->nr_bos];
-
-	/* Don't record write only objects */
-	state_bo->size = obj->base.size;
-	state_bo->iova = iova;
-
-	/* Only store data for non imported buffer objects marked for read */
-	if ((flags & MSM_SUBMIT_BO_READ) && !obj->base.import_attach) {
-		void *ptr;
-
-		state_bo->data = kvmalloc(obj->base.size, GFP_KERNEL);
-		if (!state_bo->data)
-			goto out;
-
-		ptr = msm_gem_get_vaddr_active(&obj->base);
-		if (IS_ERR(ptr)) {
-			kvfree(state_bo->data);
-			state_bo->data = NULL;
-			goto out;
-		}
-
-		memcpy(state_bo->data, ptr, obj->base.size);
-		msm_gem_put_vaddr(&obj->base);
-	}
-out:
-	state->nr_bos++;
-}
-
-static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
-		struct msm_gem_submit *submit, char *comm, char *cmd)
-{
-	struct msm_gpu_state *state;
-
-	/* Check if the target supports capturing crash state */
-	if (!gpu->funcs->gpu_state_get)
-		return;
-
-	/* Only save one crash state at a time */
-	if (gpu->crashstate)
-		return;
-
-	state = gpu->funcs->gpu_state_get(gpu);
-	if (IS_ERR_OR_NULL(state))
-		return;
-
-	/* Fill in the additional crash state information */
-	state->comm = kstrdup(comm, GFP_KERNEL);
-	state->cmd = kstrdup(cmd, GFP_KERNEL);
-
-	if (submit) {
-		int i;
-
-		state->bos = kcalloc(submit->nr_cmds,
-			sizeof(struct msm_gpu_state_bo), GFP_KERNEL);
-
-		for (i = 0; state->bos && i < submit->nr_cmds; i++) {
-			int idx = submit->cmd[i].idx;
-
-			msm_gpu_crashstate_get_bo(state, submit->bos[idx].obj,
-				submit->bos[idx].iova, submit->bos[idx].flags);
-		}
-	}
-
-	/* Set the active crash state to be dumped on failure */
-	gpu->crashstate = state;
-
-	/* FIXME: Release the crashstate if this errors out? */
-	dev_coredumpm(gpu->dev->dev, THIS_MODULE, gpu, 0, GFP_KERNEL,
-		msm_gpu_devcoredump_read, msm_gpu_devcoredump_free);
-}
-#else
-static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
-		struct msm_gem_submit *submit, char *comm, char *cmd)
-{
-}
-#endif
 
 /*
  * Hangcheck detection for locked gpu:
@@ -432,20 +314,20 @@ static void recover_worker(struct work_struct *work)
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_gem_submit *submit;
 	struct msm_ringbuffer *cur_ring = gpu->funcs->active_ring(gpu);
-	char *comm = NULL, *cmd = NULL;
 	int i;
 
 	mutex_lock(&dev->struct_mutex);
 
-	DRM_DEV_ERROR(dev->dev, "%s: hangcheck recover!\n", gpu->name);
+	dev_err(dev->dev, "%s: hangcheck recover!\n", gpu->name);
 
 	submit = find_submit(cur_ring, cur_ring->memptrs->fence + 1);
 	if (submit) {
 		struct task_struct *task;
 
-		task = get_pid_task(submit->pid, PIDTYPE_PID);
+		rcu_read_lock();
+		task = pid_task(submit->pid, PIDTYPE_PID);
 		if (task) {
-			comm = kstrdup(task->comm, GFP_KERNEL);
+			char *cmd;
 
 			/*
 			 * So slightly annoying, in other paths like
@@ -459,27 +341,21 @@ static void recover_worker(struct work_struct *work)
 			 */
 			mutex_unlock(&dev->struct_mutex);
 			cmd = kstrdup_quotable_cmdline(task, GFP_KERNEL);
-			put_task_struct(task);
 			mutex_lock(&dev->struct_mutex);
-		}
 
-		if (comm && cmd) {
-			DRM_DEV_ERROR(dev->dev, "%s: offending task: %s (%s)\n",
-				gpu->name, comm, cmd);
+			dev_err(dev->dev, "%s: offending task: %s (%s)\n",
+				gpu->name, task->comm, cmd);
 
 			msm_rd_dump_submit(priv->hangrd, submit,
-				"offending task: %s (%s)", comm, cmd);
-		} else
+				"offending task: %s (%s)", task->comm, cmd);
+
+			kfree(cmd);
+		} else {
 			msm_rd_dump_submit(priv->hangrd, submit, NULL);
+		}
+		rcu_read_unlock();
 	}
 
-	/* Record the crash state */
-	pm_runtime_get_sync(&gpu->pdev->dev);
-	msm_gpu_crashstate_capture(gpu, submit, comm, cmd);
-	pm_runtime_put_sync(&gpu->pdev->dev);
-
-	kfree(cmd);
-	kfree(comm);
 
 	/*
 	 * Update all the rings with the latest and greatest fence.. this
@@ -547,11 +423,11 @@ static void hangcheck_handler(struct timer_list *t)
 	} else if (fence < ring->seqno) {
 		/* no progress and not done.. hung! */
 		ring->hangcheck_fence = fence;
-		DRM_DEV_ERROR(dev->dev, "%s: hangcheck detected gpu lockup rb %d!\n",
+		dev_err(dev->dev, "%s: hangcheck detected gpu lockup rb %d!\n",
 				gpu->name, ring->id);
-		DRM_DEV_ERROR(dev->dev, "%s:     completed fence: %u\n",
+		dev_err(dev->dev, "%s:     completed fence: %u\n",
 				gpu->name, fence);
-		DRM_DEV_ERROR(dev->dev, "%s:     submitted fence: %u\n",
+		dev_err(dev->dev, "%s:     submitted fence: %u\n",
 				gpu->name, ring->seqno);
 
 		queue_work(priv->wq, &gpu->recover_work);
@@ -667,34 +543,16 @@ out:
  * Cmdstream submission/retirement:
  */
 
-static void retire_submit(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
-		struct msm_gem_submit *submit)
+static void retire_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
-	int index = submit->seqno % MSM_GPU_SUBMIT_STATS_COUNT;
-	volatile struct msm_gpu_submit_stats *stats;
-	u64 elapsed, clock = 0;
 	int i;
-
-	stats = &ring->memptrs->stats[index];
-	/* Convert 19.2Mhz alwayson ticks to nanoseconds for elapsed time */
-	elapsed = (stats->alwayson_end - stats->alwayson_start) * 10000;
-	do_div(elapsed, 192);
-
-	/* Calculate the clock frequency from the number of CP cycles */
-	if (elapsed) {
-		clock = (stats->cpcycles_end - stats->cpcycles_start) * 1000;
-		do_div(clock, elapsed);
-	}
-
-	trace_msm_gpu_submit_retired(submit, elapsed, clock,
-		stats->alwayson_start, stats->alwayson_end);
 
 	for (i = 0; i < submit->nr_bos; i++) {
 		struct msm_gem_object *msm_obj = submit->bos[i].obj;
 		/* move to inactive: */
 		msm_gem_move_to_inactive(&msm_obj->base);
-		msm_gem_unpin_iova(&msm_obj->base, gpu->aspace);
-		drm_gem_object_put(&msm_obj->base);
+		msm_gem_put_iova(&msm_obj->base, gpu->aspace);
+		drm_gem_object_unreference(&msm_obj->base);
 	}
 
 	pm_runtime_mark_last_busy(&gpu->pdev->dev);
@@ -716,7 +574,7 @@ static void retire_submits(struct msm_gpu *gpu)
 
 		list_for_each_entry_safe(submit, tmp, &ring->submits, node) {
 			if (dma_fence_is_signaled(submit->fence))
-				retire_submit(gpu, ring, submit);
+				retire_submit(gpu, submit);
 		}
 	}
 }
@@ -776,8 +634,8 @@ void msm_gpu_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit,
 		WARN_ON(is_active(msm_obj) && (msm_obj->gpu != gpu));
 
 		/* submit takes a reference to the bo and iova until retired: */
-		drm_gem_object_get(&msm_obj->base);
-		msm_gem_get_and_pin_iova(&msm_obj->base,
+		drm_gem_object_reference(&msm_obj->base);
+		msm_gem_get_iova(&msm_obj->base,
 				submit->gpu->aspace, &iova);
 
 		if (submit->bos[i].flags & MSM_SUBMIT_BO_WRITE)
@@ -802,22 +660,42 @@ static irqreturn_t irq_handler(int irq, void *data)
 	return gpu->funcs->irq(gpu);
 }
 
+static struct clk *get_clock(struct device *dev, const char *name)
+{
+	struct clk *clk = devm_clk_get(dev, name);
+
+	return IS_ERR(clk) ? NULL : clk;
+}
+
 static int get_clocks(struct platform_device *pdev, struct msm_gpu *gpu)
 {
-	int ret = msm_clk_bulk_get(&pdev->dev, &gpu->grp_clks);
+	struct device *dev = &pdev->dev;
+	struct property *prop;
+	const char *name;
+	int i = 0;
 
-	if (ret < 1) {
+	gpu->nr_clocks = of_property_count_strings(dev->of_node, "clock-names");
+	if (gpu->nr_clocks < 1) {
 		gpu->nr_clocks = 0;
-		return ret;
+		return 0;
 	}
 
-	gpu->nr_clocks = ret;
+	gpu->grp_clks = devm_kcalloc(dev, sizeof(struct clk *), gpu->nr_clocks,
+		GFP_KERNEL);
+	if (!gpu->grp_clks)
+		return -ENOMEM;
 
-	gpu->core_clk = msm_clk_bulk_get_clock(gpu->grp_clks,
-		gpu->nr_clocks, "core");
+	of_property_for_each_string(dev->of_node, "clock-names", prop, name) {
+		gpu->grp_clks[i] = get_clock(dev, name);
 
-	gpu->rbbmtimer_clk = msm_clk_bulk_get_clock(gpu->grp_clks,
-		gpu->nr_clocks, "rbbmtimer");
+		/* Remember the key clocks that we need to control later */
+		if (!strcmp(name, "core") || !strcmp(name, "core_clk"))
+			gpu->core_clk = gpu->grp_clks[i];
+		else if (!strcmp(name, "rbbmtimer") || !strcmp(name, "rbbmtimer_clk"))
+			gpu->rbbmtimer_clk = gpu->grp_clks[i];
+
+		++i;
+	}
 
 	return 0;
 }
@@ -826,6 +704,7 @@ static struct msm_gem_address_space *
 msm_gpu_create_address_space(struct msm_gpu *gpu, struct platform_device *pdev,
 		uint64_t va_start, uint64_t va_end)
 {
+	struct iommu_domain *iommu;
 	struct msm_gem_address_space *aspace;
 	int ret;
 
@@ -834,27 +713,20 @@ msm_gpu_create_address_space(struct msm_gpu *gpu, struct platform_device *pdev,
 	 * and have separate page tables per context.  For now, to keep things
 	 * simple and to get something working, just use a single address space:
 	 */
-	if (!adreno_is_a2xx(to_adreno_gpu(gpu))) {
-		struct iommu_domain *iommu = iommu_domain_alloc(&platform_bus_type);
-		if (!iommu)
-			return NULL;
+	iommu = iommu_domain_alloc(&platform_bus_type);
+	if (!iommu)
+		return NULL;
 
-		iommu->geometry.aperture_start = va_start;
-		iommu->geometry.aperture_end = va_end;
+	iommu->geometry.aperture_start = va_start;
+	iommu->geometry.aperture_end = va_end;
 
-		DRM_DEV_INFO(gpu->dev->dev, "%s: using IOMMU\n", gpu->name);
+	dev_info(gpu->dev->dev, "%s: using IOMMU\n", gpu->name);
 
-		aspace = msm_gem_address_space_create(&pdev->dev, iommu, "gpu");
-		if (IS_ERR(aspace))
-			iommu_domain_free(iommu);
-	} else {
-		aspace = msm_gem_address_space_create_a2xx(&pdev->dev, gpu, "gpu",
-			va_start, va_end);
-	}
-
+	aspace = msm_gem_address_space_create(&pdev->dev, iommu, "gpu");
 	if (IS_ERR(aspace)) {
-		DRM_DEV_ERROR(gpu->dev->dev, "failed to init mmu: %ld\n",
+		dev_err(gpu->dev->dev, "failed to init iommu: %ld\n",
 			PTR_ERR(aspace));
+		iommu_domain_free(iommu);
 		return ERR_CAST(aspace);
 	}
 
@@ -900,17 +772,17 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	}
 
 	/* Get Interrupt: */
-	gpu->irq = platform_get_irq(pdev, 0);
+	gpu->irq = platform_get_irq_byname(pdev, config->irqname);
 	if (gpu->irq < 0) {
 		ret = gpu->irq;
-		DRM_DEV_ERROR(drm->dev, "failed to get irq: %d\n", ret);
+		dev_err(drm->dev, "failed to get irq: %d\n", ret);
 		goto fail;
 	}
 
 	ret = devm_request_irq(&pdev->dev, gpu->irq, irq_handler,
 			IRQF_TRIGGER_HIGH, gpu->name, gpu);
 	if (ret) {
-		DRM_DEV_ERROR(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
+		dev_err(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
 		goto fail;
 	}
 
@@ -943,24 +815,21 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 		config->va_start, config->va_end);
 
 	if (gpu->aspace == NULL)
-		DRM_DEV_INFO(drm->dev, "%s: no IOMMU, fallback to VRAM carveout!\n", name);
+		dev_info(drm->dev, "%s: no IOMMU, fallback to VRAM carveout!\n", name);
 	else if (IS_ERR(gpu->aspace)) {
 		ret = PTR_ERR(gpu->aspace);
 		goto fail;
 	}
 
-	memptrs = msm_gem_kernel_new(drm,
-		sizeof(struct msm_rbmemptrs) * nr_rings,
+	memptrs = msm_gem_kernel_new(drm, sizeof(*gpu->memptrs_bo),
 		MSM_BO_UNCACHED, gpu->aspace, &gpu->memptrs_bo,
 		&memptrs_iova);
 
 	if (IS_ERR(memptrs)) {
 		ret = PTR_ERR(memptrs);
-		DRM_DEV_ERROR(drm->dev, "could not allocate memptrs: %d\n", ret);
+		dev_err(drm->dev, "could not allocate memptrs: %d\n", ret);
 		goto fail;
 	}
-
-	msm_gem_object_set_name(gpu->memptrs_bo, "memptrs");
 
 	if (nr_rings > ARRAY_SIZE(gpu->rb)) {
 		DRM_DEV_INFO_ONCE(drm->dev, "Only creating %zu ringbuffers\n",
@@ -974,7 +843,7 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 
 		if (IS_ERR(gpu->rb[i])) {
 			ret = PTR_ERR(gpu->rb[i]);
-			DRM_DEV_ERROR(drm->dev,
+			dev_err(drm->dev,
 				"could not create ringbuffer %d: %d\n", i, ret);
 			goto fail;
 		}
@@ -993,7 +862,11 @@ fail:
 		gpu->rb[i] = NULL;
 	}
 
-	msm_gem_kernel_put(gpu->memptrs_bo, gpu->aspace, false);
+	if (gpu->memptrs_bo) {
+		msm_gem_put_vaddr(gpu->memptrs_bo);
+		msm_gem_put_iova(gpu->memptrs_bo, gpu->aspace);
+		drm_gem_object_unreference_unlocked(gpu->memptrs_bo);
+	}
 
 	platform_set_drvdata(pdev, NULL);
 	return ret;
@@ -1012,7 +885,11 @@ void msm_gpu_cleanup(struct msm_gpu *gpu)
 		gpu->rb[i] = NULL;
 	}
 
-	msm_gem_kernel_put(gpu->memptrs_bo, gpu->aspace, false);
+	if (gpu->memptrs_bo) {
+		msm_gem_put_vaddr(gpu->memptrs_bo);
+		msm_gem_put_iova(gpu->memptrs_bo, gpu->aspace);
+		drm_gem_object_unreference_unlocked(gpu->memptrs_bo);
+	}
 
 	if (!IS_ERR_OR_NULL(gpu->aspace)) {
 		gpu->aspace->mmu->funcs->detach(gpu->aspace->mmu,

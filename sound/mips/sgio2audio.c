@@ -685,6 +685,7 @@ static const struct snd_pcm_ops snd_sgio2audio_playback1_ops = {
 	.trigger =     snd_sgio2audio_pcm_trigger,
 	.pointer =     snd_sgio2audio_pcm_pointer,
 	.page =        snd_pcm_lib_get_vmalloc_page,
+	.mmap =        snd_pcm_lib_mmap_vmalloc,
 };
 
 static const struct snd_pcm_ops snd_sgio2audio_playback2_ops = {
@@ -697,6 +698,7 @@ static const struct snd_pcm_ops snd_sgio2audio_playback2_ops = {
 	.trigger =     snd_sgio2audio_pcm_trigger,
 	.pointer =     snd_sgio2audio_pcm_pointer,
 	.page =        snd_pcm_lib_get_vmalloc_page,
+	.mmap =        snd_pcm_lib_mmap_vmalloc,
 };
 
 static const struct snd_pcm_ops snd_sgio2audio_capture_ops = {
@@ -709,6 +711,7 @@ static const struct snd_pcm_ops snd_sgio2audio_capture_ops = {
 	.trigger =     snd_sgio2audio_pcm_trigger,
 	.pointer =     snd_sgio2audio_pcm_pointer,
 	.page =        snd_pcm_lib_get_vmalloc_page,
+	.mmap =        snd_pcm_lib_mmap_vmalloc,
 };
 
 /*

@@ -18,8 +18,9 @@
 #include <linux/thread_info.h>
 
 /* ftrace syscalls requires exporting the sys_call_table */
+#ifdef CONFIG_FTRACE_SYSCALLS
 extern const unsigned long sys_call_table[];
-extern const unsigned long compat_sys_call_table[];
+#endif /* CONFIG_FTRACE_SYSCALLS */
 
 static inline int syscall_get_nr(struct task_struct *task, struct pt_regs *regs)
 {

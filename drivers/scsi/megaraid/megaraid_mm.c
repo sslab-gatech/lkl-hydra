@@ -935,12 +935,10 @@ mraid_mm_register_adp(mraid_mmadp_t *lld_adp)
 	 * Allocate single blocks of memory for all required kiocs,
 	 * mailboxes and passthru structures.
 	 */
-	adapter->kioc_list	= kmalloc_array(lld_adp->max_kioc,
-						  sizeof(uioc_t),
-						  GFP_KERNEL);
-	adapter->mbox_list	= kmalloc_array(lld_adp->max_kioc,
-						  sizeof(mbox64_t),
-						  GFP_KERNEL);
+	adapter->kioc_list	= kmalloc(sizeof(uioc_t) * lld_adp->max_kioc,
+						GFP_KERNEL);
+	adapter->mbox_list	= kmalloc(sizeof(mbox64_t) * lld_adp->max_kioc,
+						GFP_KERNEL);
 	adapter->pthru_dma_pool = dma_pool_create("megaraid mm pthru pool",
 						&adapter->pdev->dev,
 						sizeof(mraid_passthru_t),
@@ -1017,7 +1015,8 @@ memalloc_error:
 	kfree(adapter->kioc_list);
 	kfree(adapter->mbox_list);
 
-	dma_pool_destroy(adapter->pthru_dma_pool);
+	if (adapter->pthru_dma_pool)
+		dma_pool_destroy(adapter->pthru_dma_pool);
 
 	kfree(adapter);
 

@@ -8,7 +8,6 @@
 #include <linux/sched.h>
 #include <asm/ptrace.h>
 #include <asm/processor.h>
-#include <asm/switch_to.h>
 #include <linux/uaccess.h>
 
 /* Functions in vector.S */

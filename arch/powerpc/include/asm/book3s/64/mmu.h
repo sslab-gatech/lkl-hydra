@@ -2,8 +2,6 @@
 #ifndef _ASM_POWERPC_BOOK3S_64_MMU_H_
 #define _ASM_POWERPC_BOOK3S_64_MMU_H_
 
-#include <asm/page.h>
-
 #ifndef __ASSEMBLY__
 /*
  * Page size definition
@@ -25,13 +23,6 @@ struct mmu_psize_def {
 	};
 };
 extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
-
-/*
- * For BOOK3s 64 with 4k and 64K linux page size
- * we want to use pointers, because the page table
- * actually store pfn
- */
-typedef pte_t *pgtable_t;
 
 #endif /* __ASSEMBLY__ */
 
@@ -89,29 +80,8 @@ struct spinlock;
 /* Maximum possible number of NPUs in a system. */
 #define NV_MAX_NPUS 8
 
-/*
- * One bit per slice. We have lower slices which cover 256MB segments
- * upto 4G range. That gets us 16 low slices. For the rest we track slices
- * in 1TB size.
- */
-struct slice_mask {
-	u64 low_slices;
-	DECLARE_BITMAP(high_slices, SLICE_NUM_HIGH);
-};
-
 typedef struct {
-	union {
-		/*
-		 * We use id as the PIDR content for radix. On hash we can use
-		 * more than one id. The extended ids are used when we start
-		 * having address above 512TB. We allocate one extended id
-		 * for each 512TB. The new id is then used with the 49 bit
-		 * EA to build a new VA. We always use ESID_BITS_1T_MASK bits
-		 * from EA and new context ids to build the new VAs.
-		 */
-		mm_context_id_t id;
-		mm_context_id_t extended_id[TASK_SIZE_USER64/TASK_CONTEXT_SIZE];
-	};
+	mm_context_id_t id;
 	u16 user_psize;		/* page size index */
 
 	/* Number of bits in the mm_cpumask */
@@ -124,18 +94,9 @@ typedef struct {
 	struct npu_context *npu_context;
 
 #ifdef CONFIG_PPC_MM_SLICES
-	 /* SLB page size encodings*/
-	unsigned char low_slices_psize[BITS_PER_LONG / BITS_PER_BYTE];
+	u64 low_slices_psize;	/* SLB page size encodings */
 	unsigned char high_slices_psize[SLICE_ARRAY_SIZE];
 	unsigned long slb_addr_limit;
-# ifdef CONFIG_PPC_64K_PAGES
-	struct slice_mask mask_64k;
-# endif
-	struct slice_mask mask_4k;
-# ifdef CONFIG_HUGETLB_PAGE
-	struct slice_mask mask_16m;
-	struct slice_mask mask_16g;
-# endif
 #else
 	u16 sllp;		/* SLB page size encoding */
 #endif
@@ -143,11 +104,10 @@ typedef struct {
 #ifdef CONFIG_PPC_SUBPAGE_PROT
 	struct subpage_prot_table spt;
 #endif /* CONFIG_PPC_SUBPAGE_PROT */
-	/*
-	 * pagetable fragment support
-	 */
+#ifdef CONFIG_PPC_64K_PAGES
+	/* for 4K PTE fragment support */
 	void *pte_frag;
-	void *pmd_frag;
+#endif
 #ifdef CONFIG_SPAPR_TCE_IOMMU
 	struct list_head iommu_group_mem_list;
 #endif
@@ -216,26 +176,6 @@ extern void radix_init_pseries(void);
 #else
 static inline void radix_init_pseries(void) { };
 #endif
-
-static inline int get_user_context(mm_context_t *ctx, unsigned long ea)
-{
-	int index = ea >> MAX_EA_BITS_PER_CONTEXT;
-
-	if (likely(index < ARRAY_SIZE(ctx->extended_id)))
-		return ctx->extended_id[index];
-
-	/* should never happen */
-	WARN_ON(1);
-	return 0;
-}
-
-static inline unsigned long get_user_vsid(mm_context_t *ctx,
-					  unsigned long ea, int ssize)
-{
-	unsigned long context = get_user_context(ctx, ea);
-
-	return get_vsid(context, ea, ssize);
-}
 
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_MMU_H_ */

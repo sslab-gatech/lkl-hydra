@@ -6,7 +6,10 @@
 #include <linux/stddef.h>	/* for NULL */
 #include <linux/linkage.h>
 #include <asm/string.h>
-#include "misc.h"
+
+extern unsigned long free_mem_ptr;
+extern unsigned long free_mem_end_ptr;
+extern void error(char *);
 
 #define STATIC static
 #define STATIC_RW_DATA	/* non-static please */

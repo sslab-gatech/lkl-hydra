@@ -224,9 +224,6 @@ struct v4l2_subdev_core_ops {
  * struct v4l2_subdev_tuner_ops - Callbacks used when v4l device was opened
  *	in radio mode.
  *
- * @standby: puts the tuner in standby mode. It will be woken up
- *	     automatically the next time it is used.
- *
  * @s_radio: callback that switches the tuner to radio mode.
  *	     drivers should explicitly call it when a tuner ops should
  *	     operate on radio mode, before being able to handle it.
@@ -271,7 +268,6 @@ struct v4l2_subdev_core_ops {
  *	  }
  */
 struct v4l2_subdev_tuner_ops {
-	int (*standby)(struct v4l2_subdev *sd);
 	int (*s_radio)(struct v4l2_subdev *sd);
 	int (*s_frequency)(struct v4l2_subdev *sd, const struct v4l2_frequency *freq);
 	int (*g_frequency)(struct v4l2_subdev *sd, struct v4l2_frequency *freq);
@@ -397,6 +393,10 @@ struct v4l2_mbus_frame_desc {
  *
  * @g_pixelaspect: callback to return the pixelaspect ratio.
  *
+ * @g_parm: callback for VIDIOC_G_PARM() ioctl handler code.
+ *
+ * @s_parm: callback for VIDIOC_S_PARM() ioctl handler code.
+ *
  * @g_frame_interval: callback for VIDIOC_SUBDEV_G_FRAME_INTERVAL()
  *		      ioctl handler code.
  *
@@ -434,6 +434,8 @@ struct v4l2_subdev_video_ops {
 	int (*g_input_status)(struct v4l2_subdev *sd, u32 *status);
 	int (*s_stream)(struct v4l2_subdev *sd, int enable);
 	int (*g_pixelaspect)(struct v4l2_subdev *sd, struct v4l2_fract *aspect);
+	int (*g_parm)(struct v4l2_subdev *sd, struct v4l2_streamparm *param);
+	int (*s_parm)(struct v4l2_subdev *sd, struct v4l2_streamparm *param);
 	int (*g_frame_interval)(struct v4l2_subdev *sd,
 				struct v4l2_subdev_frame_interval *interval);
 	int (*s_frame_interval)(struct v4l2_subdev *sd,
@@ -776,11 +778,7 @@ struct v4l2_subdev_internal_ops {
 #define V4L2_SUBDEV_FL_IS_SPI			(1U << 1)
 /* Set this flag if this subdev needs a device node. */
 #define V4L2_SUBDEV_FL_HAS_DEVNODE		(1U << 2)
-/*
- * Set this flag if this subdev generates events.
- * Note controls can send events, thus drivers exposing controls
- * should set this flag.
- */
+/* Set this flag if this subdev generates events. */
 #define V4L2_SUBDEV_FL_HAS_EVENTS		(1U << 3)
 
 struct regulator_bulk_data;
@@ -869,13 +867,6 @@ struct v4l2_subdev {
 	struct v4l2_subdev_platform_data *pdata;
 };
 
-
-/**
- * media_entity_to_v4l2_subdev - Returns a &struct v4l2_subdev from
- *    the &struct media_entity embedded in it.
- *
- * @ent: pointer to &struct media_entity.
- */
 #define media_entity_to_v4l2_subdev(ent)				\
 ({									\
 	typeof(ent) __me_sd_ent = (ent);				\
@@ -885,20 +876,14 @@ struct v4l2_subdev {
 		NULL;							\
 })
 
-/**
- * vdev_to_v4l2_subdev - Returns a &struct v4l2_subdev from
- *	the &struct video_device embedded on it.
- *
- * @vdev: pointer to &struct video_device
- */
 #define vdev_to_v4l2_subdev(vdev) \
 	((struct v4l2_subdev *)video_get_drvdata(vdev))
 
 /**
  * struct v4l2_subdev_fh - Used for storing subdev information per file handle
  *
- * @vfh: pointer to &struct v4l2_fh
- * @pad: pointer to &struct v4l2_subdev_pad_config
+ * @vfh: pointer to struct v4l2_fh
+ * @pad: pointer to v4l2_subdev_pad_config
  */
 struct v4l2_subdev_fh {
 	struct v4l2_fh vfh;
@@ -907,70 +892,23 @@ struct v4l2_subdev_fh {
 #endif
 };
 
-/**
- * to_v4l2_subdev_fh - Returns a &struct v4l2_subdev_fh from
- *	the &struct v4l2_fh embedded on it.
- *
- * @fh: pointer to &struct v4l2_fh
- */
 #define to_v4l2_subdev_fh(fh)	\
 	container_of(fh, struct v4l2_subdev_fh, vfh)
 
 #if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
+#define __V4L2_SUBDEV_MK_GET_TRY(rtype, fun_name, field_name)		\
+	static inline struct rtype *					\
+	fun_name(struct v4l2_subdev *sd,				\
+		 struct v4l2_subdev_pad_config *cfg,			\
+		 unsigned int pad)					\
+	{								\
+		BUG_ON(pad >= sd->entity.num_pads);			\
+		return &cfg[pad].field_name;				\
+	}
 
-/**
- * v4l2_subdev_get_try_format - ancillary routine to call
- *	&struct v4l2_subdev_pad_config->try_fmt
- *
- * @sd: pointer to &struct v4l2_subdev
- * @cfg: pointer to &struct v4l2_subdev_pad_config array.
- * @pad: index of the pad in the @cfg array.
- */
-static inline struct v4l2_mbus_framefmt
-*v4l2_subdev_get_try_format(struct v4l2_subdev *sd,
-			    struct v4l2_subdev_pad_config *cfg,
-			    unsigned int pad)
-{
-	if (WARN_ON(pad >= sd->entity.num_pads))
-		pad = 0;
-	return &cfg[pad].try_fmt;
-}
-
-/**
- * v4l2_subdev_get_try_crop - ancillary routine to call
- *	&struct v4l2_subdev_pad_config->try_crop
- *
- * @sd: pointer to &struct v4l2_subdev
- * @cfg: pointer to &struct v4l2_subdev_pad_config array.
- * @pad: index of the pad in the @cfg array.
- */
-static inline struct v4l2_rect
-*v4l2_subdev_get_try_crop(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
-			  unsigned int pad)
-{
-	if (WARN_ON(pad >= sd->entity.num_pads))
-		pad = 0;
-	return &cfg[pad].try_crop;
-}
-
-/**
- * v4l2_subdev_get_try_crop - ancillary routine to call
- *	&struct v4l2_subdev_pad_config->try_compose
- *
- * @sd: pointer to &struct v4l2_subdev
- * @cfg: pointer to &struct v4l2_subdev_pad_config array.
- * @pad: index of the pad in the @cfg array.
- */
-static inline struct v4l2_rect
-*v4l2_subdev_get_try_compose(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
-			     unsigned int pad)
-{
-	if (WARN_ON(pad >= sd->entity.num_pads))
-		pad = 0;
-	return &cfg[pad].try_compose;
-}
+__V4L2_SUBDEV_MK_GET_TRY(v4l2_mbus_framefmt, v4l2_subdev_get_try_format, try_fmt)
+__V4L2_SUBDEV_MK_GET_TRY(v4l2_rect, v4l2_subdev_get_try_crop, try_crop)
+__V4L2_SUBDEV_MK_GET_TRY(v4l2_rect, v4l2_subdev_get_try_compose, try_compose)
 #endif
 
 extern const struct v4l2_file_operations v4l2_subdev_fops;
@@ -1078,16 +1016,9 @@ void v4l2_subdev_free_pad_config(struct v4l2_subdev_pad_config *cfg);
 void v4l2_subdev_init(struct v4l2_subdev *sd,
 		      const struct v4l2_subdev_ops *ops);
 
-/**
- * v4l2_subdev_call - call an operation of a v4l2_subdev.
- *
- * @sd: pointer to the &struct v4l2_subdev
- * @o: name of the element at &struct v4l2_subdev_ops that contains @f.
- *     Each element there groups a set of callbacks functions.
- * @f: callback function that will be called if @cond matches.
- *     The callback functions are defined in groups, according to
- *     each element at &struct v4l2_subdev_ops.
- * @args...: arguments for @f.
+/*
+ * Call an ops of a v4l2_subdev, doing the right checks against
+ * NULL pointers.
  *
  * Example: err = v4l2_subdev_call(sd, video, s_std, norm);
  */
@@ -1103,14 +1034,6 @@ void v4l2_subdev_init(struct v4l2_subdev *sd,
 		__result;						\
 	})
 
-/**
- * v4l2_subdev_has_op - Checks if a subdev defines a certain operation.
- *
- * @sd: pointer to the &struct v4l2_subdev
- * @o: The group of callback functions in &struct v4l2_subdev_ops
- * which @f is a part of.
- * @f: callback function to be checked for its existence.
- */
 #define v4l2_subdev_has_op(sd, o, f) \
 	((sd)->ops->o && (sd)->ops->o->f)
 

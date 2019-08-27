@@ -1,16 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * R-Car Gen3 Clock Pulse Generator
  *
- * Copyright (C) 2015-2018 Glider bvba
+ * Copyright (C) 2015-2016 Glider bvba
  *
  * Based on clk-rcar-gen3.c
  *
  * Copyright (C) 2015 Renesas Electronics Corp.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/bug.h>
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/device.h>
@@ -27,8 +29,6 @@
 #define CPG_PLL0CR		0x00d8
 #define CPG_PLL2CR		0x002c
 #define CPG_PLL4CR		0x01f4
-
-#define CPG_RCKCR_CKSEL	BIT(15)	/* RCLK Clock Source Select */
 
 struct cpg_simple_notifier {
 	struct notifier_block nb;
@@ -59,140 +59,6 @@ static void cpg_simple_notifier_register(struct raw_notifier_head *notifiers,
 {
 	csn->nb.notifier_call = cpg_simple_notifier_call;
 	raw_notifier_chain_register(notifiers, &csn->nb);
-}
-
-/*
- * Z Clock & Z2 Clock
- *
- * Traits of this clock:
- * prepare - clk_prepare only ensures that parents are prepared
- * enable - clk_enable only ensures that parents are enabled
- * rate - rate is adjustable.  clk->rate = (parent->rate * mult / 32 ) / 2
- * parent - fixed parent.  No clk_set_parent support
- */
-#define CPG_FRQCRB			0x00000004
-#define CPG_FRQCRB_KICK			BIT(31)
-#define CPG_FRQCRC			0x000000e0
-#define CPG_FRQCRC_ZFC_MASK		GENMASK(12, 8)
-#define CPG_FRQCRC_Z2FC_MASK		GENMASK(4, 0)
-
-struct cpg_z_clk {
-	struct clk_hw hw;
-	void __iomem *reg;
-	void __iomem *kick_reg;
-	unsigned long mask;
-};
-
-#define to_z_clk(_hw)	container_of(_hw, struct cpg_z_clk, hw)
-
-static unsigned long cpg_z_clk_recalc_rate(struct clk_hw *hw,
-					   unsigned long parent_rate)
-{
-	struct cpg_z_clk *zclk = to_z_clk(hw);
-	unsigned int mult;
-	u32 val;
-
-	val = readl(zclk->reg) & zclk->mask;
-	mult = 32 - (val >> __ffs(zclk->mask));
-
-	/* Factor of 2 is for fixed divider */
-	return DIV_ROUND_CLOSEST_ULL((u64)parent_rate * mult, 32 * 2);
-}
-
-static long cpg_z_clk_round_rate(struct clk_hw *hw, unsigned long rate,
-				 unsigned long *parent_rate)
-{
-	/* Factor of 2 is for fixed divider */
-	unsigned long prate = *parent_rate / 2;
-	unsigned int mult;
-
-	mult = div_u64(rate * 32ULL, prate);
-	mult = clamp(mult, 1U, 32U);
-
-	return (u64)prate * mult / 32;
-}
-
-static int cpg_z_clk_set_rate(struct clk_hw *hw, unsigned long rate,
-			      unsigned long parent_rate)
-{
-	struct cpg_z_clk *zclk = to_z_clk(hw);
-	unsigned int mult;
-	unsigned int i;
-	u32 val, kick;
-
-	/* Factor of 2 is for fixed divider */
-	mult = DIV_ROUND_CLOSEST_ULL(rate * 32ULL * 2, parent_rate);
-	mult = clamp(mult, 1U, 32U);
-
-	if (readl(zclk->kick_reg) & CPG_FRQCRB_KICK)
-		return -EBUSY;
-
-	val = readl(zclk->reg) & ~zclk->mask;
-	val |= ((32 - mult) << __ffs(zclk->mask)) & zclk->mask;
-	writel(val, zclk->reg);
-
-	/*
-	 * Set KICK bit in FRQCRB to update hardware setting and wait for
-	 * clock change completion.
-	 */
-	kick = readl(zclk->kick_reg);
-	kick |= CPG_FRQCRB_KICK;
-	writel(kick, zclk->kick_reg);
-
-	/*
-	 * Note: There is no HW information about the worst case latency.
-	 *
-	 * Using experimental measurements, it seems that no more than
-	 * ~10 iterations are needed, independently of the CPU rate.
-	 * Since this value might be dependent of external xtal rate, pll1
-	 * rate or even the other emulation clocks rate, use 1000 as a
-	 * "super" safe value.
-	 */
-	for (i = 1000; i; i--) {
-		if (!(readl(zclk->kick_reg) & CPG_FRQCRB_KICK))
-			return 0;
-
-		cpu_relax();
-	}
-
-	return -ETIMEDOUT;
-}
-
-static const struct clk_ops cpg_z_clk_ops = {
-	.recalc_rate = cpg_z_clk_recalc_rate,
-	.round_rate = cpg_z_clk_round_rate,
-	.set_rate = cpg_z_clk_set_rate,
-};
-
-static struct clk * __init cpg_z_clk_register(const char *name,
-					      const char *parent_name,
-					      void __iomem *reg,
-					      unsigned long mask)
-{
-	struct clk_init_data init;
-	struct cpg_z_clk *zclk;
-	struct clk *clk;
-
-	zclk = kzalloc(sizeof(*zclk), GFP_KERNEL);
-	if (!zclk)
-		return ERR_PTR(-ENOMEM);
-
-	init.name = name;
-	init.ops = &cpg_z_clk_ops;
-	init.flags = 0;
-	init.parent_names = &parent_name;
-	init.num_parents = 1;
-
-	zclk->reg = reg + CPG_FRQCRC;
-	zclk->kick_reg = reg + CPG_FRQCRB;
-	zclk->hw.init = &init;
-	zclk->mask = mask;
-
-	clk = clk_register(NULL, &zclk->hw);
-	if (IS_ERR(clk))
-		kfree(zclk);
-
-	return clk;
 }
 
 /*
@@ -232,20 +98,16 @@ struct sd_clock {
  *                     sd_srcfc   sd_fc   div
  * stp_hck   stp_ck    (div)      (div)     = sd_srcfc x sd_fc
  *-------------------------------------------------------------------
- *  0         0         0 (1)      1 (4)      4 : SDR104 / HS200 / HS400 (8 TAP)
- *  0         0         1 (2)      1 (4)      8 : SDR50
- *  1         0         2 (4)      1 (4)     16 : HS / SDR25
- *  1         0         3 (8)      1 (4)     32 : NS / SDR12
+ *  0         0         0 (1)      1 (4)      4
+ *  0         0         1 (2)      1 (4)      8
+ *  1         0         2 (4)      1 (4)     16
+ *  1         0         3 (8)      1 (4)     32
  *  1         0         4 (16)     1 (4)     64
  *  0         0         0 (1)      0 (2)      2
- *  0         0         1 (2)      0 (2)      4 : SDR104 / HS200 / HS400 (4 TAP)
+ *  0         0         1 (2)      0 (2)      4
  *  1         0         2 (4)      0 (2)      8
  *  1         0         3 (8)      0 (2)     16
  *  1         0         4 (16)     0 (2)     32
- *
- *  NOTE: There is a quirk option to ignore the first row of the dividers
- *  table when searching for suitable settings. This is because HS400 on
- *  early ES versions of H3 and M3-W requires a specific setting to work.
  */
 static const struct sd_div_table cpg_sd_div_table[] = {
 /*	CPG_SD_DIV_TABLE_DATA(stp_hck,  stp_ck,   sd_srcfc,   sd_fc,  sd_div) */
@@ -356,12 +218,6 @@ static const struct clk_ops cpg_sd_clock_ops = {
 	.set_rate = cpg_sd_clock_set_rate,
 };
 
-static u32 cpg_quirks __initdata;
-
-#define PLL_ERRATA	BIT(0)		/* Missing PLL0/2/4 post-divider */
-#define RCKCR_CKSEL	BIT(1)		/* Manual RCLK parent selection */
-#define SD_SKIP_FIRST	BIT(2)		/* Skip first clock in SD table */
-
 static struct clk * __init cpg_sd_clk_register(const struct cpg_core_clk *core,
 	void __iomem *base, const char *parent_name,
 	struct raw_notifier_head *notifiers)
@@ -370,7 +226,7 @@ static struct clk * __init cpg_sd_clk_register(const struct cpg_core_clk *core,
 	struct sd_clock *clock;
 	struct clk *clk;
 	unsigned int i;
-	u32 val;
+	u32 sd_fc;
 
 	clock = kzalloc(sizeof(*clock), GFP_KERNEL);
 	if (!clock)
@@ -378,7 +234,7 @@ static struct clk * __init cpg_sd_clk_register(const struct cpg_core_clk *core,
 
 	init.name = core->name;
 	init.ops = &cpg_sd_clock_ops;
-	init.flags = CLK_SET_RATE_PARENT;
+	init.flags = CLK_IS_BASIC | CLK_SET_RATE_PARENT;
 	init.parent_names = &parent_name;
 	init.num_parents = 1;
 
@@ -387,14 +243,17 @@ static struct clk * __init cpg_sd_clk_register(const struct cpg_core_clk *core,
 	clock->div_table = cpg_sd_div_table;
 	clock->div_num = ARRAY_SIZE(cpg_sd_div_table);
 
-	if (cpg_quirks & SD_SKIP_FIRST) {
-		clock->div_table++;
-		clock->div_num--;
+	sd_fc = readl(clock->csn.reg) & CPG_SD_FC_MASK;
+	for (i = 0; i < clock->div_num; i++)
+		if (sd_fc == (clock->div_table[i].val & CPG_SD_FC_MASK))
+			break;
+
+	if (WARN_ON(i >= clock->div_num)) {
+		kfree(clock);
+		return ERR_PTR(-EINVAL);
 	}
 
-	val = readl(clock->csn.reg) & ~CPG_SD_FC_MASK;
-	val |= CPG_SD_STP_MASK | (clock->div_table[0].val & CPG_SD_FC_MASK);
-	writel(val, clock->csn.reg);
+	clock->cur_div_idx = i;
 
 	clock->div_max = clock->div_table[0].div;
 	clock->div_min = clock->div_max;
@@ -419,27 +278,23 @@ free_clock:
 static const struct rcar_gen3_cpg_pll_config *cpg_pll_config __initdata;
 static unsigned int cpg_clk_extalr __initdata;
 static u32 cpg_mode __initdata;
+static u32 cpg_quirks __initdata;
+
+#define PLL_ERRATA	BIT(0)		/* Missing PLL0/2/4 post-divider */
+#define RCKCR_CKSEL	BIT(1)		/* Manual RCLK parent selection */
 
 static const struct soc_device_attribute cpg_quirks_match[] __initconst = {
 	{
 		.soc_id = "r8a7795", .revision = "ES1.0",
-		.data = (void *)(PLL_ERRATA | RCKCR_CKSEL | SD_SKIP_FIRST),
+		.data = (void *)(PLL_ERRATA | RCKCR_CKSEL),
 	},
 	{
 		.soc_id = "r8a7795", .revision = "ES1.*",
-		.data = (void *)(RCKCR_CKSEL | SD_SKIP_FIRST),
-	},
-	{
-		.soc_id = "r8a7795", .revision = "ES2.0",
-		.data = (void *)SD_SKIP_FIRST,
+		.data = (void *)RCKCR_CKSEL,
 	},
 	{
 		.soc_id = "r8a7796", .revision = "ES1.0",
-		.data = (void *)(RCKCR_CKSEL | SD_SKIP_FIRST),
-	},
-	{
-		.soc_id = "r8a7796", .revision = "ES1.1",
-		.data = (void *)SD_SKIP_FIRST,
+		.data = (void *)RCKCR_CKSEL,
 	},
 	{ /* sentinel */ }
 };
@@ -454,7 +309,7 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 	unsigned int div = 1;
 	u32 value;
 
-	parent = clks[core->parent & 0xffff];	/* some types use high bits */
+	parent = clks[core->parent & 0xffff];	/* CLK_TYPE_PE uses high bits */
 	if (IS_ERR(parent))
 		return ERR_CAST(parent);
 
@@ -534,7 +389,7 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 
 			if (clk_get_rate(clks[cpg_clk_extalr])) {
 				parent = clks[cpg_clk_extalr];
-				value |= CPG_RCKCR_CKSEL;
+				value |= BIT(15);
 			}
 
 			writel(value, csn->reg);
@@ -547,50 +402,22 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 			parent = clks[cpg_clk_extalr];
 		break;
 
-	case CLK_TYPE_GEN3_MDSEL:
+	case CLK_TYPE_GEN3_PE:
 		/*
-		 * Clock selectable between two parents and two fixed dividers
-		 * using a mode pin
+		 * Peripheral clock with a fixed divider, selectable between
+		 * clean and spread spectrum parents using MD12
 		 */
-		if (cpg_mode & BIT(core->offset)) {
+		if (cpg_mode & BIT(12)) {
+			/* Clean */
 			div = core->div & 0xffff;
 		} else {
+			/* SCCG */
 			parent = clks[core->parent >> 16];
 			if (IS_ERR(parent))
 				return ERR_CAST(parent);
 			div = core->div >> 16;
 		}
 		mult = 1;
-		break;
-
-	case CLK_TYPE_GEN3_Z:
-		return cpg_z_clk_register(core->name, __clk_get_name(parent),
-					  base, CPG_FRQCRC_ZFC_MASK);
-
-	case CLK_TYPE_GEN3_Z2:
-		return cpg_z_clk_register(core->name, __clk_get_name(parent),
-					  base, CPG_FRQCRC_Z2FC_MASK);
-
-	case CLK_TYPE_GEN3_OSC:
-		/*
-		 * Clock combining OSC EXTAL predivider and a fixed divider
-		 */
-		div = cpg_pll_config->osc_prediv * core->div;
-		break;
-
-	case CLK_TYPE_GEN3_RCKSEL:
-		/*
-		 * Clock selectable between two parents and two fixed dividers
-		 * using RCKCR.CKSEL
-		 */
-		if (readl(base + CPG_RCKCR) & CPG_RCKCR_CKSEL) {
-			div = core->div & 0xffff;
-		} else {
-			parent = clks[core->parent >> 16];
-			if (IS_ERR(parent))
-				return ERR_CAST(parent);
-			div = core->div >> 16;
-		}
 		break;
 
 	default:

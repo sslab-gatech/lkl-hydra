@@ -10,7 +10,6 @@
 #include <asm/fpu/signal.h>
 #include <asm/fpu/types.h>
 #include <asm/traps.h>
-#include <asm/irq_regs.h>
 
 #include <linux/hardirq.h>
 #include <linux/pkeys.h>
@@ -93,7 +92,7 @@ bool irq_fpu_usable(void)
 }
 EXPORT_SYMBOL(irq_fpu_usable);
 
-static void __kernel_fpu_begin(void)
+void __kernel_fpu_begin(void)
 {
 	struct fpu *fpu = &current->thread.fpu;
 
@@ -111,8 +110,9 @@ static void __kernel_fpu_begin(void)
 		__cpu_invalidate_fpregs_state();
 	}
 }
+EXPORT_SYMBOL(__kernel_fpu_begin);
 
-static void __kernel_fpu_end(void)
+void __kernel_fpu_end(void)
 {
 	struct fpu *fpu = &current->thread.fpu;
 
@@ -121,6 +121,7 @@ static void __kernel_fpu_end(void)
 
 	kernel_fpu_enable();
 }
+EXPORT_SYMBOL(__kernel_fpu_end);
 
 void kernel_fpu_begin(void)
 {

@@ -34,15 +34,11 @@ fi
 
 configfile=`echo $i | sed -e 's/^.*\///'`
 ngps=`grep ver: $i/console.log 2> /dev/null | tail -1 | sed -e 's/^.* ver: //' -e 's/ .*$//'`
-stopstate="`grep 'End-test grace-period state: g' $i/console.log 2> /dev/null |
-	    tail -1 | sed -e 's/^\[[ 0-9.]*] //' |
-	    awk '{ print \"[\" $1 \" \" $5 \" \" $6 \" \" $7 \"]\"; }' |
-	    tr -d '\012\015'`"
 if test -z "$ngps"
 then
-	echo "$configfile ------- " $stopstate
+	echo "$configfile -------"
 else
-	title="$configfile ------- $ngps GPs"
+	title="$configfile ------- $ngps grace periods"
 	dur=`sed -e 's/^.* rcutorture.shutdown_secs=//' -e 's/ .*$//' < $i/qemu-cmd 2> /dev/null`
 	if test -z "$dur"
 	then
@@ -50,9 +46,9 @@ else
 	else
 		ngpsps=`awk -v ngps=$ngps -v dur=$dur '
 			BEGIN { print ngps / dur }' < /dev/null`
-		title="$title ($ngpsps/s)"
+		title="$title ($ngpsps per second)"
 	fi
-	echo $title $stopstate
+	echo $title
 	nclosecalls=`grep --binary-files=text 'torture: Reader Batch' $i/console.log | tail -1 | awk '{for (i=NF-8;i<=NF;i++) sum+=$i; } END {print sum}'`
 	if test -z "$nclosecalls"
 	then
@@ -70,5 +66,4 @@ else
 	else
 		print_warning $nclosecalls "Reader Batch close calls in" $(($dur/60)) minute run: $i
 	fi
-	echo $nclosecalls "Reader Batch close calls in" $(($dur/60)) minute run: $i > $i/console.log.rcu.diags
 fi

@@ -3,8 +3,12 @@
 #define _ASM_POWERPC_SYNCH_H 
 #ifdef __KERNEL__
 
+#include <linux/stringify.h>
 #include <asm/feature-fixups.h>
-#include <asm/asm-const.h>
+
+#if defined(__powerpc64__) || defined(CONFIG_PPC_E500MC)
+#define __SUBARCH_HAS_LWSYNC
+#endif
 
 #ifndef __ASSEMBLY__
 extern unsigned int __start___lwsync_fixup, __stop___lwsync_fixup;

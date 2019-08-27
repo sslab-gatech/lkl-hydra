@@ -10,12 +10,6 @@
  *	Attribute/character pair is in native endianity.
  *            [minor: N+128]
  *
- * /dev/vcsuN: similar to /dev/vcsaN but using 4-byte unicode values
- *	instead of 1-byte screen glyph values.
- *            [minor: N+64]
- *
- * /dev/vcsuaN: same idea as /dev/vcsaN for unicode (not yet implemented).
- *
  * This replaces screendump and part of selection, so that the system
  * administrator can control access using file system permissions.
  *
@@ -56,26 +50,6 @@
 #define HEADER_SIZE	4
 
 #define CON_BUF_SIZE (CONFIG_BASE_SMALL ? 256 : PAGE_SIZE)
-
-/*
- * Our minor space:
- *
- *   0 ... 63	glyph mode without attributes
- *  64 ... 127	unicode mode without attributes
- * 128 ... 191	glyph mode with attributes
- * 192 ... 255	unused (reserved for unicode with attributes)
- *
- * This relies on MAX_NR_CONSOLES being  <= 63, meaning 63 actual consoles
- * with minors 0, 64, 128 and 192 being proxies for the foreground console.
- */
-#if MAX_NR_CONSOLES > 63
-#warning "/dev/vcs* devices may not accommodate more than 63 consoles"
-#endif
-
-#define console(inode)		(iminor(inode) & 63)
-#define use_unicode(inode)	(iminor(inode) & 64)
-#define use_attributes(inode)	(iminor(inode) & 128)
-
 
 struct vcs_poll_data {
 	struct notifier_block notifier;
@@ -128,7 +102,7 @@ vcs_poll_data_get(struct file *file)
 	poll = kzalloc(sizeof(*poll), GFP_KERNEL);
 	if (!poll)
 		return NULL;
-	poll->cons_num = console(file_inode(file));
+	poll->cons_num = iminor(file_inode(file)) & 127;
 	init_waitqueue_head(&poll->waitq);
 	poll->notifier.notifier_call = vcs_notifier;
 	if (register_vt_notifier(&poll->notifier) != 0) {
@@ -166,7 +140,7 @@ vcs_poll_data_get(struct file *file)
 static struct vc_data*
 vcs_vc(struct inode *inode, int *viewed)
 {
-	unsigned int currcons = console(inode);
+	unsigned int currcons = iminor(inode) & 127;
 
 	WARN_CONSOLE_UNLOCKED();
 
@@ -190,6 +164,7 @@ static int
 vcs_size(struct inode *inode)
 {
 	int size;
+	int minor = iminor(inode);
 	struct vc_data *vc;
 
 	WARN_CONSOLE_UNLOCKED();
@@ -200,12 +175,8 @@ vcs_size(struct inode *inode)
 
 	size = vc->vc_rows * vc->vc_cols;
 
-	if (use_attributes(inode)) {
-		if (use_unicode(inode))
-			return -EOPNOTSUPP;
+	if (minor & 128)
 		size = 2*size + HEADER_SIZE;
-	} else if (use_unicode(inode))
-		size *= 4;
 	return size;
 }
 
@@ -226,10 +197,12 @@ static ssize_t
 vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
 	struct inode *inode = file_inode(file);
+	unsigned int currcons = iminor(inode);
 	struct vc_data *vc;
 	struct vcs_poll_data *poll;
-	long pos, read;
-	int attr, uni_mode, row, col, maxcol, viewed;
+	long pos;
+	long attr, read;
+	int col, maxcol, viewed;
 	unsigned short *org = NULL;
 	ssize_t ret;
 	char *con_buf;
@@ -245,8 +218,7 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	 */
 	console_lock();
 
-	uni_mode = use_unicode(inode);
-	attr = use_attributes(inode);
+	attr = (currcons & 128);
 	ret = -ENXIO;
 	vc = vcs_vc(inode, &viewed);
 	if (!vc)
@@ -255,10 +227,6 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	ret = -EINVAL;
 	if (pos < 0)
 		goto unlock_out;
-	/* we enforce 32-bit alignment for pos and count in unicode mode */
-	if (uni_mode && (pos | count) & 3)
-		goto unlock_out;
-
 	poll = file->private_data;
 	if (count && poll)
 		poll->seen_last_update = true;
@@ -298,28 +266,7 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		con_buf_start = con_buf0 = con_buf;
 		orig_count = this_round;
 		maxcol = vc->vc_cols;
-		if (uni_mode) {
-			unsigned int nr;
-
-			ret = vc_uniscr_check(vc);
-			if (ret)
-				break;
-			p /= 4;
-			row = p / vc->vc_cols;
-			col = p % maxcol;
-			nr = maxcol - col;
-			do {
-				if (nr > this_round/4)
-					nr = this_round/4;
-				vc_uniscr_copy_line(vc, con_buf0, viewed,
-						    row, col, nr);
-				con_buf0 += nr * 4;
-				this_round -= nr * 4;
-				row++;
-				col = 0;
-				nr = maxcol;
-			} while (this_round);
-		} else if (!attr) {
+		if (!attr) {
 			org = screen_pos(vc, p, viewed);
 			col = p % maxcol;
 			p += maxcol - col;
@@ -428,6 +375,7 @@ static ssize_t
 vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct inode *inode = file_inode(file);
+	unsigned int currcons = iminor(inode);
 	struct vc_data *vc;
 	long pos;
 	long attr, size, written;
@@ -448,7 +396,7 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 	 */
 	console_lock();
 
-	attr = use_attributes(inode);
+	attr = (currcons & 128);
 	ret = -ENXIO;
 	vc = vcs_vc(inode, &viewed);
 	if (!vc)
@@ -645,15 +593,9 @@ vcs_fasync(int fd, struct file *file, int on)
 static int
 vcs_open(struct inode *inode, struct file *filp)
 {
-	unsigned int currcons = console(inode);
-	bool attr = use_attributes(inode);
-	bool uni_mode = use_unicode(inode);
+	unsigned int currcons = iminor(inode) & 127;
 	int ret = 0;
-
-	/* we currently don't support attributes in unicode mode */
-	if (attr && uni_mode)
-		return -EOPNOTSUPP;
-
+	
 	console_lock();
 	if(currcons && !vc_cons_allocated(currcons-1))
 		ret = -ENXIO;
@@ -686,8 +628,6 @@ void vcs_make_sysfs(int index)
 {
 	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 1), NULL,
 		      "vcs%u", index + 1);
-	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 65), NULL,
-		      "vcsu%u", index + 1);
 	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 129), NULL,
 		      "vcsa%u", index + 1);
 }
@@ -695,7 +635,6 @@ void vcs_make_sysfs(int index)
 void vcs_remove_sysfs(int index)
 {
 	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 1));
-	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 65));
 	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 129));
 }
 
@@ -708,7 +647,6 @@ int __init vcs_init(void)
 	vc_class = class_create(THIS_MODULE, "vc");
 
 	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 0), NULL, "vcs");
-	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 64), NULL, "vcsu");
 	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 128), NULL, "vcsa");
 	for (i = 0; i < MIN_NR_CONSOLES; i++)
 		vcs_make_sysfs(i);

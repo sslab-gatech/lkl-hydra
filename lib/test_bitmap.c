@@ -255,10 +255,6 @@ static const struct test_bitmap_parselist parselist_tests[] __initconst = {
 	{-EINVAL, "-1",	NULL, 8, 0},
 	{-EINVAL, "-0",	NULL, 8, 0},
 	{-EINVAL, "10-1", NULL, 8, 0},
-	{-EINVAL, "0-31:", NULL, 8, 0},
-	{-EINVAL, "0-31:0", NULL, 8, 0},
-	{-EINVAL, "0-31:0/0", NULL, 8, 0},
-	{-EINVAL, "0-31:1/0", NULL, 8, 0},
 	{-EINVAL, "0-31:10/1", NULL, 8, 0},
 };
 
@@ -296,17 +292,15 @@ static void __init test_bitmap_parselist(void)
 	}
 }
 
-#define EXP_BYTES	(sizeof(exp) * 8)
-
 static void __init test_bitmap_arr32(void)
 {
-	unsigned int nbits, next_bit;
+	unsigned int nbits, next_bit, len = sizeof(exp) * 8;
 	u32 arr[sizeof(exp) / 4];
-	DECLARE_BITMAP(bmap2, EXP_BYTES);
+	DECLARE_BITMAP(bmap2, len);
 
 	memset(arr, 0xa5, sizeof(arr));
 
-	for (nbits = 0; nbits < EXP_BYTES; ++nbits) {
+	for (nbits = 0; nbits < len; ++nbits) {
 		bitmap_to_arr32(arr, exp, nbits);
 		bitmap_from_arr32(bmap2, arr, nbits);
 		expect_eq_bitmap(bmap2, exp, nbits);
@@ -318,7 +312,7 @@ static void __init test_bitmap_arr32(void)
 				" tail is not safely cleared: %d\n",
 				nbits, next_bit);
 
-		if (nbits < EXP_BYTES - 32)
+		if (nbits < len - 32)
 			expect_eq_uint(arr[DIV_ROUND_UP(nbits, 32)],
 								0xa5a5a5a5);
 	}
@@ -331,32 +325,23 @@ static void noinline __init test_mem_optimisations(void)
 	unsigned int start, nbits;
 
 	for (start = 0; start < 1024; start += 8) {
+		memset(bmap1, 0x5a, sizeof(bmap1));
+		memset(bmap2, 0x5a, sizeof(bmap2));
 		for (nbits = 0; nbits < 1024 - start; nbits += 8) {
-			memset(bmap1, 0x5a, sizeof(bmap1));
-			memset(bmap2, 0x5a, sizeof(bmap2));
-
 			bitmap_set(bmap1, start, nbits);
 			__bitmap_set(bmap2, start, nbits);
-			if (!bitmap_equal(bmap1, bmap2, 1024)) {
+			if (!bitmap_equal(bmap1, bmap2, 1024))
 				printk("set not equal %d %d\n", start, nbits);
-				failed_tests++;
-			}
-			if (!__bitmap_equal(bmap1, bmap2, 1024)) {
+			if (!__bitmap_equal(bmap1, bmap2, 1024))
 				printk("set not __equal %d %d\n", start, nbits);
-				failed_tests++;
-			}
 
 			bitmap_clear(bmap1, start, nbits);
 			__bitmap_clear(bmap2, start, nbits);
-			if (!bitmap_equal(bmap1, bmap2, 1024)) {
+			if (!bitmap_equal(bmap1, bmap2, 1024))
 				printk("clear not equal %d %d\n", start, nbits);
-				failed_tests++;
-			}
-			if (!__bitmap_equal(bmap1, bmap2, 1024)) {
+			if (!__bitmap_equal(bmap1, bmap2, 1024))
 				printk("clear not __equal %d %d\n", start,
 									nbits);
-				failed_tests++;
-			}
 		}
 	}
 }

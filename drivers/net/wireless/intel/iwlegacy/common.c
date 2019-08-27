@@ -435,7 +435,7 @@ EXPORT_SYMBOL(il_send_cmd_pdu_async);
 
 /* default: IL_LED_BLINK(0) using blinking idx table */
 static int led_mode;
-module_param(led_mode, int, 0444);
+module_param(led_mode, int, S_IRUGO);
 MODULE_PARM_DESC(led_mode,
 		 "0=system default, " "1=On(RF On)/Off(RF Off), 2=blinking");
 
@@ -922,7 +922,7 @@ il_init_channel_map(struct il_priv *il)
 	D_EEPROM("Parsing data for %d channels.\n", il->channel_count);
 
 	il->channel_info =
-	    kcalloc(il->channel_count, sizeof(struct il_channel_info),
+	    kzalloc(sizeof(struct il_channel_info) * il->channel_count,
 		    GFP_KERNEL);
 	if (!il->channel_info) {
 		IL_ERR("Could not allocate channel_info\n");
@@ -2695,7 +2695,6 @@ il_set_decrypted_flag(struct il_priv *il, struct ieee80211_hdr *hdr,
 		if ((decrypt_res & RX_RES_STATUS_DECRYPT_TYPE_MSK) ==
 		    RX_RES_STATUS_BAD_KEY_TTAK)
 			break;
-		/* fall through */
 
 	case RX_RES_STATUS_SEC_TYPE_WEP:
 		if ((decrypt_res & RX_RES_STATUS_DECRYPT_TYPE_MSK) ==
@@ -2705,7 +2704,6 @@ il_set_decrypted_flag(struct il_priv *il, struct ieee80211_hdr *hdr,
 			D_RX("Packet destroyed\n");
 			return -1;
 		}
-		/* fall through */
 	case RX_RES_STATUS_SEC_TYPE_CCMP:
 		if ((decrypt_res & RX_RES_STATUS_DECRYPT_TYPE_MSK) ==
 		    RX_RES_STATUS_DECRYPT_OK) {
@@ -3043,9 +3041,9 @@ il_tx_queue_init(struct il_priv *il, u32 txq_id)
 	}
 
 	txq->meta =
-	    kcalloc(actual_slots, sizeof(struct il_cmd_meta), GFP_KERNEL);
+	    kzalloc(sizeof(struct il_cmd_meta) * actual_slots, GFP_KERNEL);
 	txq->cmd =
-	    kcalloc(actual_slots, sizeof(struct il_device_cmd *), GFP_KERNEL);
+	    kzalloc(sizeof(struct il_device_cmd *) * actual_slots, GFP_KERNEL);
 
 	if (!txq->meta || !txq->cmd)
 		goto out_free_arrays;
@@ -3374,7 +3372,7 @@ MODULE_LICENSE("GPL");
  * default: bt_coex_active = true (BT_COEX_ENABLE)
  */
 static bool bt_coex_active = true;
-module_param(bt_coex_active, bool, 0444);
+module_param(bt_coex_active, bool, S_IRUGO);
 MODULE_PARM_DESC(bt_coex_active, "enable wifi/bluetooth co-exist");
 
 u32 il_debug_level;
@@ -3457,7 +3455,7 @@ il_init_geos(struct il_priv *il)
 	}
 
 	channels =
-	    kcalloc(il->channel_count, sizeof(struct ieee80211_channel),
+	    kzalloc(sizeof(struct ieee80211_channel) * il->channel_count,
 		    GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
@@ -4656,9 +4654,8 @@ il_alloc_txq_mem(struct il_priv *il)
 {
 	if (!il->txq)
 		il->txq =
-		    kcalloc(il->cfg->num_of_queues,
-			    sizeof(struct il_tx_queue),
-			    GFP_KERNEL);
+		    kzalloc(sizeof(struct il_tx_queue) *
+			    il->cfg->num_of_queues, GFP_KERNEL);
 	if (!il->txq) {
 		IL_ERR("Not enough memory for txq\n");
 		return -ENOMEM;

@@ -40,8 +40,6 @@ static void azx_clear_corbrp(struct hdac_bus *bus)
  */
 void snd_hdac_bus_init_cmd_io(struct hdac_bus *bus)
 {
-	WARN_ON_ONCE(!bus->rb.area);
-
 	spin_lock_irq(&bus->reg_lock);
 	/* CORB set up */
 	bus->corb.addr = bus->rb.addr;
@@ -385,7 +383,7 @@ void snd_hdac_bus_exit_link_reset(struct hdac_bus *bus)
 EXPORT_SYMBOL_GPL(snd_hdac_bus_exit_link_reset);
 
 /* reset codec link */
-int snd_hdac_bus_reset_link(struct hdac_bus *bus, bool full_reset)
+static int azx_reset(struct hdac_bus *bus, bool full_reset)
 {
 	if (!full_reset)
 		goto skip_reset;
@@ -410,7 +408,7 @@ int snd_hdac_bus_reset_link(struct hdac_bus *bus, bool full_reset)
  skip_reset:
 	/* check to see if controller is ready */
 	if (!snd_hdac_chip_readb(bus, GCTL)) {
-		dev_dbg(bus->dev, "controller not ready!\n");
+		dev_dbg(bus->dev, "azx_reset: controller not ready!\n");
 		return -EBUSY;
 	}
 
@@ -425,7 +423,6 @@ int snd_hdac_bus_reset_link(struct hdac_bus *bus, bool full_reset)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(snd_hdac_bus_reset_link);
 
 /* enable interrupts */
 static void azx_int_enable(struct hdac_bus *bus)
@@ -480,16 +477,14 @@ bool snd_hdac_bus_init_chip(struct hdac_bus *bus, bool full_reset)
 		return false;
 
 	/* reset controller */
-	snd_hdac_bus_reset_link(bus, full_reset);
+	azx_reset(bus, full_reset);
 
-	/* clear interrupts */
+	/* initialize interrupts */
 	azx_int_clear(bus);
+	azx_int_enable(bus);
 
 	/* initialize the codec command I/O */
 	snd_hdac_bus_init_cmd_io(bus);
-
-	/* enable interrupts after CORB/RIRB buffers are initialized above */
-	azx_int_enable(bus);
 
 	/* program the position buffer */
 	if (bus->use_posbuf && bus->posbuf.addr) {

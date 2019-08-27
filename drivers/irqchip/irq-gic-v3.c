@@ -41,8 +41,6 @@
 
 #include "irq-gic-common.h"
 
-#define FLAGS_WORKAROUND_GICR_WAKER_MSM8996	(1ULL << 0)
-
 struct redist_region {
 	void __iomem		*redist_base;
 	phys_addr_t		phys_base;
@@ -57,14 +55,13 @@ struct gic_chip_data {
 	struct irq_domain	*domain;
 	u64			redist_stride;
 	u32			nr_redist_regions;
-	u64			flags;
 	bool			has_rss;
 	unsigned int		irq_nr;
 	struct partition_desc	*ppi_descs[16];
 };
 
 static struct gic_chip_data gic_data __read_mostly;
-static DEFINE_STATIC_KEY_TRUE(supports_deactivate_key);
+static struct static_key supports_deactivate = STATIC_KEY_INIT_TRUE;
 
 static struct gic_kvm_info gic_v3_kvm_info;
 static DEFINE_PER_CPU(bool, has_rss);
@@ -141,9 +138,6 @@ static void gic_enable_redist(bool enable)
 	void __iomem *rbase;
 	u32 count = 1000000;	/* 1s! */
 	u32 val;
-
-	if (gic_data.flags & FLAGS_WORKAROUND_GICR_WAKER_MSM8996)
-		return;
 
 	rbase = gic_data_rdist_rd_base();
 
@@ -354,45 +348,48 @@ static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs
 {
 	u32 irqnr;
 
-	irqnr = gic_read_iar();
+	do {
+		irqnr = gic_read_iar();
 
-	if (likely(irqnr > 15 && irqnr < 1020) || irqnr >= 8192) {
-		int err;
+		if (likely(irqnr > 15 && irqnr < 1020) || irqnr >= 8192) {
+			int err;
 
-		if (static_branch_likely(&supports_deactivate_key))
-			gic_write_eoir(irqnr);
-		else
-			isb();
-
-		err = handle_domain_irq(gic_data.domain, irqnr, regs);
-		if (err) {
-			WARN_ONCE(true, "Unexpected interrupt received!\n");
-			if (static_branch_likely(&supports_deactivate_key)) {
-				if (irqnr < 8192)
-					gic_write_dir(irqnr);
-			} else {
+			if (static_key_true(&supports_deactivate))
 				gic_write_eoir(irqnr);
+			else
+				isb();
+
+			err = handle_domain_irq(gic_data.domain, irqnr, regs);
+			if (err) {
+				WARN_ONCE(true, "Unexpected interrupt received!\n");
+				if (static_key_true(&supports_deactivate)) {
+					if (irqnr < 8192)
+						gic_write_dir(irqnr);
+				} else {
+					gic_write_eoir(irqnr);
+				}
 			}
+			continue;
 		}
-		return;
-	}
-	if (irqnr < 16) {
-		gic_write_eoir(irqnr);
-		if (static_branch_likely(&supports_deactivate_key))
-			gic_write_dir(irqnr);
+		if (irqnr < 16) {
+			gic_write_eoir(irqnr);
+			if (static_key_true(&supports_deactivate))
+				gic_write_dir(irqnr);
 #ifdef CONFIG_SMP
-		/*
-		 * Unlike GICv2, we don't need an smp_rmb() here.
-		 * The control dependency from gic_read_iar to
-		 * the ISB in gic_write_eoir is enough to ensure
-		 * that any shared data read by handle_IPI will
-		 * be read after the ACK.
-		 */
-		handle_IPI(irqnr, regs);
+			/*
+			 * Unlike GICv2, we don't need an smp_rmb() here.
+			 * The control dependency from gic_read_iar to
+			 * the ISB in gic_write_eoir is enough to ensure
+			 * that any shared data read by handle_IPI will
+			 * be read after the ACK.
+			 */
+			handle_IPI(irqnr, regs);
 #else
-		WARN_ONCE(true, "Unexpected SGI received!\n");
+			WARN_ONCE(true, "Unexpected SGI received!\n");
 #endif
-	}
+			continue;
+		}
+	} while (irqnr != ICC_IAR1_EL1_SPURIOUS);
 }
 
 static void __init gic_dist_init(void)
@@ -535,8 +532,6 @@ static void gic_cpu_sys_reg_init(void)
 	int i, cpu = smp_processor_id();
 	u64 mpidr = cpu_logical_map(cpu);
 	u64 need_rss = MPIDR_RS(mpidr);
-	bool group0;
-	u32 val, pribits;
 
 	/*
 	 * Need to check that the SRE bit has actually been set. If
@@ -548,28 +543,8 @@ static void gic_cpu_sys_reg_init(void)
 	if (!gic_enable_sre())
 		pr_err("GIC: unable to set SRE (disabled at EL2), panic ahead\n");
 
-	pribits = gic_read_ctlr();
-	pribits &= ICC_CTLR_EL1_PRI_BITS_MASK;
-	pribits >>= ICC_CTLR_EL1_PRI_BITS_SHIFT;
-	pribits++;
-
-	/*
-	 * Let's find out if Group0 is under control of EL3 or not by
-	 * setting the highest possible, non-zero priority in PMR.
-	 *
-	 * If SCR_EL3.FIQ is set, the priority gets shifted down in
-	 * order for the CPU interface to set bit 7, and keep the
-	 * actual priority in the non-secure range. In the process, it
-	 * looses the least significant bit and the actual priority
-	 * becomes 0x80. Reading it back returns 0, indicating that
-	 * we're don't have access to Group0.
-	 */
-	write_gicreg(BIT(8 - pribits), ICC_PMR_EL1);
-	val = read_gicreg(ICC_PMR_EL1);
-	group0 = val != 0;
-
 	/* Set priority mask register */
-	write_gicreg(DEFAULT_PMR_VALUE, ICC_PMR_EL1);
+	gic_write_pmr(DEFAULT_PMR_VALUE);
 
 	/*
 	 * Some firmwares hand over to the kernel with the BPR changed from
@@ -579,44 +554,13 @@ static void gic_cpu_sys_reg_init(void)
 	 */
 	gic_write_bpr1(0);
 
-	if (static_branch_likely(&supports_deactivate_key)) {
+	if (static_key_true(&supports_deactivate)) {
 		/* EOI drops priority only (mode 1) */
 		gic_write_ctlr(ICC_CTLR_EL1_EOImode_drop);
 	} else {
 		/* EOI deactivates interrupt too (mode 0) */
 		gic_write_ctlr(ICC_CTLR_EL1_EOImode_drop_dir);
 	}
-
-	/* Always whack Group0 before Group1 */
-	if (group0) {
-		switch(pribits) {
-		case 8:
-		case 7:
-			write_gicreg(0, ICC_AP0R3_EL1);
-			write_gicreg(0, ICC_AP0R2_EL1);
-		case 6:
-			write_gicreg(0, ICC_AP0R1_EL1);
-		case 5:
-		case 4:
-			write_gicreg(0, ICC_AP0R0_EL1);
-		}
-
-		isb();
-	}
-
-	switch(pribits) {
-	case 8:
-	case 7:
-		write_gicreg(0, ICC_AP1R3_EL1);
-		write_gicreg(0, ICC_AP1R2_EL1);
-	case 6:
-		write_gicreg(0, ICC_AP1R1_EL1);
-	case 5:
-	case 4:
-		write_gicreg(0, ICC_AP1R0_EL1);
-	}
-
-	isb();
 
 	/* ... and let's hit the road... */
 	gic_write_grpen1(1);
@@ -646,19 +590,9 @@ static void gic_cpu_sys_reg_init(void)
 		pr_crit_once("RSS is required but GICD doesn't support it\n");
 }
 
-static bool gicv3_nolpi;
-
-static int __init gicv3_nolpi_cfg(char *buf)
-{
-	return strtobool(buf, &gicv3_nolpi);
-}
-early_param("irqchip.gicv3_nolpi", gicv3_nolpi_cfg);
-
 static int gic_dist_supports_lpis(void)
 {
-	return (IS_ENABLED(CONFIG_ARM_GIC_V3_ITS) &&
-		!!(readl_relaxed(gic_data.dist_base + GICD_TYPER) & GICD_TYPER_LPIS) &&
-		!gicv3_nolpi);
+	return !!(readl_relaxed(gic_data.dist_base + GICD_TYPER) & GICD_TYPER_LPIS);
 }
 
 static void gic_cpu_init(void)
@@ -678,6 +612,10 @@ static void gic_cpu_init(void)
 
 	gic_cpu_config(rbase, gic_redist_wait_for_rwp);
 
+	/* Give LPIs a spin */
+	if (IS_ENABLED(CONFIG_ARM_GIC_V3_ITS) && gic_dist_supports_lpis())
+		its_cpu_init();
+
 	/* initialise system registers */
 	gic_cpu_sys_reg_init();
 }
@@ -690,10 +628,6 @@ static void gic_cpu_init(void)
 static int gic_starting_cpu(unsigned int cpu)
 {
 	gic_cpu_init();
-
-	if (gic_dist_supports_lpis())
-		its_cpu_init();
-
 	return 0;
 }
 
@@ -866,9 +800,7 @@ static struct irq_chip gic_chip = {
 	.irq_set_affinity	= gic_set_affinity,
 	.irq_get_irqchip_state	= gic_irq_get_irqchip_state,
 	.irq_set_irqchip_state	= gic_irq_set_irqchip_state,
-	.flags			= IRQCHIP_SET_TYPE_MASKED |
-				  IRQCHIP_SKIP_SET_WAKE |
-				  IRQCHIP_MASK_ON_SUSPEND,
+	.flags			= IRQCHIP_SET_TYPE_MASKED,
 };
 
 static struct irq_chip gic_eoimode1_chip = {
@@ -881,19 +813,17 @@ static struct irq_chip gic_eoimode1_chip = {
 	.irq_get_irqchip_state	= gic_irq_get_irqchip_state,
 	.irq_set_irqchip_state	= gic_irq_set_irqchip_state,
 	.irq_set_vcpu_affinity	= gic_irq_set_vcpu_affinity,
-	.flags			= IRQCHIP_SET_TYPE_MASKED |
-				  IRQCHIP_SKIP_SET_WAKE |
-				  IRQCHIP_MASK_ON_SUSPEND,
+	.flags			= IRQCHIP_SET_TYPE_MASKED,
 };
 
-#define GIC_ID_NR	(1U << GICD_TYPER_ID_BITS(gic_data.rdists.gicd_typer))
+#define GIC_ID_NR		(1U << gic_data.rdists.id_bits)
 
 static int gic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 			      irq_hw_number_t hw)
 {
 	struct irq_chip *chip = &gic_chip;
 
-	if (static_branch_likely(&supports_deactivate_key))
+	if (static_key_true(&supports_deactivate))
 		chip = &gic_eoimode1_chip;
 
 	/* SGIs are private to the core kernel */
@@ -931,8 +861,6 @@ static int gic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 	return 0;
 }
 
-#define GIC_IRQ_TYPE_PARTITION	(GIC_IRQ_TYPE_LPI + 1)
-
 static int gic_irq_domain_translate(struct irq_domain *d,
 				    struct irq_fwspec *fwspec,
 				    unsigned long *hwirq,
@@ -947,7 +875,6 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 			*hwirq = fwspec->param[1] + 32;
 			break;
 		case 1:			/* PPI */
-		case GIC_IRQ_TYPE_PARTITION:
 			*hwirq = fwspec->param[1] + 16;
 			break;
 		case GIC_IRQ_TYPE_LPI:	/* LPI */
@@ -958,13 +885,6 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 		}
 
 		*type = fwspec->param[2] & IRQ_TYPE_SENSE_MASK;
-
-		/*
-		 * Make it clear that broken DTs are... broken.
-		 * Partitionned PPIs are an unfortunate exception.
-		 */
-		WARN_ON(*type == IRQ_TYPE_NONE &&
-			fwspec->param[0] != GIC_IRQ_TYPE_PARTITION);
 		return 0;
 	}
 
@@ -974,8 +894,6 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 
 		*hwirq = fwspec->param[0];
 		*type = fwspec->param[1];
-
-		WARN_ON(*type == IRQ_TYPE_NONE);
 		return 0;
 	}
 
@@ -1073,15 +991,6 @@ static const struct irq_domain_ops partition_domain_ops = {
 	.select = gic_irq_domain_select,
 };
 
-static bool gic_enable_quirk_msm8996(void *data)
-{
-	struct gic_chip_data *d = data;
-
-	d->flags |= FLAGS_WORKAROUND_GICR_WAKER_MSM8996;
-
-	return true;
-}
-
 static int __init gic_init_bases(void __iomem *dist_base,
 				 struct redist_region *rdist_regs,
 				 u32 nr_redist_regions,
@@ -1093,9 +1002,9 @@ static int __init gic_init_bases(void __iomem *dist_base,
 	int err;
 
 	if (!is_hyp_mode_available())
-		static_branch_disable(&supports_deactivate_key);
+		static_key_slow_dec(&supports_deactivate);
 
-	if (static_branch_likely(&supports_deactivate_key))
+	if (static_key_true(&supports_deactivate))
 		pr_info("GIC: Using split EOI/Deactivate mode\n");
 
 	gic_data.fwnode = handle;
@@ -1109,7 +1018,7 @@ static int __init gic_init_bases(void __iomem *dist_base,
 	 * The GIC only supports up to 1020 interrupt sources (SGI+PPI+SPI)
 	 */
 	typer = readl_relaxed(gic_data.dist_base + GICD_TYPER);
-	gic_data.rdists.gicd_typer = typer;
+	gic_data.rdists.id_bits = GICD_TYPER_ID_BITS(typer);
 	gic_irqs = GICD_TYPER_IRQS(typer);
 	if (gic_irqs > 1020)
 		gic_irqs = 1020;
@@ -1117,7 +1026,6 @@ static int __init gic_init_bases(void __iomem *dist_base,
 
 	gic_data.domain = irq_domain_create_tree(handle, &gic_irq_domain_ops,
 						 &gic_data);
-	irq_domain_update_bus_token(gic_data.domain, DOMAIN_BUS_WIRED);
 	gic_data.rdists.rdist = alloc_percpu(typeof(*gic_data.rdists.rdist));
 	gic_data.rdists.has_vlpis = true;
 	gic_data.rdists.has_direct_lpi = true;
@@ -1131,25 +1039,17 @@ static int __init gic_init_bases(void __iomem *dist_base,
 	pr_info("Distributor has %sRange Selector support\n",
 		gic_data.has_rss ? "" : "no ");
 
-	if (typer & GICD_TYPER_MBIS) {
-		err = mbi_init(handle, gic_data.domain);
-		if (err)
-			pr_err("Failed to initialize MBIs\n");
-	}
-
 	set_handle_irq(gic_handle_irq);
 
 	gic_update_vlpi_properties();
+
+	if (IS_ENABLED(CONFIG_ARM_GIC_V3_ITS) && gic_dist_supports_lpis())
+		its_init(handle, &gic_data.rdists, gic_data.domain);
 
 	gic_smp_init();
 	gic_dist_init();
 	gic_cpu_init();
 	gic_cpu_pm_init();
-
-	if (gic_dist_supports_lpis()) {
-		its_init(handle, &gic_data.rdists, gic_data.domain);
-		its_cpu_init();
-	}
 
 	return 0;
 
@@ -1187,7 +1087,7 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 	if (!nr_parts)
 		goto out_put_node;
 
-	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
+	parts = kzalloc(sizeof(*parts) * nr_parts, GFP_KERNEL);
 	if (WARN_ON(!parts))
 		goto out_put_node;
 
@@ -1199,8 +1099,8 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 
 		part->partition_id = of_node_to_fwnode(child_part);
 
-		pr_info("GIC: PPI partition %pOFn[%d] { ",
-			child_part, part_idx);
+		pr_info("GIC: PPI partition %s[%d] { ",
+			child_part->name, part_idx);
 
 		n = of_property_count_elems_of_size(child_part, "affinity",
 						    sizeof(u32));
@@ -1240,7 +1140,7 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 			.fwnode		= gic_data.fwnode,
 			.param_count	= 3,
 			.param		= {
-				[0]	= GIC_IRQ_TYPE_PARTITION,
+				[0]	= 1,
 				[1]	= i,
 				[2]	= IRQ_TYPE_NONE,
 			},
@@ -1286,16 +1186,6 @@ static void __init gic_of_setup_kvm_info(struct device_node *node)
 	gic_set_kvm_info(&gic_v3_kvm_info);
 }
 
-static const struct gic_quirk gic_quirks[] = {
-	{
-		.desc	= "GICv3: Qualcomm MSM8996 broken firmware",
-		.compatible = "qcom,msm8996-gic-v3",
-		.init	= gic_enable_quirk_msm8996,
-	},
-	{
-	}
-};
-
 static int __init gic_of_init(struct device_node *node, struct device_node *parent)
 {
 	void __iomem *dist_base;
@@ -1319,8 +1209,7 @@ static int __init gic_of_init(struct device_node *node, struct device_node *pare
 	if (of_property_read_u32(node, "#redistributor-regions", &nr_redist_regions))
 		nr_redist_regions = 1;
 
-	rdist_regs = kcalloc(nr_redist_regions, sizeof(*rdist_regs),
-			     GFP_KERNEL);
+	rdist_regs = kzalloc(sizeof(*rdist_regs) * nr_redist_regions, GFP_KERNEL);
 	if (!rdist_regs) {
 		err = -ENOMEM;
 		goto out_unmap_dist;
@@ -1343,8 +1232,6 @@ static int __init gic_of_init(struct device_node *node, struct device_node *pare
 	if (of_property_read_u64(node, "redistributor-stride", &redist_stride))
 		redist_stride = 0;
 
-	gic_enable_of_quirks(node, gic_quirks, &gic_data);
-
 	err = gic_init_bases(dist_base, rdist_regs, nr_redist_regions,
 			     redist_stride, &node->fwnode);
 	if (err)
@@ -1352,7 +1239,7 @@ static int __init gic_of_init(struct device_node *node, struct device_node *pare
 
 	gic_populate_ppi_partitions(node);
 
-	if (static_branch_likely(&supports_deactivate_key))
+	if (static_key_true(&supports_deactivate))
 		gic_of_setup_kvm_info(node);
 	return 0;
 
@@ -1654,7 +1541,7 @@ gic_acpi_init(struct acpi_subtable_header *header, const unsigned long end)
 
 	acpi_set_irq_model(ACPI_IRQ_MODEL_GIC, domain_handle);
 
-	if (static_branch_likely(&supports_deactivate_key))
+	if (static_key_true(&supports_deactivate))
 		gic_acpi_setup_kvm_info();
 
 	return 0;

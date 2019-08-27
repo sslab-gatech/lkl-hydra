@@ -226,12 +226,20 @@ static void __init lilly1131_usb_init(void)
 
 /* SPI */
 
+static int spi_internal_chipselect[] = {
+	MXC_SPI_CS(0),
+	MXC_SPI_CS(1),
+	MXC_SPI_CS(2),
+};
+
 static const struct spi_imx_master spi0_pdata __initconst = {
-	.num_chipselect = 3,
+	.chipselect = spi_internal_chipselect,
+	.num_chipselect = ARRAY_SIZE(spi_internal_chipselect),
 };
 
 static const struct spi_imx_master spi1_pdata __initconst = {
-	.num_chipselect = 3,
+	.chipselect = spi_internal_chipselect,
+	.num_chipselect = ARRAY_SIZE(spi_internal_chipselect),
 };
 
 static struct mc13xxx_platform_data mc13783_pdata __initdata = {

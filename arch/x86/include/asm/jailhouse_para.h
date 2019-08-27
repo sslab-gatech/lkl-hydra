@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL2.0 */
 
 /*
- * Jailhouse paravirt detection
+ * Jailhouse paravirt_ops implementation
  *
  * Copyright (c) Siemens AG, 2015-2017
  *

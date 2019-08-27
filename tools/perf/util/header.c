@@ -17,7 +17,6 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <linux/time64.h>
-#include <dirent.h>
 
 #include "evlist.h"
 #include "evsel.h"
@@ -38,7 +37,6 @@
 #include "asm/bug.h"
 #include "tool.h"
 #include "time-utils.h"
-#include "units.h"
 
 #include "sane_ctype.h"
 
@@ -131,25 +129,6 @@ int do_write(struct feat_fd *ff, const void *buf, size_t size)
 	if (!ff->buf)
 		return __do_write_fd(ff, buf, size);
 	return __do_write_buf(ff, buf, size);
-}
-
-/* Return: 0 if succeded, -ERR if failed. */
-static int do_write_bitmap(struct feat_fd *ff, unsigned long *set, u64 size)
-{
-	u64 *p = (u64 *) set;
-	int i, ret;
-
-	ret = do_write(ff, &size, sizeof(size));
-	if (ret < 0)
-		return ret;
-
-	for (i = 0; (u64) i < BITS_TO_U64(size); i++) {
-		ret = do_write(ff, p + i, sizeof(*p));
-		if (ret < 0)
-			return ret;
-	}
-
-	return 0;
 }
 
 /* Return: 0 if succeded, -ERR if failed. */
@@ -262,36 +241,6 @@ static char *do_read_string(struct feat_fd *ff)
 
 	free(buf);
 	return NULL;
-}
-
-/* Return: 0 if succeded, -ERR if failed. */
-static int do_read_bitmap(struct feat_fd *ff, unsigned long **pset, u64 *psize)
-{
-	unsigned long *set;
-	u64 size, *p;
-	int i, ret;
-
-	ret = do_read_u64(ff, &size);
-	if (ret)
-		return ret;
-
-	set = bitmap_alloc(size);
-	if (!set)
-		return -ENOMEM;
-
-	p = (u64 *) set;
-
-	for (i = 0; (u64) i < BITS_TO_U64(size); i++) {
-		ret = do_read_u64(ff, p + i);
-		if (ret < 0) {
-			free(set);
-			return ret;
-		}
-	}
-
-	*pset  = set;
-	*psize = size;
-	return 0;
 }
 
 static int write_tracing_data(struct feat_fd *ff,
@@ -988,45 +937,6 @@ static int write_group_desc(struct feat_fd *ff,
 }
 
 /*
- * Return the CPU id as a raw string.
- *
- * Each architecture should provide a more precise id string that
- * can be use to match the architecture's "mapfile".
- */
-char * __weak get_cpuid_str(struct perf_pmu *pmu __maybe_unused)
-{
-	return NULL;
-}
-
-/* Return zero when the cpuid from the mapfile.csv matches the
- * cpuid string generated on this platform.
- * Otherwise return non-zero.
- */
-int __weak strcmp_cpuid_str(const char *mapcpuid, const char *cpuid)
-{
-	regex_t re;
-	regmatch_t pmatch[1];
-	int match;
-
-	if (regcomp(&re, mapcpuid, REG_EXTENDED) != 0) {
-		/* Warn unable to generate match particular string. */
-		pr_info("Invalid regular expression %s\n", mapcpuid);
-		return 1;
-	}
-
-	match = !regexec(&re, cpuid, 1, pmatch, 0);
-	regfree(&re);
-	if (match) {
-		size_t match_len = (pmatch[0].rm_eo - pmatch[0].rm_so);
-
-		/* Verify the entire string matched. */
-		if (match_len == strlen(cpuid))
-			return 0;
-	}
-	return 1;
-}
-
-/*
  * default get_cpuid(): nothing gets recorded
  * actual implementation must be in arch/$(SRCARCH)/util/header.c
  */
@@ -1071,13 +981,6 @@ static int write_auxtrace(struct feat_fd *ff,
 	if (err < 0)
 		pr_err("Failed to write auxtrace index\n");
 	return err;
-}
-
-static int write_clockid(struct feat_fd *ff,
-			 struct perf_evlist *evlist __maybe_unused)
-{
-	return do_write(ff, &ff->ph->env.clockid_res_ns,
-			sizeof(ff->ph->env.clockid_res_ns));
 }
 
 static int cpu_cache_level__sort(const void *a, const void *b)
@@ -1293,176 +1196,6 @@ static int write_sample_time(struct feat_fd *ff,
 			sizeof(evlist->last_sample_time));
 }
 
-
-static int memory_node__read(struct memory_node *n, unsigned long idx)
-{
-	unsigned int phys, size = 0;
-	char path[PATH_MAX];
-	struct dirent *ent;
-	DIR *dir;
-
-#define for_each_memory(mem, dir)					\
-	while ((ent = readdir(dir)))					\
-		if (strcmp(ent->d_name, ".") &&				\
-		    strcmp(ent->d_name, "..") &&			\
-		    sscanf(ent->d_name, "memory%u", &mem) == 1)
-
-	scnprintf(path, PATH_MAX,
-		  "%s/devices/system/node/node%lu",
-		  sysfs__mountpoint(), idx);
-
-	dir = opendir(path);
-	if (!dir) {
-		pr_warning("failed: cant' open memory sysfs data\n");
-		return -1;
-	}
-
-	for_each_memory(phys, dir) {
-		size = max(phys, size);
-	}
-
-	size++;
-
-	n->set = bitmap_alloc(size);
-	if (!n->set) {
-		closedir(dir);
-		return -ENOMEM;
-	}
-
-	n->node = idx;
-	n->size = size;
-
-	rewinddir(dir);
-
-	for_each_memory(phys, dir) {
-		set_bit(phys, n->set);
-	}
-
-	closedir(dir);
-	return 0;
-}
-
-static int memory_node__sort(const void *a, const void *b)
-{
-	const struct memory_node *na = a;
-	const struct memory_node *nb = b;
-
-	return na->node - nb->node;
-}
-
-static int build_mem_topology(struct memory_node *nodes, u64 size, u64 *cntp)
-{
-	char path[PATH_MAX];
-	struct dirent *ent;
-	DIR *dir;
-	u64 cnt = 0;
-	int ret = 0;
-
-	scnprintf(path, PATH_MAX, "%s/devices/system/node/",
-		  sysfs__mountpoint());
-
-	dir = opendir(path);
-	if (!dir) {
-		pr_debug2("%s: could't read %s, does this arch have topology information?\n",
-			  __func__, path);
-		return -1;
-	}
-
-	while (!ret && (ent = readdir(dir))) {
-		unsigned int idx;
-		int r;
-
-		if (!strcmp(ent->d_name, ".") ||
-		    !strcmp(ent->d_name, ".."))
-			continue;
-
-		r = sscanf(ent->d_name, "node%u", &idx);
-		if (r != 1)
-			continue;
-
-		if (WARN_ONCE(cnt >= size,
-			      "failed to write MEM_TOPOLOGY, way too many nodes\n"))
-			return -1;
-
-		ret = memory_node__read(&nodes[cnt++], idx);
-	}
-
-	*cntp = cnt;
-	closedir(dir);
-
-	if (!ret)
-		qsort(nodes, cnt, sizeof(nodes[0]), memory_node__sort);
-
-	return ret;
-}
-
-#define MAX_MEMORY_NODES 2000
-
-/*
- * The MEM_TOPOLOGY holds physical memory map for every
- * node in system. The format of data is as follows:
- *
- *  0 - version          | for future changes
- *  8 - block_size_bytes | /sys/devices/system/memory/block_size_bytes
- * 16 - count            | number of nodes
- *
- * For each node we store map of physical indexes for
- * each node:
- *
- * 32 - node id          | node index
- * 40 - size             | size of bitmap
- * 48 - bitmap           | bitmap of memory indexes that belongs to node
- */
-static int write_mem_topology(struct feat_fd *ff __maybe_unused,
-			      struct perf_evlist *evlist __maybe_unused)
-{
-	static struct memory_node nodes[MAX_MEMORY_NODES];
-	u64 bsize, version = 1, i, nr;
-	int ret;
-
-	ret = sysfs__read_xll("devices/system/memory/block_size_bytes",
-			      (unsigned long long *) &bsize);
-	if (ret)
-		return ret;
-
-	ret = build_mem_topology(&nodes[0], MAX_MEMORY_NODES, &nr);
-	if (ret)
-		return ret;
-
-	ret = do_write(ff, &version, sizeof(version));
-	if (ret < 0)
-		goto out;
-
-	ret = do_write(ff, &bsize, sizeof(bsize));
-	if (ret < 0)
-		goto out;
-
-	ret = do_write(ff, &nr, sizeof(nr));
-	if (ret < 0)
-		goto out;
-
-	for (i = 0; i < nr; i++) {
-		struct memory_node *n = &nodes[i];
-
-		#define _W(v)						\
-			ret = do_write(ff, &n->v, sizeof(n->v));	\
-			if (ret < 0)					\
-				goto out;
-
-		_W(node)
-		_W(size)
-
-		#undef _W
-
-		ret = do_write_bitmap(ff, n->set, n->size);
-		if (ret < 0)
-			goto out;
-	}
-
-out:
-	return ret;
-}
-
 static void print_hostname(struct feat_fd *ff, FILE *fp)
 {
 	fprintf(fp, "# hostname : %s\n", ff->ph->env.hostname);
@@ -1502,24 +1235,8 @@ static void print_cmdline(struct feat_fd *ff, FILE *fp)
 
 	fprintf(fp, "# cmdline : ");
 
-	for (i = 0; i < nr; i++) {
-		char *argv_i = strdup(ff->ph->env.cmdline_argv[i]);
-		if (!argv_i) {
-			fprintf(fp, "%s ", ff->ph->env.cmdline_argv[i]);
-		} else {
-			char *mem = argv_i;
-			do {
-				char *quote = strchr(argv_i, '\'');
-				if (!quote)
-					break;
-				*quote++ = '\0';
-				fprintf(fp, "%s\\\'", argv_i);
-				argv_i = quote;
-			} while (1);
-			fprintf(fp, "%s ", argv_i);
-			free(mem);
-		}
-	}
+	for (i = 0; i < nr; i++)
+		fprintf(fp, "%s ", ff->ph->env.cmdline_argv[i]);
 	fputc('\n', fp);
 }
 
@@ -1552,12 +1269,6 @@ static void print_cpu_topology(struct feat_fd *ff, FILE *fp)
 				ph->env.cpu[i].core_id, ph->env.cpu[i].socket_id);
 	} else
 		fprintf(fp, "# Core ID and Socket ID information is not available\n");
-}
-
-static void print_clockid(struct feat_fd *ff, FILE *fp)
-{
-	fprintf(fp, "# clockid frequency: %"PRIu64" MHz\n",
-		ff->ph->env.clockid_res_ns * 1000);
 }
 
 static void free_event_desc(struct perf_evsel *events)
@@ -1830,35 +1541,6 @@ static void print_sample_time(struct feat_fd *ff, FILE *fp)
 		session->evlist->first_sample_time) / NSEC_PER_MSEC;
 
 	fprintf(fp, "# sample duration : %10.3f ms\n", d);
-}
-
-static void memory_node__fprintf(struct memory_node *n,
-				 unsigned long long bsize, FILE *fp)
-{
-	char buf_map[100], buf_size[50];
-	unsigned long long size;
-
-	size = bsize * bitmap_weight(n->set, n->size);
-	unit_number__scnprintf(buf_size, 50, size);
-
-	bitmap_scnprintf(n->set, n->size, buf_map, 100);
-	fprintf(fp, "#  %3" PRIu64 " [%s]: %s\n", n->node, buf_size, buf_map);
-}
-
-static void print_mem_topology(struct feat_fd *ff, FILE *fp)
-{
-	struct memory_node *nodes;
-	int i, nr;
-
-	nodes = ff->ph->env.memory_nodes;
-	nr    = ff->ph->env.nr_memory_nodes;
-
-	fprintf(fp, "# memory nodes (nr %d, block size 0x%llx):\n",
-		nr, ff->ph->env.memory_bsize);
-
-	for (i = 0; i < nr; i++) {
-		memory_node__fprintf(&nodes[i], ff->ph->env.memory_bsize, fp);
-	}
 }
 
 static int __event_process_build_id(struct build_id_event *bev,
@@ -2178,7 +1860,6 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 	int cpu_nr = ff->ph->env.nr_cpus_avail;
 	u64 size = 0;
 	struct perf_header *ph = ff->ph;
-	bool do_core_id_test = true;
 
 	ph->env.cpu = calloc(cpu_nr, sizeof(*ph->env.cpu));
 	if (!ph->env.cpu)
@@ -2233,13 +1914,6 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 		return 0;
 	}
 
-	/* On s390 the socket_id number is not related to the numbers of cpus.
-	 * The socket_id number might be higher than the numbers of cpus.
-	 * This depends on the configuration.
-	 */
-	if (ph->env.arch && !strncmp(ph->env.arch, "s390", 4))
-		do_core_id_test = false;
-
 	for (i = 0; i < (u32)cpu_nr; i++) {
 		if (do_read_u32(ff, &nr))
 			goto free_cpu;
@@ -2249,7 +1923,7 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 		if (do_read_u32(ff, &nr))
 			goto free_cpu;
 
-		if (do_core_id_test && nr != (u32)-1 && nr > (u32)cpu_nr) {
+		if (nr != (u32)-1 && nr > (u32)cpu_nr) {
 			pr_debug("socket_id number is too big."
 				 "You may need to upgrade the perf tool.\n");
 			goto free_cpu;
@@ -2531,67 +2205,6 @@ static int process_sample_time(struct feat_fd *ff, void *data __maybe_unused)
 	return 0;
 }
 
-static int process_mem_topology(struct feat_fd *ff,
-				void *data __maybe_unused)
-{
-	struct memory_node *nodes;
-	u64 version, i, nr, bsize;
-	int ret = -1;
-
-	if (do_read_u64(ff, &version))
-		return -1;
-
-	if (version != 1)
-		return -1;
-
-	if (do_read_u64(ff, &bsize))
-		return -1;
-
-	if (do_read_u64(ff, &nr))
-		return -1;
-
-	nodes = zalloc(sizeof(*nodes) * nr);
-	if (!nodes)
-		return -1;
-
-	for (i = 0; i < nr; i++) {
-		struct memory_node n;
-
-		#define _R(v)				\
-			if (do_read_u64(ff, &n.v))	\
-				goto out;		\
-
-		_R(node)
-		_R(size)
-
-		#undef _R
-
-		if (do_read_bitmap(ff, &n.set, &n.size))
-			goto out;
-
-		nodes[i] = n;
-	}
-
-	ff->ph->env.memory_bsize    = bsize;
-	ff->ph->env.memory_nodes    = nodes;
-	ff->ph->env.nr_memory_nodes = nr;
-	ret = 0;
-
-out:
-	if (ret)
-		free(nodes);
-	return ret;
-}
-
-static int process_clockid(struct feat_fd *ff,
-			   void *data __maybe_unused)
-{
-	if (do_read_u64(ff, &ff->ph->env.clockid_res_ns))
-		return -1;
-
-	return 0;
-}
-
 struct feature_ops {
 	int (*write)(struct feat_fd *ff, struct perf_evlist *evlist);
 	void (*print)(struct feat_fd *ff, FILE *fp);
@@ -2645,13 +2258,11 @@ static const struct feature_ops feat_ops[HEADER_LAST_FEATURE] = {
 	FEAT_OPR(NUMA_TOPOLOGY,	numa_topology,	true),
 	FEAT_OPN(BRANCH_STACK,	branch_stack,	false),
 	FEAT_OPR(PMU_MAPPINGS,	pmu_mappings,	false),
-	FEAT_OPR(GROUP_DESC,	group_desc,	false),
+	FEAT_OPN(GROUP_DESC,	group_desc,	false),
 	FEAT_OPN(AUXTRACE,	auxtrace,	false),
 	FEAT_OPN(STAT,		stat,		false),
 	FEAT_OPN(CACHE,		cache,		true),
 	FEAT_OPR(SAMPLE_TIME,	sample_time,	false),
-	FEAT_OPR(MEM_TOPOLOGY,	mem_topology,	true),
-	FEAT_OPR(CLOCKID,       clockid,        false)
 };
 
 struct header_print_data {
@@ -2698,7 +2309,6 @@ int perf_header__fprintf_info(struct perf_session *session, FILE *fp, bool full)
 	struct perf_header *header = &session->header;
 	int fd = perf_data__fd(session->data);
 	struct stat st;
-	time_t stctime;
 	int ret, bit;
 
 	hd.fp = fp;
@@ -2708,13 +2318,7 @@ int perf_header__fprintf_info(struct perf_session *session, FILE *fp, bool full)
 	if (ret == -1)
 		return -1;
 
-	stctime = st.st_ctime;
-	fprintf(fp, "# captured on    : %s", ctime(&stctime));
-
-	fprintf(fp, "# header version : %u\n", header->version);
-	fprintf(fp, "# data offset    : %" PRIu64 "\n", header->data_offset);
-	fprintf(fp, "# data size      : %" PRIu64 "\n", header->data_size);
-	fprintf(fp, "# feat offset    : %" PRIu64 "\n", header->feat_offset);
+	fprintf(fp, "# captured on: %s", ctime(&st.st_ctime));
 
 	perf_header__process_sections(header, fd, &hd,
 				      perf_file_section__fprintf_info);
@@ -2800,7 +2404,7 @@ static int perf_header__adds_write(struct perf_header *header,
 	lseek(fd, sec_start, SEEK_SET);
 	/*
 	 * may write more than needed due to dropped feature, but
-	 * this is okay, reader will skip the missing entries
+	 * this is okay, reader will skip the mising entries
 	 */
 	err = do_write(&ff, feat_sec, sec_size);
 	if (err < 0)
@@ -3268,9 +2872,9 @@ static int read_attr(int fd, struct perf_header *ph,
 }
 
 static int perf_evsel__prepare_tracepoint_event(struct perf_evsel *evsel,
-						struct tep_handle *pevent)
+						struct pevent *pevent)
 {
-	struct tep_event *event;
+	struct event_format *event;
 	char bf[128];
 
 	/* already prepared */
@@ -3282,7 +2886,7 @@ static int perf_evsel__prepare_tracepoint_event(struct perf_evsel *evsel,
 		return -1;
 	}
 
-	event = tep_find_event(pevent, evsel->attr.config);
+	event = pevent_find_event(pevent, evsel->attr.config);
 	if (event == NULL) {
 		pr_debug("cannot find event format for %d\n", (int)evsel->attr.config);
 		return -1;
@@ -3300,7 +2904,7 @@ static int perf_evsel__prepare_tracepoint_event(struct perf_evsel *evsel,
 }
 
 static int perf_evlist__prepare_tracepoint_events(struct perf_evlist *evlist,
-						  struct tep_handle *pevent)
+						  struct pevent *pevent)
 {
 	struct perf_evsel *pos;
 
@@ -3396,6 +3000,8 @@ int perf_session__read_header(struct perf_session *session)
 
 		lseek(fd, tmp, SEEK_SET);
 	}
+
+	symbol_conf.nr_events = nr_attrs;
 
 	perf_header__process_sections(header, fd, &session->tevent,
 				      perf_file_section__process);
@@ -3499,23 +3105,14 @@ int perf_event__synthesize_features(struct perf_tool *tool,
 			return ret;
 		}
 	}
-
-	/* Send HEADER_LAST_FEATURE mark. */
-	fe = ff.buf;
-	fe->feat_id     = HEADER_LAST_FEATURE;
-	fe->header.type = PERF_RECORD_HEADER_FEATURE;
-	fe->header.size = sizeof(*fe);
-
-	ret = process(tool, ff.buf, NULL, NULL);
-
 	free(ff.buf);
-	return ret;
+	return 0;
 }
 
-int perf_event__process_feature(struct perf_session *session,
-				union perf_event *event)
+int perf_event__process_feature(struct perf_tool *tool,
+				union perf_event *event,
+				struct perf_session *session __maybe_unused)
 {
-	struct perf_tool *tool = session->tool;
 	struct feat_fd ff = { .fd = 0 };
 	struct feature_event *fe = (struct feature_event *)event;
 	int type = fe->header.type;
@@ -3525,7 +3122,7 @@ int perf_event__process_feature(struct perf_session *session,
 		pr_warning("invalid record type %d in pipe-mode\n", type);
 		return 0;
 	}
-	if (feat == HEADER_RESERVED || feat >= HEADER_LAST_FEATURE) {
+	if (feat == HEADER_RESERVED || feat > HEADER_LAST_FEATURE) {
 		pr_warning("invalid record type %d in pipe-mode\n", type);
 		return -1;
 	}
@@ -3585,7 +3182,7 @@ perf_event__synthesize_event_update_unit(struct perf_tool *tool,
 	if (ev == NULL)
 		return -ENOMEM;
 
-	strlcpy(ev->data, evsel->unit, size + 1);
+	strncpy(ev->data, evsel->unit, size);
 	err = process(tool, (union perf_event *)ev, NULL, NULL);
 	free(ev);
 	return err;
@@ -3624,7 +3221,7 @@ perf_event__synthesize_event_update_name(struct perf_tool *tool,
 	if (ev == NULL)
 		return -ENOMEM;
 
-	strlcpy(ev->data, evsel->name, len + 1);
+	strncpy(ev->data, evsel->name, len);
 	err = process(tool, (union perf_event*) ev, NULL, NULL);
 	free(ev);
 	return err;
@@ -3701,13 +3298,13 @@ size_t perf_event__fprintf_event_update(union perf_event *event, FILE *fp)
 }
 
 int perf_event__synthesize_attrs(struct perf_tool *tool,
-				 struct perf_evlist *evlist,
-				 perf_event__handler_t process)
+				   struct perf_session *session,
+				   perf_event__handler_t process)
 {
 	struct perf_evsel *evsel;
 	int err = 0;
 
-	evlist__for_each_entry(evlist, evsel) {
+	evlist__for_each_entry(session->evlist, evsel) {
 		err = perf_event__synthesize_attr(tool, &evsel->attr, evsel->ids,
 						  evsel->id, process);
 		if (err) {
@@ -3822,6 +3419,8 @@ int perf_event__process_attr(struct perf_tool *tool __maybe_unused,
 		perf_evlist__id_add(evlist, evsel, 0, i, event->attr.id[i]);
 	}
 
+	symbol_conf.nr_events = evlist->nr_entries;
+
 	return 0;
 }
 
@@ -3920,8 +3519,9 @@ int perf_event__synthesize_tracing_data(struct perf_tool *tool, int fd,
 	return aligned_size;
 }
 
-int perf_event__process_tracing_data(struct perf_session *session,
-				     union perf_event *event)
+int perf_event__process_tracing_data(struct perf_tool *tool __maybe_unused,
+				     union perf_event *event,
+				     struct perf_session *session)
 {
 	ssize_t size_read, padding, size = event->tracing_data.size;
 	int fd = perf_data__fd(session->data);
@@ -3987,8 +3587,9 @@ int perf_event__synthesize_build_id(struct perf_tool *tool,
 	return err;
 }
 
-int perf_event__process_build_id(struct perf_session *session,
-				 union perf_event *event)
+int perf_event__process_build_id(struct perf_tool *tool __maybe_unused,
+				 union perf_event *event,
+				 struct perf_session *session)
 {
 	__event_process_build_id(&event->build_id,
 				 event->build_id.filename,

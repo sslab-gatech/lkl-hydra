@@ -17,7 +17,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/clk.h>
 #include <linux/libata.h>
@@ -506,8 +505,10 @@ static int __init pata_s3c_probe(struct platform_device *pdev)
 	cpu_type = platform_get_device_id(pdev)->driver_data;
 
 	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
-	if (!info)
+	if (!info) {
+		dev_err(dev, "failed to allocate memory for device data\n");
 		return -ENOMEM;
+	}
 
 	info->irq = platform_get_irq(pdev, 0);
 

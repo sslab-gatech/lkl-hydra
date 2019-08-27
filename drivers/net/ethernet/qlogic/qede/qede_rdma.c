@@ -238,7 +238,7 @@ qede_rdma_get_free_event_node(struct qede_dev *edev)
 	}
 
 	if (!found) {
-		event_node = kzalloc(sizeof(*event_node), GFP_ATOMIC);
+		event_node = kzalloc(sizeof(*event_node), GFP_KERNEL);
 		if (!event_node) {
 			DP_NOTICE(edev,
 				  "qedr: Could not allocate memory for rdma work\n");

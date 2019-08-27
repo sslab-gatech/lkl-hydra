@@ -68,7 +68,7 @@
  * The default values correspond to Mainstone II in QVGA mode
  *
  * Please read
- * Documentation/input/input-programming.rst for more details.
+ * Documentation/input/input-programming.txt for more details.
  */
 
 static int abs_x[3] = {150, 4000, 5};
@@ -929,8 +929,7 @@ static int __init wm97xx_init(void)
 
 static void __exit wm97xx_exit(void)
 {
-	if (IS_BUILTIN(CONFIG_AC97_BUS))
-		driver_unregister(&wm97xx_driver);
+	driver_unregister(&wm97xx_driver);
 	platform_driver_unregister(&wm97xx_mfd_driver);
 }
 

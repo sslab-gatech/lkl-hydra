@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 /*
  * Copyright 2017 Luxul Inc.
+ *
+ * Licensed under the ISC license.
  */
 
 /dts-v1/;
@@ -55,9 +56,5 @@
 };
 
 &spi_nor {
-	status = "okay";
-};
-
-&usb3_phy {
 	status = "okay";
 };

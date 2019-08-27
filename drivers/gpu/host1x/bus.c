@@ -314,11 +314,6 @@ static int host1x_device_match(struct device *dev, struct device_driver *drv)
 	return strcmp(dev_name(dev), drv->name) == 0;
 }
 
-static int host1x_dma_configure(struct device *dev)
-{
-	return of_dma_configure(dev, dev->of_node, true);
-}
-
 static const struct dev_pm_ops host1x_device_pm_ops = {
 	.suspend = pm_generic_suspend,
 	.resume = pm_generic_resume,
@@ -331,8 +326,8 @@ static const struct dev_pm_ops host1x_device_pm_ops = {
 struct bus_type host1x_bus_type = {
 	.name = "host1x",
 	.match = host1x_device_match,
-	.dma_configure = host1x_dma_configure,
 	.pm = &host1x_device_pm_ops,
+	.force_dma = true,
 };
 
 static void __host1x_device_del(struct host1x_device *device)
@@ -421,7 +416,7 @@ static int host1x_device_add(struct host1x *host1x,
 	device->dev.bus = &host1x_bus_type;
 	device->dev.parent = host1x->dev;
 
-	of_dma_configure(&device->dev, host1x->dev->of_node, true);
+	of_dma_configure(&device->dev, host1x->dev->of_node);
 
 	err = host1x_device_parse_dt(device, driver);
 	if (err < 0) {

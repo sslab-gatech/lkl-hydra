@@ -23,12 +23,12 @@
 
 #include "hwmgr.h"
 #include "vega10_hwmgr.h"
-#include "vega10_smumgr.h"
 #include "vega10_powertune.h"
+#include "vega10_smumgr.h"
 #include "vega10_ppsmc.h"
 #include "vega10_inc.h"
 #include "pp_debug.h"
-#include "soc15_common.h"
+#include "pp_soc15.h"
 
 static const struct vega10_didt_config_reg SEDiDtTuningCtrlConfig_Vega10[] =
 {
@@ -850,6 +850,7 @@ static int vega10_program_gc_didt_config_registers(struct pp_hwmgr *hwmgr, const
 static void vega10_didt_set_mask(struct pp_hwmgr *hwmgr, const bool enable)
 {
 	uint32_t data;
+	int result;
 	uint32_t en = (enable ? 1 : 0);
 	uint32_t didt_block_info = SQ_IR_MASK | TCP_IR_MASK | TD_PCC_MASK;
 
@@ -889,60 +890,66 @@ static void vega10_didt_set_mask(struct pp_hwmgr *hwmgr, const bool enable)
 	if (PP_CAP(PHM_PlatformCaps_DiDtEDCEnable)) {
 		if (PP_CAP(PHM_PlatformCaps_SQRamping)) {
 			data = cgs_read_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_SQ_EDC_CTRL);
-			data = REG_SET_FIELD(data, DIDT_SQ_EDC_CTRL, EDC_EN, en);
-			data = REG_SET_FIELD(data, DIDT_SQ_EDC_CTRL, EDC_SW_RST, ~en);
+			data = CGS_REG_SET_FIELD(data, DIDT_SQ_EDC_CTRL, EDC_EN, en);
+			data = CGS_REG_SET_FIELD(data, DIDT_SQ_EDC_CTRL, EDC_SW_RST, ~en);
 			cgs_write_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_SQ_EDC_CTRL, data);
 		}
 
 		if (PP_CAP(PHM_PlatformCaps_DBRamping)) {
 			data = cgs_read_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_DB_EDC_CTRL);
-			data = REG_SET_FIELD(data, DIDT_DB_EDC_CTRL, EDC_EN, en);
-			data = REG_SET_FIELD(data, DIDT_DB_EDC_CTRL, EDC_SW_RST, ~en);
+			data = CGS_REG_SET_FIELD(data, DIDT_DB_EDC_CTRL, EDC_EN, en);
+			data = CGS_REG_SET_FIELD(data, DIDT_DB_EDC_CTRL, EDC_SW_RST, ~en);
 			cgs_write_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_DB_EDC_CTRL, data);
 		}
 
 		if (PP_CAP(PHM_PlatformCaps_TDRamping)) {
 			data = cgs_read_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_TD_EDC_CTRL);
-			data = REG_SET_FIELD(data, DIDT_TD_EDC_CTRL, EDC_EN, en);
-			data = REG_SET_FIELD(data, DIDT_TD_EDC_CTRL, EDC_SW_RST, ~en);
+			data = CGS_REG_SET_FIELD(data, DIDT_TD_EDC_CTRL, EDC_EN, en);
+			data = CGS_REG_SET_FIELD(data, DIDT_TD_EDC_CTRL, EDC_SW_RST, ~en);
 			cgs_write_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_TD_EDC_CTRL, data);
 		}
 
 		if (PP_CAP(PHM_PlatformCaps_TCPRamping)) {
 			data = cgs_read_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_TCP_EDC_CTRL);
-			data = REG_SET_FIELD(data, DIDT_TCP_EDC_CTRL, EDC_EN, en);
-			data = REG_SET_FIELD(data, DIDT_TCP_EDC_CTRL, EDC_SW_RST, ~en);
+			data = CGS_REG_SET_FIELD(data, DIDT_TCP_EDC_CTRL, EDC_EN, en);
+			data = CGS_REG_SET_FIELD(data, DIDT_TCP_EDC_CTRL, EDC_SW_RST, ~en);
 			cgs_write_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_TCP_EDC_CTRL, data);
 		}
 
 		if (PP_CAP(PHM_PlatformCaps_DBRRamping)) {
 			data = cgs_read_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_DBR_EDC_CTRL);
-			data = REG_SET_FIELD(data, DIDT_DBR_EDC_CTRL, EDC_EN, en);
-			data = REG_SET_FIELD(data, DIDT_DBR_EDC_CTRL, EDC_SW_RST, ~en);
+			data = CGS_REG_SET_FIELD(data, DIDT_DBR_EDC_CTRL, EDC_EN, en);
+			data = CGS_REG_SET_FIELD(data, DIDT_DBR_EDC_CTRL, EDC_SW_RST, ~en);
 			cgs_write_ind_register(hwmgr->device, CGS_IND_REG__DIDT, ixDIDT_DBR_EDC_CTRL, data);
 		}
 	}
 
-	/* For Vega10, SMC does not support any mask yet. */
-	if (enable)
-		smum_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_ConfigureGfxDidt, didt_block_info);
-
+	if (enable) {
+		/* For Vega10, SMC does not support any mask yet. */
+		result = smum_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_ConfigureGfxDidt, didt_block_info);
+		PP_ASSERT((0 == result), "[EnableDiDtConfig] SMC Configure Gfx Didt Failed!");
+	}
 }
 
 static int vega10_enable_cac_driving_se_didt_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
 	int result;
 	uint32_t num_se = 0, count, data;
+	struct cgs_system_info sys_info = {0};
+	uint32_t reg;
 
-	num_se = adev->gfx.config.max_shader_engines;
+	sys_info.size = sizeof(struct cgs_system_info);
+	sys_info.info_id = CGS_SYSTEM_INFO_GFX_SE_INFO;
+	if (cgs_query_system_info(hwmgr->device, &sys_info) == 0)
+		num_se = sys_info.value;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
-	mutex_lock(&adev->grbm_idx_mutex);
+	cgs_lock_grbm_idx(hwmgr->device, true);
+	reg = soc15_get_register_offset(GC_HWID, 0, mmGRBM_GFX_INDEX_BASE_IDX, mmGRBM_GFX_INDEX);
 	for (count = 0; count < num_se; count++) {
 		data = GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK | GRBM_GFX_INDEX__SH_BROADCAST_WRITES_MASK | ( count << GRBM_GFX_INDEX__SE_INDEX__SHIFT);
-		WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, data);
+		cgs_write_register(hwmgr->device, reg, data);
 
 		result =  vega10_program_didt_config_registers(hwmgr, SEDiDtStallCtrlConfig_vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, SEDiDtStallPatternConfig_vega10, VEGA10_CONFIGREG_DIDT);
@@ -957,43 +964,46 @@ static int vega10_enable_cac_driving_se_didt_config(struct pp_hwmgr *hwmgr)
 		if (0 != result)
 			break;
 	}
-	WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, 0xE0000000);
-	mutex_unlock(&adev->grbm_idx_mutex);
+	cgs_write_register(hwmgr->device, reg, 0xE0000000);
+	cgs_lock_grbm_idx(hwmgr->device, false);
 
 	vega10_didt_set_mask(hwmgr, true);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	return 0;
 }
 
 static int vega10_disable_cac_driving_se_didt_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
-
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
 	vega10_didt_set_mask(hwmgr, false);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	return 0;
 }
 
 static int vega10_enable_psm_gc_didt_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
 	int result;
 	uint32_t num_se = 0, count, data;
+	struct cgs_system_info sys_info = {0};
+	uint32_t reg;
 
-	num_se = adev->gfx.config.max_shader_engines;
+	sys_info.size = sizeof(struct cgs_system_info);
+	sys_info.info_id = CGS_SYSTEM_INFO_GFX_SE_INFO;
+	if (cgs_query_system_info(hwmgr->device, &sys_info) == 0)
+		num_se = sys_info.value;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
-	mutex_lock(&adev->grbm_idx_mutex);
+	cgs_lock_grbm_idx(hwmgr->device, true);
+	reg = soc15_get_register_offset(GC_HWID, 0, mmGRBM_GFX_INDEX_BASE_IDX, mmGRBM_GFX_INDEX);
 	for (count = 0; count < num_se; count++) {
 		data = GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK | GRBM_GFX_INDEX__SH_BROADCAST_WRITES_MASK | ( count << GRBM_GFX_INDEX__SE_INDEX__SHIFT);
-		WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, data);
+		cgs_write_register(hwmgr->device, reg, data);
 
 		result = vega10_program_didt_config_registers(hwmgr, SEDiDtStallCtrlConfig_vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, SEDiDtStallPatternConfig_vega10, VEGA10_CONFIGREG_DIDT);
@@ -1002,12 +1012,12 @@ static int vega10_enable_psm_gc_didt_config(struct pp_hwmgr *hwmgr)
 		if (0 != result)
 			break;
 	}
-	WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, 0xE0000000);
-	mutex_unlock(&adev->grbm_idx_mutex);
+	cgs_write_register(hwmgr->device, reg, 0xE0000000);
+	cgs_lock_grbm_idx(hwmgr->device, false);
 
 	vega10_didt_set_mask(hwmgr, true);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	vega10_program_gc_didt_config_registers(hwmgr, GCDiDtDroopCtrlConfig_vega10);
 	if (PP_CAP(PHM_PlatformCaps_GCEDC))
@@ -1021,14 +1031,13 @@ static int vega10_enable_psm_gc_didt_config(struct pp_hwmgr *hwmgr)
 
 static int vega10_disable_psm_gc_didt_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
 	uint32_t data;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
 	vega10_didt_set_mask(hwmgr, false);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	if (PP_CAP(PHM_PlatformCaps_GCEDC)) {
 		data = 0x00000000;
@@ -1043,18 +1052,23 @@ static int vega10_disable_psm_gc_didt_config(struct pp_hwmgr *hwmgr)
 
 static int vega10_enable_se_edc_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
 	int result;
 	uint32_t num_se = 0, count, data;
+	struct cgs_system_info sys_info = {0};
+	uint32_t reg;
 
-	num_se = adev->gfx.config.max_shader_engines;
+	sys_info.size = sizeof(struct cgs_system_info);
+	sys_info.info_id = CGS_SYSTEM_INFO_GFX_SE_INFO;
+	if (cgs_query_system_info(hwmgr->device, &sys_info) == 0)
+		num_se = sys_info.value;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
-	mutex_lock(&adev->grbm_idx_mutex);
+	cgs_lock_grbm_idx(hwmgr->device, true);
+	reg = soc15_get_register_offset(GC_HWID, 0, mmGRBM_GFX_INDEX_BASE_IDX, mmGRBM_GFX_INDEX);
 	for (count = 0; count < num_se; count++) {
 		data = GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK | GRBM_GFX_INDEX__SH_BROADCAST_WRITES_MASK | ( count << GRBM_GFX_INDEX__SE_INDEX__SHIFT);
-		WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, data);
+		cgs_write_register(hwmgr->device, reg, data);
 		result = vega10_program_didt_config_registers(hwmgr, SEDiDtWeightConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, SEEDCStallPatternConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, SEEDCStallDelayConfig_Vega10, VEGA10_CONFIGREG_DIDT);
@@ -1065,47 +1079,50 @@ static int vega10_enable_se_edc_config(struct pp_hwmgr *hwmgr)
 		if (0 != result)
 			break;
 	}
-	WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, 0xE0000000);
-	mutex_unlock(&adev->grbm_idx_mutex);
+	cgs_write_register(hwmgr->device, reg, 0xE0000000);
+	cgs_lock_grbm_idx(hwmgr->device, false);
 
 	vega10_didt_set_mask(hwmgr, true);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	return 0;
 }
 
 static int vega10_disable_se_edc_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
-
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
 	vega10_didt_set_mask(hwmgr, false);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	return 0;
 }
 
 static int vega10_enable_psm_gc_edc_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
-	int result = 0;
+	int result;
 	uint32_t num_se = 0;
 	uint32_t count, data;
+	struct cgs_system_info sys_info = {0};
+	uint32_t reg;
 
-	num_se = adev->gfx.config.max_shader_engines;
+	sys_info.size = sizeof(struct cgs_system_info);
+	sys_info.info_id = CGS_SYSTEM_INFO_GFX_SE_INFO;
+	if (cgs_query_system_info(hwmgr->device, &sys_info) == 0)
+		num_se = sys_info.value;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
 	vega10_program_gc_didt_config_registers(hwmgr, AvfsPSMResetConfig_vega10);
 
-	mutex_lock(&adev->grbm_idx_mutex);
+	cgs_lock_grbm_idx(hwmgr->device, true);
+	reg = soc15_get_register_offset(GC_HWID, 0, mmGRBM_GFX_INDEX_BASE_IDX, mmGRBM_GFX_INDEX);
 	for (count = 0; count < num_se; count++) {
 		data = GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK | GRBM_GFX_INDEX__SH_BROADCAST_WRITES_MASK | ( count << GRBM_GFX_INDEX__SE_INDEX__SHIFT);
-		WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, data);
-		result = vega10_program_didt_config_registers(hwmgr, PSMSEEDCStallPatternConfig_Vega10, VEGA10_CONFIGREG_DIDT);
+		cgs_write_register(hwmgr->device, reg, data);
+		result |= vega10_program_didt_config_registers(hwmgr, PSMSEEDCStallPatternConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, PSMSEEDCStallDelayConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, PSMSEEDCCtrlResetConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 		result |= vega10_program_didt_config_registers(hwmgr, PSMSEEDCCtrlConfig_Vega10, VEGA10_CONFIGREG_DIDT);
@@ -1113,12 +1130,12 @@ static int vega10_enable_psm_gc_edc_config(struct pp_hwmgr *hwmgr)
 		if (0 != result)
 			break;
 	}
-	WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, 0xE0000000);
-	mutex_unlock(&adev->grbm_idx_mutex);
+	cgs_write_register(hwmgr->device, reg, 0xE0000000);
+	cgs_lock_grbm_idx(hwmgr->device, false);
 
 	vega10_didt_set_mask(hwmgr, true);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	vega10_program_gc_didt_config_registers(hwmgr, PSMGCEDCDroopCtrlConfig_vega10);
 
@@ -1135,14 +1152,13 @@ static int vega10_enable_psm_gc_edc_config(struct pp_hwmgr *hwmgr)
 
 static int vega10_disable_psm_gc_edc_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
 	uint32_t data;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
 	vega10_didt_set_mask(hwmgr, false);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	if (PP_CAP(PHM_PlatformCaps_GCEDC)) {
 		data = 0x00000000;
@@ -1157,14 +1173,15 @@ static int vega10_disable_psm_gc_edc_config(struct pp_hwmgr *hwmgr)
 
 static int vega10_enable_se_edc_force_stall_config(struct pp_hwmgr *hwmgr)
 {
-	struct amdgpu_device *adev = hwmgr->adev;
+	uint32_t reg;
 	int result;
 
-	amdgpu_gfx_rlc_enter_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, true);
 
-	mutex_lock(&adev->grbm_idx_mutex);
-	WREG32_SOC15(GC, 0, mmGRBM_GFX_INDEX, 0xE0000000);
-	mutex_unlock(&adev->grbm_idx_mutex);
+	cgs_lock_grbm_idx(hwmgr->device, true);
+	reg = soc15_get_register_offset(GC_HWID, 0, mmGRBM_GFX_INDEX_BASE_IDX, mmGRBM_GFX_INDEX);
+	cgs_write_register(hwmgr->device, reg, 0xE0000000);
+	cgs_lock_grbm_idx(hwmgr->device, false);
 
 	result = vega10_program_didt_config_registers(hwmgr, SEEDCForceStallPatternConfig_Vega10, VEGA10_CONFIGREG_DIDT);
 	result |= vega10_program_didt_config_registers(hwmgr, SEEDCCtrlForceStallConfig_Vega10, VEGA10_CONFIGREG_DIDT);
@@ -1173,7 +1190,7 @@ static int vega10_enable_se_edc_force_stall_config(struct pp_hwmgr *hwmgr)
 
 	vega10_didt_set_mask(hwmgr, false);
 
-	amdgpu_gfx_rlc_exit_safe_mode(adev);
+	cgs_enter_safe_mode(hwmgr->device, false);
 
 	return 0;
 }
@@ -1191,7 +1208,7 @@ static int vega10_disable_se_edc_force_stall_config(struct pp_hwmgr *hwmgr)
 int vega10_enable_didt_config(struct pp_hwmgr *hwmgr)
 {
 	int result = 0;
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data = (struct vega10_hwmgr *)(hwmgr->backend);
 
 	if (data->smu_features[GNLD_DIDT].supported) {
 		if (data->smu_features[GNLD_DIDT].enabled)
@@ -1238,7 +1255,7 @@ int vega10_enable_didt_config(struct pp_hwmgr *hwmgr)
 int vega10_disable_didt_config(struct pp_hwmgr *hwmgr)
 {
 	int result = 0;
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data = (struct vega10_hwmgr *)(hwmgr->backend);
 
 	if (data->smu_features[GNLD_DIDT].supported) {
 		if (!data->smu_features[GNLD_DIDT].enabled)
@@ -1284,7 +1301,7 @@ int vega10_disable_didt_config(struct pp_hwmgr *hwmgr)
 
 void vega10_initialize_power_tune_defaults(struct pp_hwmgr *hwmgr)
 {
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data = (struct vega10_hwmgr *)(hwmgr->backend);
 	struct phm_ppt_v2_information *table_info =
 			(struct phm_ppt_v2_information *)(hwmgr->pptable);
 	struct phm_tdp_table *tdp_table = table_info->tdp_table;
@@ -1323,10 +1340,11 @@ void vega10_initialize_power_tune_defaults(struct pp_hwmgr *hwmgr)
 
 int vega10_set_power_limit(struct pp_hwmgr *hwmgr, uint32_t n)
 {
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data =
+			(struct vega10_hwmgr *)(hwmgr->backend);
 
 	if (data->registry_data.enable_pkg_pwr_tracking_feature)
-		smum_send_msg_to_smc_with_parameter(hwmgr,
+		return smum_send_msg_to_smc_with_parameter(hwmgr,
 				PPSMC_MSG_SetPptLimit, n);
 
 	return 0;
@@ -1334,14 +1352,14 @@ int vega10_set_power_limit(struct pp_hwmgr *hwmgr, uint32_t n)
 
 int vega10_enable_power_containment(struct pp_hwmgr *hwmgr)
 {
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data =
+			(struct vega10_hwmgr *)(hwmgr->backend);
 	struct phm_ppt_v2_information *table_info =
 			(struct phm_ppt_v2_information *)(hwmgr->pptable);
 	struct phm_tdp_table *tdp_table = table_info->tdp_table;
-	int result = 0;
-
-	hwmgr->default_power_limit = hwmgr->power_limit =
+	uint32_t default_pwr_limit =
 			(uint32_t)(tdp_table->usMaximumPowerDeliveryLimit);
+	int result = 0;
 
 	if (PP_CAP(PHM_PlatformCaps_PowerContainment)) {
 		if (data->smu_features[GNLD_PPT].supported)
@@ -1356,7 +1374,7 @@ int vega10_enable_power_containment(struct pp_hwmgr *hwmgr)
 					"Attempt to enable PPT feature Failed!",
 					data->smu_features[GNLD_TDC].supported = false);
 
-		result = vega10_set_power_limit(hwmgr, hwmgr->power_limit);
+		result = vega10_set_power_limit(hwmgr, default_pwr_limit);
 		PP_ASSERT_WITH_CODE(!result,
 				"Failed to set Default Power Limit in SMC!",
 				return result);
@@ -1367,7 +1385,8 @@ int vega10_enable_power_containment(struct pp_hwmgr *hwmgr)
 
 int vega10_disable_power_containment(struct pp_hwmgr *hwmgr)
 {
-	struct vega10_hwmgr *data = hwmgr->backend;
+	struct vega10_hwmgr *data =
+			(struct vega10_hwmgr *)(hwmgr->backend);
 
 	if (PP_CAP(PHM_PlatformCaps_PowerContainment)) {
 		if (data->smu_features[GNLD_PPT].supported)
@@ -1386,24 +1405,24 @@ int vega10_disable_power_containment(struct pp_hwmgr *hwmgr)
 	return 0;
 }
 
-static void vega10_set_overdrive_target_percentage(struct pp_hwmgr *hwmgr,
+static int vega10_set_overdrive_target_percentage(struct pp_hwmgr *hwmgr,
 		uint32_t adjust_percent)
 {
-	smum_send_msg_to_smc_with_parameter(hwmgr,
+	return smum_send_msg_to_smc_with_parameter(hwmgr,
 			PPSMC_MSG_OverDriveSetPercentage, adjust_percent);
 }
 
 int vega10_power_control_set_level(struct pp_hwmgr *hwmgr)
 {
-	int adjust_percent;
+	int adjust_percent, result = 0;
 
 	if (PP_CAP(PHM_PlatformCaps_PowerContainment)) {
 		adjust_percent =
 				hwmgr->platform_descriptor.TDPAdjustmentPolarity ?
 				hwmgr->platform_descriptor.TDPAdjustment :
 				(-1 * hwmgr->platform_descriptor.TDPAdjustment);
-		vega10_set_overdrive_target_percentage(hwmgr,
+		result = vega10_set_overdrive_target_percentage(hwmgr,
 				(uint32_t)adjust_percent);
 	}
-	return 0;
+	return result;
 }

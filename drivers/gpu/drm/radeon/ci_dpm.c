@@ -5568,9 +5568,8 @@ static int ci_parse_power_table(struct radeon_device *rdev)
 		(mode_info->atom_context->bios + data_offset +
 		 le16_to_cpu(power_info->pplib.usNonClockInfoArrayOffset));
 
-	rdev->pm.dpm.ps = kcalloc(state_array->ucNumEntries,
-				  sizeof(struct radeon_ps),
-				  GFP_KERNEL);
+	rdev->pm.dpm.ps = kzalloc(sizeof(struct radeon_ps) *
+				  state_array->ucNumEntries, GFP_KERNEL);
 	if (!rdev->pm.dpm.ps)
 		return -ENOMEM;
 	power_state_offset = (u8 *)state_array->states;
@@ -5676,30 +5675,19 @@ int ci_dpm_init(struct radeon_device *rdev)
 	u16 data_offset, size;
 	u8 frev, crev;
 	struct ci_power_info *pi;
-	enum pci_bus_speed speed_cap = PCI_SPEED_UNKNOWN;
-	struct pci_dev *root = rdev->pdev->bus->self;
 	int ret;
+	u32 mask;
 
 	pi = kzalloc(sizeof(struct ci_power_info), GFP_KERNEL);
 	if (pi == NULL)
 		return -ENOMEM;
 	rdev->pm.dpm.priv = pi;
 
-	if (!pci_is_root_bus(rdev->pdev->bus))
-		speed_cap = pcie_get_speed_cap(root);
-	if (speed_cap == PCI_SPEED_UNKNOWN) {
+	ret = drm_pcie_get_speed_cap_mask(rdev->ddev, &mask);
+	if (ret)
 		pi->sys_pcie_mask = 0;
-	} else {
-		if (speed_cap == PCIE_SPEED_8_0GT)
-			pi->sys_pcie_mask = RADEON_PCIE_SPEED_25 |
-				RADEON_PCIE_SPEED_50 |
-				RADEON_PCIE_SPEED_80;
-		else if (speed_cap == PCIE_SPEED_5_0GT)
-			pi->sys_pcie_mask = RADEON_PCIE_SPEED_25 |
-				RADEON_PCIE_SPEED_50;
-		else
-			pi->sys_pcie_mask = RADEON_PCIE_SPEED_25;
-	}
+	else
+		pi->sys_pcie_mask = mask;
 	pi->force_pcie_gen = RADEON_PCIE_GEN_INVALID;
 
 	pi->pcie_gen_performance.max = RADEON_PCIE_GEN1;
@@ -5782,9 +5770,7 @@ int ci_dpm_init(struct radeon_device *rdev)
 	ci_set_private_data_variables_based_on_pptable(rdev);
 
 	rdev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries =
-		kcalloc(4,
-			sizeof(struct radeon_clock_voltage_dependency_entry),
-			GFP_KERNEL);
+		kzalloc(4 * sizeof(struct radeon_clock_voltage_dependency_entry), GFP_KERNEL);
 	if (!rdev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries) {
 		ci_dpm_fini(rdev);
 		return -ENOMEM;

@@ -24,7 +24,6 @@
 #include "thread.h"
 #include "thread-stack.h"
 #include "stat.h"
-#include "arch/common.h"
 
 static int perf_session__deliver_event(struct perf_session *session,
 				       union perf_event *event,
@@ -126,8 +125,7 @@ struct perf_session *perf_session__new(struct perf_data *data,
 	session->tool   = tool;
 	INIT_LIST_HEAD(&session->auxtrace_index);
 	machines__init(&session->machines);
-	ordered_events__init(&session->ordered_events,
-			     ordered_events__deliver_event, NULL);
+	ordered_events__init(&session->ordered_events, ordered_events__deliver_event);
 
 	if (data) {
 		if (perf_data__open(data))
@@ -151,9 +149,6 @@ struct perf_session *perf_session__new(struct perf_data *data,
 	} else  {
 		session->machines.host.env = &perf_env;
 	}
-
-	session->machines.host.single_address_space =
-		perf_env__single_address_space(session->machines.host.env);
 
 	if (!data || perf_data__is_write(data)) {
 		/*
@@ -204,10 +199,12 @@ void perf_session__delete(struct perf_session *session)
 	free(session);
 }
 
-static int process_event_synth_tracing_data_stub(struct perf_session *session
+static int process_event_synth_tracing_data_stub(struct perf_tool *tool
 						 __maybe_unused,
 						 union perf_event *event
-						 __maybe_unused)
+						 __maybe_unused,
+						 struct perf_session *session
+						__maybe_unused)
 {
 	dump_printf(": unhandled!\n");
 	return 0;
@@ -280,8 +277,10 @@ static int skipn(int fd, off_t n)
 	return 0;
 }
 
-static s64 process_event_auxtrace_stub(struct perf_session *session __maybe_unused,
-				       union perf_event *event)
+static s64 process_event_auxtrace_stub(struct perf_tool *tool __maybe_unused,
+				       union perf_event *event,
+				       struct perf_session *session
+				       __maybe_unused)
 {
 	dump_printf(": unhandled!\n");
 	if (perf_data__is_pipe(session->data))
@@ -289,8 +288,9 @@ static s64 process_event_auxtrace_stub(struct perf_session *session __maybe_unus
 	return event->auxtrace.size;
 }
 
-static int process_event_op2_stub(struct perf_session *session __maybe_unused,
-				  union perf_event *event __maybe_unused)
+static int process_event_op2_stub(struct perf_tool *tool __maybe_unused,
+				  union perf_event *event __maybe_unused,
+				  struct perf_session *session __maybe_unused)
 {
 	dump_printf(": unhandled!\n");
 	return 0;
@@ -298,8 +298,9 @@ static int process_event_op2_stub(struct perf_session *session __maybe_unused,
 
 
 static
-int process_event_thread_map_stub(struct perf_session *session __maybe_unused,
-				  union perf_event *event __maybe_unused)
+int process_event_thread_map_stub(struct perf_tool *tool __maybe_unused,
+				  union perf_event *event __maybe_unused,
+				  struct perf_session *session __maybe_unused)
 {
 	if (dump_trace)
 		perf_event__fprintf_thread_map(event, stdout);
@@ -309,8 +310,9 @@ int process_event_thread_map_stub(struct perf_session *session __maybe_unused,
 }
 
 static
-int process_event_cpu_map_stub(struct perf_session *session __maybe_unused,
-			       union perf_event *event __maybe_unused)
+int process_event_cpu_map_stub(struct perf_tool *tool __maybe_unused,
+			       union perf_event *event __maybe_unused,
+			       struct perf_session *session __maybe_unused)
 {
 	if (dump_trace)
 		perf_event__fprintf_cpu_map(event, stdout);
@@ -320,8 +322,9 @@ int process_event_cpu_map_stub(struct perf_session *session __maybe_unused,
 }
 
 static
-int process_event_stat_config_stub(struct perf_session *session __maybe_unused,
-				   union perf_event *event __maybe_unused)
+int process_event_stat_config_stub(struct perf_tool *tool __maybe_unused,
+				   union perf_event *event __maybe_unused,
+				   struct perf_session *session __maybe_unused)
 {
 	if (dump_trace)
 		perf_event__fprintf_stat_config(event, stdout);
@@ -330,8 +333,10 @@ int process_event_stat_config_stub(struct perf_session *session __maybe_unused,
 	return 0;
 }
 
-static int process_stat_stub(struct perf_session *perf_session __maybe_unused,
-			     union perf_event *event)
+static int process_stat_stub(struct perf_tool *tool __maybe_unused,
+			     union perf_event *event __maybe_unused,
+			     struct perf_session *perf_session
+			     __maybe_unused)
 {
 	if (dump_trace)
 		perf_event__fprintf_stat(event, stdout);
@@ -340,8 +345,10 @@ static int process_stat_stub(struct perf_session *perf_session __maybe_unused,
 	return 0;
 }
 
-static int process_stat_round_stub(struct perf_session *perf_session __maybe_unused,
-				   union perf_event *event)
+static int process_stat_round_stub(struct perf_tool *tool __maybe_unused,
+				   union perf_event *event __maybe_unused,
+				   struct perf_session *perf_session
+				   __maybe_unused)
 {
 	if (dump_trace)
 		perf_event__fprintf_stat_round(event, stdout);
@@ -1087,7 +1094,7 @@ static void dump_sample(struct perf_evsel *evsel, union perf_event *event,
 
 	sample_type = evsel->attr.sample_type;
 
-	if (evsel__has_callchain(evsel))
+	if (sample_type & PERF_SAMPLE_CALLCHAIN)
 		callchain__printf(evsel, sample);
 
 	if ((sample_type & PERF_SAMPLE_BRANCH_STACK) && !perf_evsel__has_branch_callstack(evsel))
@@ -1367,37 +1374,37 @@ static s64 perf_session__process_user_event(struct perf_session *session,
 	case PERF_RECORD_HEADER_TRACING_DATA:
 		/* setup for reading amidst mmap */
 		lseek(fd, file_offset, SEEK_SET);
-		return tool->tracing_data(session, event);
+		return tool->tracing_data(tool, event, session);
 	case PERF_RECORD_HEADER_BUILD_ID:
-		return tool->build_id(session, event);
+		return tool->build_id(tool, event, session);
 	case PERF_RECORD_FINISHED_ROUND:
 		return tool->finished_round(tool, event, oe);
 	case PERF_RECORD_ID_INDEX:
-		return tool->id_index(session, event);
+		return tool->id_index(tool, event, session);
 	case PERF_RECORD_AUXTRACE_INFO:
-		return tool->auxtrace_info(session, event);
+		return tool->auxtrace_info(tool, event, session);
 	case PERF_RECORD_AUXTRACE:
 		/* setup for reading amidst mmap */
 		lseek(fd, file_offset + event->header.size, SEEK_SET);
-		return tool->auxtrace(session, event);
+		return tool->auxtrace(tool, event, session);
 	case PERF_RECORD_AUXTRACE_ERROR:
 		perf_session__auxtrace_error_inc(session, event);
-		return tool->auxtrace_error(session, event);
+		return tool->auxtrace_error(tool, event, session);
 	case PERF_RECORD_THREAD_MAP:
-		return tool->thread_map(session, event);
+		return tool->thread_map(tool, event, session);
 	case PERF_RECORD_CPU_MAP:
-		return tool->cpu_map(session, event);
+		return tool->cpu_map(tool, event, session);
 	case PERF_RECORD_STAT_CONFIG:
-		return tool->stat_config(session, event);
+		return tool->stat_config(tool, event, session);
 	case PERF_RECORD_STAT:
-		return tool->stat(session, event);
+		return tool->stat(tool, event, session);
 	case PERF_RECORD_STAT_ROUND:
-		return tool->stat_round(session, event);
+		return tool->stat_round(tool, event, session);
 	case PERF_RECORD_TIME_CONV:
 		session->time_conv = event->time_conv;
-		return tool->time_conv(session, event);
+		return tool->time_conv(tool, event, session);
 	case PERF_RECORD_HEADER_FEATURE:
-		return tool->feature(session, event);
+		return tool->feature(tool, event, session);
 	default:
 		return -EINVAL;
 	}
@@ -1527,13 +1534,6 @@ struct thread *perf_session__findnew(struct perf_session *session, pid_t pid)
 	return machine__findnew_thread(&session->machines.host, -1, pid);
 }
 
-/*
- * Threads are identified by pid and tid, and the idle task has pid == tid == 0.
- * So here a single thread is created for that, but actually there is a separate
- * idle task per cpu, so there should be one 'struct thread' per cpu, but there
- * is only 1. That causes problems for some tools, requiring workarounds. For
- * example get_idle_thread() in builtin-sched.c, or thread_stack__per_cpu().
- */
 int perf_session__register_idle_thread(struct perf_session *session)
 {
 	struct thread *thread;
@@ -1591,7 +1591,7 @@ static void perf_session__warn_about_errors(const struct perf_session *session)
 		drop_rate = (double)stats->total_lost_samples /
 			    (double) (stats->nr_events[PERF_RECORD_SAMPLE] + stats->total_lost_samples);
 		if (drop_rate > 0.05) {
-			ui__warning("Processed %" PRIu64 " samples and lost %3.2f%%!\n\n",
+			ui__warning("Processed %" PRIu64 " samples and lost %3.2f%% samples!\n\n",
 				    stats->nr_events[PERF_RECORD_SAMPLE] + stats->total_lost_samples,
 				    drop_rate * 100.0);
 		}
@@ -1973,11 +1973,12 @@ bool perf_session__has_traces(struct perf_session *session, const char *msg)
 	return false;
 }
 
-int map__set_kallsyms_ref_reloc_sym(struct map *map, const char *symbol_name, u64 addr)
+int maps__set_kallsyms_ref_reloc_sym(struct map **maps,
+				     const char *symbol_name, u64 addr)
 {
 	char *bracket;
+	int i;
 	struct ref_reloc_sym *ref;
-	struct kmap *kmap;
 
 	ref = zalloc(sizeof(struct ref_reloc_sym));
 	if (ref == NULL)
@@ -1995,9 +1996,13 @@ int map__set_kallsyms_ref_reloc_sym(struct map *map, const char *symbol_name, u6
 
 	ref->addr = addr;
 
-	kmap = map__kmap(map);
-	if (kmap)
+	for (i = 0; i < MAP__NR_TYPES; ++i) {
+		struct kmap *kmap = map__kmap(maps[i]);
+
+		if (!kmap)
+			continue;
 		kmap->ref_reloc_sym = ref;
+	}
 
 	return 0;
 }
@@ -2133,8 +2138,9 @@ out:
 	return err;
 }
 
-int perf_event__process_id_index(struct perf_session *session,
-				 union perf_event *event)
+int perf_event__process_id_index(struct perf_tool *tool __maybe_unused,
+				 union perf_event *event,
+				 struct perf_session *session)
 {
 	struct perf_evlist *evlist = session->evlist;
 	struct id_index_event *ie = &event->id_index;

@@ -2,7 +2,7 @@
  * Toppoly TD028TTEC1 panel support
  *
  * Copyright (C) 2008 Nokia Corporation
- * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
+ * Author: Tomi Valkeinen <tomi.valkeinen@nokia.com>
  *
  * Neo 1973 code (jbt6k74.c):
  * Copyright (C) 2006-2007 by OpenMoko, Inc.
@@ -27,11 +27,13 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/spi/spi.h>
+#include <linux/gpio.h>
 
 #include "../dss/omapdss.h"
 
 struct panel_drv_data {
 	struct omap_dss_device dssdev;
+	struct omap_dss_device *in;
 
 	struct videomode vm;
 
@@ -49,7 +51,13 @@ static const struct videomode td028ttec1_panel_vm = {
 	.vsync_len	= 2,
 	.vback_porch	= 2,
 
-	.flags		= DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW,
+	.flags		= DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW |
+			  DISPLAY_FLAGS_DE_HIGH | DISPLAY_FLAGS_SYNC_POSEDGE |
+			  DISPLAY_FLAGS_PIXDATA_NEGEDGE,
+	/*
+	 * Note: According to the panel documentation:
+	 * SYNC needs to be driven on the FALLING edge
+	 */
 };
 
 #define JBT_COMMAND	0x000
@@ -158,21 +166,37 @@ enum jbt_register {
 
 #define to_panel_data(p) container_of(p, struct panel_drv_data, dssdev)
 
-static int td028ttec1_panel_connect(struct omap_dss_device *src,
-				    struct omap_dss_device *dst)
+static int td028ttec1_panel_connect(struct omap_dss_device *dssdev)
 {
+	struct panel_drv_data *ddata = to_panel_data(dssdev);
+	struct omap_dss_device *in = ddata->in;
+	int r;
+
+	if (omapdss_device_is_connected(dssdev))
+		return 0;
+
+	r = in->ops.dpi->connect(in, dssdev);
+	if (r)
+		return r;
+
 	return 0;
 }
 
-static void td028ttec1_panel_disconnect(struct omap_dss_device *src,
-					struct omap_dss_device *dst)
+static void td028ttec1_panel_disconnect(struct omap_dss_device *dssdev)
 {
+	struct panel_drv_data *ddata = to_panel_data(dssdev);
+	struct omap_dss_device *in = ddata->in;
+
+	if (!omapdss_device_is_connected(dssdev))
+		return;
+
+	in->ops.dpi->disconnect(in, dssdev);
 }
 
 static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 {
 	struct panel_drv_data *ddata = to_panel_data(dssdev);
-	struct omap_dss_device *src = dssdev->src;
+	struct omap_dss_device *in = ddata->in;
 	int r;
 
 	if (!omapdss_device_is_connected(dssdev))
@@ -181,7 +205,9 @@ static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 	if (omapdss_device_is_enabled(dssdev))
 		return 0;
 
-	r = src->ops->enable(src);
+	in->ops.dpi->set_timings(in, &ddata->vm);
+
+	r = in->ops.dpi->enable(in);
 	if (r)
 		return r;
 
@@ -278,7 +304,7 @@ transfer_err:
 static void td028ttec1_panel_disable(struct omap_dss_device *dssdev)
 {
 	struct panel_drv_data *ddata = to_panel_data(dssdev);
-	struct omap_dss_device *src = dssdev->src;
+	struct omap_dss_device *in = ddata->in;
 
 	if (!omapdss_device_is_enabled(dssdev))
 		return;
@@ -290,9 +316,21 @@ static void td028ttec1_panel_disable(struct omap_dss_device *dssdev)
 	jbt_ret_write_0(ddata, JBT_REG_SLEEP_IN);
 	jbt_reg_write_1(ddata, JBT_REG_POWER_ON_OFF, 0x00);
 
-	src->ops->disable(src);
+	in->ops.dpi->disable(in);
 
 	dssdev->state = OMAP_DSS_DISPLAY_DISABLED;
+}
+
+static void td028ttec1_panel_set_timings(struct omap_dss_device *dssdev,
+					 struct videomode *vm)
+{
+	struct panel_drv_data *ddata = to_panel_data(dssdev);
+	struct omap_dss_device *in = ddata->in;
+
+	ddata->vm = *vm;
+	dssdev->panel.vm = *vm;
+
+	in->ops.dpi->set_timings(in, vm);
 }
 
 static void td028ttec1_panel_get_timings(struct omap_dss_device *dssdev,
@@ -303,15 +341,43 @@ static void td028ttec1_panel_get_timings(struct omap_dss_device *dssdev,
 	*vm = ddata->vm;
 }
 
-static const struct omap_dss_device_ops td028ttec1_ops = {
+static int td028ttec1_panel_check_timings(struct omap_dss_device *dssdev,
+					  struct videomode *vm)
+{
+	struct panel_drv_data *ddata = to_panel_data(dssdev);
+	struct omap_dss_device *in = ddata->in;
+
+	return in->ops.dpi->check_timings(in, vm);
+}
+
+static struct omap_dss_driver td028ttec1_ops = {
 	.connect	= td028ttec1_panel_connect,
 	.disconnect	= td028ttec1_panel_disconnect,
 
 	.enable		= td028ttec1_panel_enable,
 	.disable	= td028ttec1_panel_disable,
 
+	.set_timings	= td028ttec1_panel_set_timings,
 	.get_timings	= td028ttec1_panel_get_timings,
+	.check_timings	= td028ttec1_panel_check_timings,
 };
+
+static int td028ttec1_probe_of(struct spi_device *spi)
+{
+	struct device_node *node = spi->dev.of_node;
+	struct panel_drv_data *ddata = dev_get_drvdata(&spi->dev);
+	struct omap_dss_device *in;
+
+	in = omapdss_of_find_source_for_first_ep(node);
+	if (IS_ERR(in)) {
+		dev_err(&spi->dev, "failed to find video source\n");
+		return PTR_ERR(in);
+	}
+
+	ddata->in = in;
+
+	return 0;
+}
 
 static int td028ttec1_panel_probe(struct spi_device *spi)
 {
@@ -338,38 +404,49 @@ static int td028ttec1_panel_probe(struct spi_device *spi)
 
 	ddata->spi_dev = spi;
 
+	if (!spi->dev.of_node)
+		return -ENODEV;
+
+	r = td028ttec1_probe_of(spi);
+	if (r)
+		return r;
+
 	ddata->vm = td028ttec1_panel_vm;
 
 	dssdev = &ddata->dssdev;
 	dssdev->dev = &spi->dev;
-	dssdev->ops = &td028ttec1_ops;
+	dssdev->driver = &td028ttec1_ops;
 	dssdev->type = OMAP_DISPLAY_TYPE_DPI;
 	dssdev->owner = THIS_MODULE;
-	dssdev->of_ports = BIT(0);
+	dssdev->panel.vm = ddata->vm;
 
-	/*
-	 * Note: According to the panel documentation:
-	 * SYNC needs to be driven on the FALLING edge
-	 */
-	dssdev->bus_flags = DRM_BUS_FLAG_DE_HIGH | DRM_BUS_FLAG_SYNC_POSEDGE
-			  | DRM_BUS_FLAG_PIXDATA_NEGEDGE;
-
-	omapdss_display_init(dssdev);
-	omapdss_device_register(dssdev);
+	r = omapdss_register_display(dssdev);
+	if (r) {
+		dev_err(&spi->dev, "Failed to register panel\n");
+		goto err_reg;
+	}
 
 	return 0;
+
+err_reg:
+	omap_dss_put_device(ddata->in);
+	return r;
 }
 
 static int td028ttec1_panel_remove(struct spi_device *spi)
 {
 	struct panel_drv_data *ddata = dev_get_drvdata(&spi->dev);
 	struct omap_dss_device *dssdev = &ddata->dssdev;
+	struct omap_dss_device *in = ddata->in;
 
 	dev_dbg(&ddata->spi_dev->dev, "%s\n", __func__);
 
-	omapdss_device_unregister(dssdev);
+	omapdss_unregister_display(dssdev);
 
 	td028ttec1_panel_disable(dssdev);
+	td028ttec1_panel_disconnect(dssdev);
+
+	omap_dss_put_device(in);
 
 	return 0;
 }

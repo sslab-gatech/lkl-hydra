@@ -1,5 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/* comedi_usb.h
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * comedi_usb.h
  * header file for USB Comedi drivers
  *
  * COMEDI - Linux Control and Measurement Device Interface

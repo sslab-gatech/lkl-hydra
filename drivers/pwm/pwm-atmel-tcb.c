@@ -401,6 +401,7 @@ static int atmel_tcb_pwm_probe(struct platform_device *pdev)
 	tcbpwm = devm_kzalloc(&pdev->dev, sizeof(*tcbpwm), GFP_KERNEL);
 	if (tcbpwm == NULL) {
 		err = -ENOMEM;
+		dev_err(&pdev->dev, "failed to allocate memory\n");
 		goto err_free_tc;
 	}
 
@@ -460,7 +461,8 @@ MODULE_DEVICE_TABLE(of, atmel_tcb_pwm_dt_ids);
 #ifdef CONFIG_PM_SLEEP
 static int atmel_tcb_pwm_suspend(struct device *dev)
 {
-	struct atmel_tcb_pwm_chip *tcbpwm = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct atmel_tcb_pwm_chip *tcbpwm = platform_get_drvdata(pdev);
 	void __iomem *base = tcbpwm->tc->regs;
 	int i;
 
@@ -477,7 +479,8 @@ static int atmel_tcb_pwm_suspend(struct device *dev)
 
 static int atmel_tcb_pwm_resume(struct device *dev)
 {
-	struct atmel_tcb_pwm_chip *tcbpwm = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct atmel_tcb_pwm_chip *tcbpwm = platform_get_drvdata(pdev);
 	void __iomem *base = tcbpwm->tc->regs;
 	int i;
 

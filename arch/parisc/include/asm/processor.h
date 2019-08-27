@@ -20,6 +20,17 @@
 #include <asm/percpu.h>
 #endif /* __ASSEMBLY__ */
 
+/*
+ * Default implementation of macro that returns current
+ * instruction pointer ("program counter").
+ */
+#ifdef CONFIG_PA20
+#define current_ia(x)	__asm__("mfia %0" : "=r"(x))
+#else /* mfia added in pa2.0 */
+#define current_ia(x)	__asm__("blr 0,%0\n\tnop" : "=r"(x))
+#endif
+#define current_text_addr() ({ void *pc; current_ia(pc); pc; })
+
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
 
 #define TASK_SIZE_OF(tsk)       ((tsk)->thread.task_size)
@@ -245,7 +256,11 @@ on downward growing arches, it looks like this:
  * it in here from the current->personality
  */
 
-#define USER_WIDE_MODE	(!is_32bit_task())
+#ifdef CONFIG_64BIT
+#define USER_WIDE_MODE	(!test_thread_flag(TIF_32BIT))
+#else
+#define USER_WIDE_MODE	0
+#endif
 
 #define start_thread(regs, new_pc, new_sp) do {		\
 	elf_addr_t *sp = (elf_addr_t *)new_sp;		\

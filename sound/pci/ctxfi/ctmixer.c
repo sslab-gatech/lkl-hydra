@@ -910,14 +910,13 @@ static int ct_mixer_get_mem(struct ct_mixer **rmixer)
 	if (!mixer)
 		return -ENOMEM;
 
-	mixer->amixers = kcalloc(NUM_CT_AMIXERS * CHN_NUM, sizeof(void *),
+	mixer->amixers = kzalloc(sizeof(void *)*(NUM_CT_AMIXERS*CHN_NUM),
 				 GFP_KERNEL);
 	if (!mixer->amixers) {
 		err = -ENOMEM;
 		goto error1;
 	}
-	mixer->sums = kcalloc(NUM_CT_SUMS * CHN_NUM, sizeof(void *),
-			      GFP_KERNEL);
+	mixer->sums = kzalloc(sizeof(void *)*(NUM_CT_SUMS*CHN_NUM), GFP_KERNEL);
 	if (!mixer->sums) {
 		err = -ENOMEM;
 		goto error2;
@@ -938,18 +937,17 @@ static int ct_mixer_topology_build(struct ct_mixer *mixer)
 	struct sum *sum;
 	struct amixer *amix_d, *amix_s;
 	enum CT_AMIXER_CTL i, j;
-	enum CT_SUM_CTL k;
 
 	/* Build topology from destination to source */
 
 	/* Set up Master mixer */
-	for (i = AMIXER_MASTER_F, k = SUM_IN_F;
-					i <= AMIXER_MASTER_S; i++, k++) {
+	for (i = AMIXER_MASTER_F, j = SUM_IN_F;
+					i <= AMIXER_MASTER_S; i++, j++) {
 		amix_d = mixer->amixers[i*CHN_NUM];
-		sum = mixer->sums[k*CHN_NUM];
+		sum = mixer->sums[j*CHN_NUM];
 		amix_d->ops->setup(amix_d, &sum->rsc, INIT_VOL, NULL);
 		amix_d = mixer->amixers[i*CHN_NUM+1];
-		sum = mixer->sums[k*CHN_NUM+1];
+		sum = mixer->sums[j*CHN_NUM+1];
 		amix_d->ops->setup(amix_d, &sum->rsc, INIT_VOL, NULL);
 	}
 
@@ -973,12 +971,12 @@ static int ct_mixer_topology_build(struct ct_mixer *mixer)
 	amix_d->ops->setup(amix_d, &amix_s->rsc, INIT_VOL, NULL);
 
 	/* Set up PCM-in mixer */
-	for (i = AMIXER_PCM_F, k = SUM_IN_F; i <= AMIXER_PCM_S; i++, k++) {
+	for (i = AMIXER_PCM_F, j = SUM_IN_F; i <= AMIXER_PCM_S; i++, j++) {
 		amix_d = mixer->amixers[i*CHN_NUM];
-		sum = mixer->sums[k*CHN_NUM];
+		sum = mixer->sums[j*CHN_NUM];
 		amix_d->ops->setup(amix_d, NULL, INIT_VOL, sum);
 		amix_d = mixer->amixers[i*CHN_NUM+1];
-		sum = mixer->sums[k*CHN_NUM+1];
+		sum = mixer->sums[j*CHN_NUM+1];
 		amix_d->ops->setup(amix_d, NULL, INIT_VOL, sum);
 	}
 

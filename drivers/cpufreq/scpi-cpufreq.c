@@ -158,7 +158,13 @@ static int scpi_cpufreq_init(struct cpufreq_policy *policy)
 	}
 
 	policy->driver_data = priv;
-	policy->freq_table = freq_table;
+
+	ret = cpufreq_table_validate_and_show(policy, freq_table);
+	if (ret) {
+		dev_err(cpu_dev, "%s: invalid frequency table: %d\n", __func__,
+			ret);
+		goto out_put_clk;
+	}
 
 	/* scpi allows DVFS request for any domain from any CPU */
 	policy->dvfs_possible_from_any_cpu = true;
@@ -172,12 +178,14 @@ static int scpi_cpufreq_init(struct cpufreq_policy *policy)
 	policy->fast_switch_possible = false;
 	return 0;
 
+out_put_clk:
+	clk_put(priv->clk);
 out_free_cpufreq_table:
 	dev_pm_opp_free_cpufreq_table(cpu_dev, &freq_table);
 out_free_priv:
 	kfree(priv);
 out_free_opp:
-	dev_pm_opp_remove_all_dynamic(cpu_dev);
+	dev_pm_opp_cpumask_remove_table(policy->cpus);
 
 	return ret;
 }
@@ -190,7 +198,7 @@ static int scpi_cpufreq_exit(struct cpufreq_policy *policy)
 	clk_put(priv->clk);
 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
 	kfree(priv);
-	dev_pm_opp_remove_all_dynamic(priv->cpu_dev);
+	dev_pm_opp_cpumask_remove_table(policy->related_cpus);
 
 	return 0;
 }

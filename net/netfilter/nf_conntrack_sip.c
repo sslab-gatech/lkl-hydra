@@ -938,19 +938,11 @@ static int set_expected_rtp_rtcp(struct sk_buff *skb, unsigned int protoff,
 				       datalen, rtp_exp, rtcp_exp,
 				       mediaoff, medialen, daddr);
 	else {
-		/* -EALREADY handling works around end-points that send
-		 * SDP messages with identical port but different media type,
-		 * we pretend expectation was set up.
-		 */
-		int errp = nf_ct_expect_related(rtp_exp);
-
-		if (errp == 0 || errp == -EALREADY) {
-			int errcp = nf_ct_expect_related(rtcp_exp);
-
-			if (errcp == 0 || errcp == -EALREADY)
-				ret = NF_ACCEPT;
-			else if (errp == 0)
+		if (nf_ct_expect_related(rtp_exp) == 0) {
+			if (nf_ct_expect_related(rtcp_exp) != 0)
 				nf_ct_unexpect_related(rtp_exp);
+			else
+				ret = NF_ACCEPT;
 		}
 	}
 	nf_ct_expect_put(rtcp_exp);
@@ -1617,7 +1609,7 @@ static const struct nf_conntrack_expect_policy sip_exp_policy[SIP_EXPECT_MAX + 1
 	},
 };
 
-static void __exit nf_conntrack_sip_fini(void)
+static void nf_conntrack_sip_fini(void)
 {
 	nf_conntrack_helpers_unregister(sip, ports_c * 4);
 }

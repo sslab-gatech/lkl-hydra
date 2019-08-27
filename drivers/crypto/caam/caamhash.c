@@ -1,9 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * caam - Freescale FSL CAAM support for ahash functions of crypto API
  *
  * Copyright 2011 Freescale Semiconductor, Inc.
- * Copyright 2018 NXP
  *
  * Based on caamalg.c crypto API driver.
  *
@@ -64,7 +62,6 @@
 #include "error.h"
 #include "sg_sw_sec4.h"
 #include "key_gen.h"
-#include "caamhash_desc.h"
 
 #define CAAM_CRA_PRIORITY		3000
 
@@ -73,6 +70,14 @@
 
 #define CAAM_MAX_HASH_BLOCK_SIZE	SHA512_BLOCK_SIZE
 #define CAAM_MAX_HASH_DIGEST_SIZE	SHA512_DIGEST_SIZE
+
+/* length of descriptors text */
+#define DESC_AHASH_BASE			(3 * CAAM_CMD_SZ)
+#define DESC_AHASH_UPDATE_LEN		(6 * CAAM_CMD_SZ)
+#define DESC_AHASH_UPDATE_FIRST_LEN	(DESC_AHASH_BASE + 4 * CAAM_CMD_SZ)
+#define DESC_AHASH_FINAL_LEN		(DESC_AHASH_BASE + 5 * CAAM_CMD_SZ)
+#define DESC_AHASH_FINUP_LEN		(DESC_AHASH_BASE + 5 * CAAM_CMD_SZ)
+#define DESC_AHASH_DIGEST_LEN		(DESC_AHASH_BASE + 4 * CAAM_CMD_SZ)
 
 #define DESC_HASH_MAX_USED_BYTES	(DESC_AHASH_FINAL_LEN + \
 					 CAAM_MAX_HASH_KEY_SIZE)
@@ -230,6 +235,60 @@ static inline int ctx_map_to_sec4_sg(struct device *jrdev,
 	return 0;
 }
 
+/*
+ * For ahash update, final and finup (import_ctx = true)
+ *     import context, read and write to seqout
+ * For ahash firsts and digest (import_ctx = false)
+ *     read and write to seqout
+ */
+static inline void ahash_gen_sh_desc(u32 *desc, u32 state, int digestsize,
+				     struct caam_hash_ctx *ctx, bool import_ctx,
+				     int era)
+{
+	u32 op = ctx->adata.algtype;
+	u32 *skip_key_load;
+
+	init_sh_desc(desc, HDR_SHARE_SERIAL);
+
+	/* Append key if it has been set; ahash update excluded */
+	if ((state != OP_ALG_AS_UPDATE) && (ctx->adata.keylen)) {
+		/* Skip key loading if already shared */
+		skip_key_load = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
+					    JUMP_COND_SHRD);
+
+		if (era < 6)
+			append_key_as_imm(desc, ctx->key, ctx->adata.keylen_pad,
+					  ctx->adata.keylen, CLASS_2 |
+					  KEY_DEST_MDHA_SPLIT | KEY_ENC);
+		else
+			append_proto_dkp(desc, &ctx->adata);
+
+		set_jump_tgt_here(desc, skip_key_load);
+
+		op |= OP_ALG_AAI_HMAC_PRECOMP;
+	}
+
+	/* If needed, import context from software */
+	if (import_ctx)
+		append_seq_load(desc, ctx->ctx_len, LDST_CLASS_2_CCB |
+				LDST_SRCDST_BYTE_CONTEXT);
+
+	/* Class 2 operation */
+	append_operation(desc, op | state | OP_ALG_ENCRYPT);
+
+	/*
+	 * Load from buf and/or src and write to req->result or state->context
+	 * Calculate remaining bytes to read
+	 */
+	append_math_add(desc, VARSEQINLEN, SEQINLEN, REG0, CAAM_CMD_SZ);
+	/* Read remaining bytes */
+	append_seq_fifo_load(desc, 0, FIFOLD_CLASS_CLASS2 | FIFOLD_TYPE_LAST2 |
+			     FIFOLD_TYPE_MSG | KEY_VLF);
+	/* Store class2 context bytes */
+	append_seq_store(desc, digestsize, LDST_CLASS_2_CCB |
+			 LDST_SRCDST_BYTE_CONTEXT);
+}
+
 static int ahash_set_sh_desc(struct crypto_ahash *ahash)
 {
 	struct caam_hash_ctx *ctx = crypto_ahash_ctx(ahash);
@@ -242,8 +301,8 @@ static int ahash_set_sh_desc(struct crypto_ahash *ahash)
 
 	/* ahash_update shared descriptor */
 	desc = ctx->sh_desc_update;
-	cnstr_shdsc_ahash(desc, &ctx->adata, OP_ALG_AS_UPDATE, ctx->ctx_len,
-			  ctx->ctx_len, true, ctrlpriv->era);
+	ahash_gen_sh_desc(desc, OP_ALG_AS_UPDATE, ctx->ctx_len, ctx, true,
+			  ctrlpriv->era);
 	dma_sync_single_for_device(jrdev, ctx->sh_desc_update_dma,
 				   desc_bytes(desc), ctx->dir);
 #ifdef DEBUG
@@ -254,8 +313,8 @@ static int ahash_set_sh_desc(struct crypto_ahash *ahash)
 
 	/* ahash_update_first shared descriptor */
 	desc = ctx->sh_desc_update_first;
-	cnstr_shdsc_ahash(desc, &ctx->adata, OP_ALG_AS_INIT, ctx->ctx_len,
-			  ctx->ctx_len, false, ctrlpriv->era);
+	ahash_gen_sh_desc(desc, OP_ALG_AS_INIT, ctx->ctx_len, ctx, false,
+			  ctrlpriv->era);
 	dma_sync_single_for_device(jrdev, ctx->sh_desc_update_first_dma,
 				   desc_bytes(desc), ctx->dir);
 #ifdef DEBUG
@@ -266,8 +325,8 @@ static int ahash_set_sh_desc(struct crypto_ahash *ahash)
 
 	/* ahash_final shared descriptor */
 	desc = ctx->sh_desc_fin;
-	cnstr_shdsc_ahash(desc, &ctx->adata, OP_ALG_AS_FINALIZE, digestsize,
-			  ctx->ctx_len, true, ctrlpriv->era);
+	ahash_gen_sh_desc(desc, OP_ALG_AS_FINALIZE, digestsize, ctx, true,
+			  ctrlpriv->era);
 	dma_sync_single_for_device(jrdev, ctx->sh_desc_fin_dma,
 				   desc_bytes(desc), ctx->dir);
 #ifdef DEBUG
@@ -278,8 +337,8 @@ static int ahash_set_sh_desc(struct crypto_ahash *ahash)
 
 	/* ahash_digest shared descriptor */
 	desc = ctx->sh_desc_digest;
-	cnstr_shdsc_ahash(desc, &ctx->adata, OP_ALG_AS_INITFINAL, digestsize,
-			  ctx->ctx_len, false, ctrlpriv->era);
+	ahash_gen_sh_desc(desc, OP_ALG_AS_INITFINAL, digestsize, ctx, false,
+			  ctrlpriv->era);
 	dma_sync_single_for_device(jrdev, ctx->sh_desc_digest_dma,
 				   desc_bytes(desc), ctx->dir);
 #ifdef DEBUG
@@ -1072,16 +1131,13 @@ static int ahash_final_no_ctx(struct ahash_request *req)
 
 	desc = edesc->hw_desc;
 
-	if (buflen) {
-		state->buf_dma = dma_map_single(jrdev, buf, buflen,
-						DMA_TO_DEVICE);
-		if (dma_mapping_error(jrdev, state->buf_dma)) {
-			dev_err(jrdev, "unable to map src\n");
-			goto unmap;
-		}
-
-		append_seq_in_ptr(desc, state->buf_dma, buflen, 0);
+	state->buf_dma = dma_map_single(jrdev, buf, buflen, DMA_TO_DEVICE);
+	if (dma_mapping_error(jrdev, state->buf_dma)) {
+		dev_err(jrdev, "unable to map src\n");
+		goto unmap;
 	}
+
+	append_seq_in_ptr(desc, state->buf_dma, buflen, 0);
 
 	edesc->dst_dma = map_seq_out_ptr_result(desc, jrdev, req->result,
 						digestsize);
@@ -1790,7 +1846,8 @@ caam_hash_alloc(struct caam_hash_template *template,
 	alg->cra_priority = CAAM_CRA_PRIORITY;
 	alg->cra_blocksize = template->blocksize;
 	alg->cra_alignmask = 0;
-	alg->cra_flags = CRYPTO_ALG_ASYNC;
+	alg->cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_TYPE_AHASH;
+	alg->cra_type = &crypto_ahash_type;
 
 	t_alg->alg_type = template->alg_type;
 
@@ -1805,7 +1862,7 @@ static int __init caam_algapi_hash_init(void)
 	int i = 0, err = 0;
 	struct caam_drv_private *priv;
 	unsigned int md_limit = SHA512_DIGEST_SIZE;
-	u32 md_inst, md_vid;
+	u32 cha_inst, cha_vid;
 
 	dev_node = of_find_compatible_node(NULL, NULL, "fsl,sec-v4.0");
 	if (!dev_node) {
@@ -1835,27 +1892,18 @@ static int __init caam_algapi_hash_init(void)
 	 * Register crypto algorithms the device supports.  First, identify
 	 * presence and attributes of MD block.
 	 */
-	if (priv->era < 10) {
-		md_vid = (rd_reg32(&priv->ctrl->perfmon.cha_id_ls) &
-			  CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT;
-		md_inst = (rd_reg32(&priv->ctrl->perfmon.cha_num_ls) &
-			   CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT;
-	} else {
-		u32 mdha = rd_reg32(&priv->ctrl->vreg.mdha);
-
-		md_vid = (mdha & CHA_VER_VID_MASK) >> CHA_VER_VID_SHIFT;
-		md_inst = mdha & CHA_VER_NUM_MASK;
-	}
+	cha_vid = rd_reg32(&priv->ctrl->perfmon.cha_id_ls);
+	cha_inst = rd_reg32(&priv->ctrl->perfmon.cha_num_ls);
 
 	/*
 	 * Skip registration of any hashing algorithms if MD block
 	 * is not present.
 	 */
-	if (!md_inst)
+	if (!((cha_inst & CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT))
 		return -ENODEV;
 
 	/* Limit digest size based on LP256 */
-	if (md_vid == CHA_VER_VID_MD_LP256)
+	if ((cha_vid & CHA_ID_LS_MD_MASK) == CHA_ID_LS_MD_LP256)
 		md_limit = SHA256_DIGEST_SIZE;
 
 	INIT_LIST_HEAD(&hash_list);

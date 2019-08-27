@@ -586,10 +586,10 @@ static int vpif_querycap(struct file *file, void  *priv,
 
 	cap->device_caps = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING;
 	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
-	strscpy(cap->driver, VPIF_DRIVER_NAME, sizeof(cap->driver));
+	strlcpy(cap->driver, VPIF_DRIVER_NAME, sizeof(cap->driver));
 	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
 		 dev_name(vpif_dev));
-	strscpy(cap->card, config->card_name, sizeof(cap->card));
+	strlcpy(cap->card, config->card_name, sizeof(cap->card));
 
 	return 0;
 }
@@ -602,8 +602,7 @@ static int vpif_enum_fmt_vid_out(struct file *file, void  *priv,
 
 	/* Fill in the information about format */
 	fmt->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-	strscpy(fmt->description, "YCbCr4:2:2 YC Planar",
-		sizeof(fmt->description));
+	strcpy(fmt->description, "YCbCr4:2:2 YC Planar");
 	fmt->pixelformat = V4L2_PIX_FMT_YUV422P;
 	fmt->flags = 0;
 	return 0;
@@ -1115,14 +1114,6 @@ vpif_init_free_channel_objects:
 	return err;
 }
 
-static void free_vpif_objs(void)
-{
-	int i;
-
-	for (i = 0; i < VPIF_DISPLAY_MAX_DEVICES; i++)
-		kfree(vpif_obj.dev[i]);
-}
-
 static int vpif_async_bound(struct v4l2_async_notifier *notifier,
 			    struct v4l2_subdev *subdev,
 			    struct v4l2_async_subdev *asd)
@@ -1210,7 +1201,7 @@ static int vpif_probe_complete(void)
 
 		/* Initialize the video_device structure */
 		vdev = &ch->video_dev;
-		strscpy(vdev->name, VPIF_DRIVER_NAME, sizeof(vdev->name));
+		strlcpy(vdev->name, VPIF_DRIVER_NAME, sizeof(vdev->name));
 		vdev->release = video_device_release_empty;
 		vdev->fops = &vpif_fops;
 		vdev->ioctl_ops = &vpif_ioctl_ops;
@@ -1264,6 +1255,11 @@ static __init int vpif_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (!pdev->dev.platform_data) {
+		dev_warn(&pdev->dev, "Missing platform data.  Giving up.\n");
+		return -EINVAL;
+	}
+
 	vpif_dev = &pdev->dev;
 	err = initialize_vpif();
 
@@ -1275,7 +1271,7 @@ static __init int vpif_probe(struct platform_device *pdev)
 	err = v4l2_device_register(vpif_dev, &vpif_obj.v4l2_dev);
 	if (err) {
 		v4l2_err(vpif_dev->driver, "Error registering v4l2 device\n");
-		goto vpif_free;
+		return err;
 	}
 
 	while ((res = platform_get_resource(pdev, IORESOURCE_IRQ, res_idx))) {
@@ -1300,8 +1296,6 @@ static __init int vpif_probe(struct platform_device *pdev)
 		goto vpif_unregister;
 	}
 
-	v4l2_async_notifier_init(&vpif_obj.notifier);
-
 	if (!vpif_obj.config->asd_sizes) {
 		i2c_adap = i2c_get_adapter(vpif_obj.config->i2c_adapter_id);
 		for (i = 0; i < subdev_count; i++) {
@@ -1320,38 +1314,26 @@ static __init int vpif_probe(struct platform_device *pdev)
 			if (vpif_obj.sd[i])
 				vpif_obj.sd[i]->grp_id = 1 << i;
 		}
-		err = vpif_probe_complete();
-		if (err) {
-			goto probe_subdev_out;
-		}
+		vpif_probe_complete();
 	} else {
-		for (i = 0; i < vpif_obj.config->asd_sizes[0]; i++) {
-			err = v4l2_async_notifier_add_subdev(
-				&vpif_obj.notifier, vpif_obj.config->asd[i]);
-			if (err)
-				goto probe_cleanup;
-		}
-
+		vpif_obj.notifier.subdevs = vpif_obj.config->asd;
+		vpif_obj.notifier.num_subdevs = vpif_obj.config->asd_sizes[0];
 		vpif_obj.notifier.ops = &vpif_async_ops;
 		err = v4l2_async_notifier_register(&vpif_obj.v4l2_dev,
 						   &vpif_obj.notifier);
 		if (err) {
 			vpif_err("Error registering async notifier\n");
 			err = -EINVAL;
-			goto probe_cleanup;
+			goto probe_subdev_out;
 		}
 	}
 
 	return 0;
 
-probe_cleanup:
-	v4l2_async_notifier_cleanup(&vpif_obj.notifier);
 probe_subdev_out:
 	kfree(vpif_obj.sd);
 vpif_unregister:
 	v4l2_device_unregister(&vpif_obj.v4l2_dev);
-vpif_free:
-	free_vpif_objs();
 
 	return err;
 }
@@ -1364,11 +1346,6 @@ static int vpif_remove(struct platform_device *device)
 	struct channel_obj *ch;
 	int i;
 
-	if (vpif_obj.config->asd_sizes) {
-		v4l2_async_notifier_unregister(&vpif_obj.notifier);
-		v4l2_async_notifier_cleanup(&vpif_obj.notifier);
-	}
-
 	v4l2_device_unregister(&vpif_obj.v4l2_dev);
 
 	kfree(vpif_obj.sd);
@@ -1378,8 +1355,8 @@ static int vpif_remove(struct platform_device *device)
 		ch = vpif_obj.dev[i];
 		/* Unregister video device */
 		video_unregister_device(&ch->video_dev);
+		kfree(vpif_obj.dev[i]);
 	}
-	free_vpif_objs();
 
 	return 0;
 }

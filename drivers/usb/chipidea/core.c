@@ -53,7 +53,6 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/otg.h>
@@ -724,24 +723,6 @@ static int ci_get_platdata(struct device *dev,
 		else
 			cable->connected = false;
 	}
-
-	platdata->pctl = devm_pinctrl_get(dev);
-	if (!IS_ERR(platdata->pctl)) {
-		struct pinctrl_state *p;
-
-		p = pinctrl_lookup_state(platdata->pctl, "default");
-		if (!IS_ERR(p))
-			platdata->pins_default = p;
-
-		p = pinctrl_lookup_state(platdata->pctl, "host");
-		if (!IS_ERR(p))
-			platdata->pins_host = p;
-
-		p = pinctrl_lookup_state(platdata->pctl, "device");
-		if (!IS_ERR(p))
-			platdata->pins_device = p;
-	}
-
 	return 0;
 }
 
@@ -1081,7 +1062,9 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		ci_hdrc_otg_fsm_start(ci);
 
 	device_set_wakeup_capable(&pdev->dev, true);
-	dbg_create_files(ci);
+	ret = dbg_create_files(ci);
+	if (ret)
+		goto stop;
 
 	ret = sysfs_create_group(&dev->kobj, &ci_attr_group);
 	if (ret)

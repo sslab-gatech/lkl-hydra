@@ -36,8 +36,6 @@
 unsigned int elf_hwcap __read_mostly;
 EXPORT_SYMBOL_GPL(elf_hwcap);
 
-#ifdef CONFIG_MIPS_FP_SUPPORT
-
 /*
  * Get the FPU Implementation/Revision.
  */
@@ -58,6 +56,19 @@ static inline unsigned long cpu_get_fpu_id(void)
 static inline int __cpu_has_fpu(void)
 {
 	return (cpu_get_fpu_id() & FPIR_IMP_MASK) != FPIR_IMP_NONE;
+}
+
+static inline unsigned long cpu_get_msa_id(void)
+{
+	unsigned long status, msa_id;
+
+	status = read_c0_status();
+	__enable_fpu(FPU_64BIT);
+	enable_msa();
+	msa_id = read_msa_ir();
+	disable_msa();
+	write_c0_status(status);
+	return msa_id;
 }
 
 /*
@@ -315,45 +326,6 @@ static int __init fpu_disable(char *s)
 
 __setup("nofpu", fpu_disable);
 
-#else /* !CONFIG_MIPS_FP_SUPPORT */
-
-#define mips_fpu_disabled 1
-
-static inline unsigned long cpu_get_fpu_id(void)
-{
-	return FPIR_IMP_NONE;
-}
-
-static inline int __cpu_has_fpu(void)
-{
-	return 0;
-}
-
-static void cpu_set_fpu_opts(struct cpuinfo_mips *c)
-{
-	/* no-op */
-}
-
-static void cpu_set_nofpu_opts(struct cpuinfo_mips *c)
-{
-	/* no-op */
-}
-
-#endif /* CONFIG_MIPS_FP_SUPPORT */
-
-static inline unsigned long cpu_get_msa_id(void)
-{
-	unsigned long status, msa_id;
-
-	status = read_c0_status();
-	__enable_fpu(FPU_64BIT);
-	enable_msa();
-	msa_id = read_msa_ir();
-	disable_msa();
-	write_c0_status(status);
-	return msa_id;
-}
-
 static int mips_dsp_disabled;
 
 static int __init dsp_disable(char *s)
@@ -442,14 +414,6 @@ static int __init ftlb_disable(char *s)
 
 __setup("noftlb", ftlb_disable);
 
-/*
- * Check if the CPU has per tc perf counters
- */
-static inline void cpu_set_mt_per_tc_perf(struct cpuinfo_mips *c)
-{
-	if (read_c0_config7() & MTI_CONF7_PTC)
-		c->options |= MIPS_CPU_MT_PER_TC_PERF_COUNTERS;
-}
 
 static inline void check_errata(void)
 {
@@ -517,16 +481,12 @@ static void set_isa(struct cpuinfo_mips *c, unsigned int isa)
 	switch (isa) {
 	case MIPS_CPU_ISA_M64R2:
 		c->isa_level |= MIPS_CPU_ISA_M32R2 | MIPS_CPU_ISA_M64R2;
-		/* fall through */
 	case MIPS_CPU_ISA_M64R1:
 		c->isa_level |= MIPS_CPU_ISA_M32R1 | MIPS_CPU_ISA_M64R1;
-		/* fall through */
 	case MIPS_CPU_ISA_V:
 		c->isa_level |= MIPS_CPU_ISA_V;
-		/* fall through */
 	case MIPS_CPU_ISA_IV:
 		c->isa_level |= MIPS_CPU_ISA_IV;
-		/* fall through */
 	case MIPS_CPU_ISA_III:
 		c->isa_level |= MIPS_CPU_ISA_II | MIPS_CPU_ISA_III;
 		break;
@@ -534,17 +494,14 @@ static void set_isa(struct cpuinfo_mips *c, unsigned int isa)
 	/* R6 incompatible with everything else */
 	case MIPS_CPU_ISA_M64R6:
 		c->isa_level |= MIPS_CPU_ISA_M32R6 | MIPS_CPU_ISA_M64R6;
-		/* fall through */
 	case MIPS_CPU_ISA_M32R6:
 		c->isa_level |= MIPS_CPU_ISA_M32R6;
 		/* Break here so we don't add incompatible ISAs */
 		break;
 	case MIPS_CPU_ISA_M32R2:
 		c->isa_level |= MIPS_CPU_ISA_M32R2;
-		/* fall through */
 	case MIPS_CPU_ISA_M32R1:
 		c->isa_level |= MIPS_CPU_ISA_M32R1;
-		/* fall through */
 	case MIPS_CPU_ISA_II:
 		c->isa_level |= MIPS_CPU_ISA_II;
 		break;
@@ -890,9 +847,6 @@ static inline unsigned int decode_config5(struct cpuinfo_mips *c)
 		c->options |= MIPS_CPU_VP;
 	if (config5 & MIPS_CONF5_CA2)
 		c->ases |= MIPS_ASE_MIPS16E2;
-
-	if (config5 & MIPS_CONF5_CRCP)
-		elf_hwcap |= HWCAP_MIPS_CRC32;
 
 	return config5 & MIPS_CONF_M;
 }
@@ -1615,7 +1569,6 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 		c->cputype = CPU_34K;
 		c->writecombine = _CACHE_UNCACHED;
 		__cpu_name[cpu] = "MIPS 34Kc";
-		cpu_set_mt_per_tc_perf(c);
 		break;
 	case PRID_IMP_74K:
 		c->cputype = CPU_74K;
@@ -1636,7 +1589,6 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 		c->cputype = CPU_1004K;
 		c->writecombine = _CACHE_UNCACHED;
 		__cpu_name[cpu] = "MIPS 1004Kc";
-		cpu_set_mt_per_tc_perf(c);
 		break;
 	case PRID_IMP_1074K:
 		c->cputype = CPU_1074K;
@@ -1646,12 +1598,10 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 	case PRID_IMP_INTERAPTIV_UP:
 		c->cputype = CPU_INTERAPTIV;
 		__cpu_name[cpu] = "MIPS interAptiv";
-		cpu_set_mt_per_tc_perf(c);
 		break;
 	case PRID_IMP_INTERAPTIV_MP:
 		c->cputype = CPU_INTERAPTIV;
 		__cpu_name[cpu] = "MIPS interAptiv (multi)";
-		cpu_set_mt_per_tc_perf(c);
 		break;
 	case PRID_IMP_PROAPTIV_UP:
 		c->cputype = CPU_PROAPTIV;
@@ -1878,15 +1828,13 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 	switch (c->processor_id & PRID_IMP_MASK) {
 	case PRID_IMP_LOONGSON_64:  /* Loongson-2/3 */
 		switch (c->processor_id & PRID_REV_MASK) {
-		case PRID_REV_LOONGSON3A_R2_0:
-		case PRID_REV_LOONGSON3A_R2_1:
+		case PRID_REV_LOONGSON3A_R2:
 			c->cputype = CPU_LOONGSON3;
 			__cpu_name[cpu] = "ICT Loongson-3";
 			set_elf_platform(cpu, "loongson3a");
 			set_isa(c, MIPS_CPU_ISA_M64R2);
 			break;
-		case PRID_REV_LOONGSON3A_R3_0:
-		case PRID_REV_LOONGSON3A_R3_1:
+		case PRID_REV_LOONGSON3A_R3:
 			c->cputype = CPU_LOONGSON3;
 			__cpu_name[cpu] = "ICT Loongson-3";
 			set_elf_platform(cpu, "loongson3a");

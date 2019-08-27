@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0+ OR MIT
-//
-// Device Tree Source for UniPhier Pro4 Ace Board
-//
-// Copyright (C) 2016 Socionext Inc.
-//   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
+/*
+ * Device Tree Source for UniPhier Pro4 Ace Board
+ *
+ * Copyright (C) 2016 Socionext Inc.
+ *   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
 
 /dts-v1/;
 #include "uniphier-pro4.dtsi"
@@ -68,33 +70,10 @@
 	status = "okay";
 };
 
-&sd {
-	status = "okay";
-};
-
 &usb2 {
 	status = "okay";
 };
 
 &usb3 {
-	status = "okay";
-};
-
-&eth {
-	status = "okay";
-	phy-handle = <&ethphy>;
-};
-
-&mdio {
-	ethphy: ethphy@1 {
-		reg = <1>;
-	};
-};
-
-&usb0 {
-	status = "okay";
-};
-
-&usb1 {
 	status = "okay";
 };

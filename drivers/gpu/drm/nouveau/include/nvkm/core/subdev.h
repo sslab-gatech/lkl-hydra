@@ -17,7 +17,6 @@ struct nvkm_subdev_func {
 	void *(*dtor)(struct nvkm_subdev *);
 	int (*preinit)(struct nvkm_subdev *);
 	int (*oneinit)(struct nvkm_subdev *);
-	int (*info)(struct nvkm_subdev *, u64 mthd, u64 *data);
 	int (*init)(struct nvkm_subdev *);
 	int (*fini)(struct nvkm_subdev *, bool suspend);
 	void (*intr)(struct nvkm_subdev *);
@@ -30,7 +29,6 @@ void nvkm_subdev_del(struct nvkm_subdev **);
 int  nvkm_subdev_preinit(struct nvkm_subdev *);
 int  nvkm_subdev_init(struct nvkm_subdev *);
 int  nvkm_subdev_fini(struct nvkm_subdev *, bool suspend);
-int  nvkm_subdev_info(struct nvkm_subdev *, u64, u64 *);
 void nvkm_subdev_intr(struct nvkm_subdev *);
 
 /* subdev logging */

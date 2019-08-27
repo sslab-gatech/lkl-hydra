@@ -14,7 +14,6 @@
 #include <linux/spinlock.h>
 #include <linux/writeback.h>
 #include "incore.h"
-#include "inode.h"
 
 /**
  * gfs2_log_lock - acquire the right to mess with the log manager
@@ -53,9 +52,6 @@ static inline void gfs2_ordered_add_inode(struct gfs2_inode *ip)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 
-	if (gfs2_is_jdata(ip) || !gfs2_is_ordered(sdp))
-		return;
-
 	if (!test_bit(GIF_ORDERED, &ip->i_flags)) {
 		spin_lock(&sdp->sd_ordered_lock);
 		if (!test_and_set_bit(GIF_ORDERED, &ip->i_flags))
@@ -74,6 +70,7 @@ extern void gfs2_write_log_header(struct gfs2_sbd *sdp, struct gfs2_jdesc *jd,
 extern void gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl,
 			   u32 type);
 extern void gfs2_log_commit(struct gfs2_sbd *sdp, struct gfs2_trans *trans);
+extern void gfs2_remove_from_ail(struct gfs2_bufdata *bd);
 extern void gfs2_ail1_flush(struct gfs2_sbd *sdp, struct writeback_control *wbc);
 
 extern void gfs2_log_shutdown(struct gfs2_sbd *sdp);

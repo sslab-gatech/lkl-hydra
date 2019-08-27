@@ -16,13 +16,16 @@
  * This driver is based on other RNG drivers.
  */
 
-#include <linux/clk.h>
-#include <linux/delay.h>
-#include <linux/hw_random.h>
-#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/clk.h>
+#include <linux/err.h>
+#include <linux/ioport.h>
 #include <linux/platform_device.h>
+#include <linux/hw_random.h>
+#include <linux/delay.h>
+#include <linux/io.h>
 
 /* RNGA Registers */
 #define RNGA_CONTROL			0x00
@@ -194,18 +197,10 @@ static int __exit mxc_rnga_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id mxc_rnga_of_match[] = {
-	{ .compatible = "fsl,imx21-rnga", },
-	{ .compatible = "fsl,imx31-rnga", },
-	{ /* sentinel */ },
-};
-MODULE_DEVICE_TABLE(of, mxc_rnga_of_match);
-
 static struct platform_driver mxc_rnga_driver = {
 	.driver = {
-		.name = "mxc_rnga",
-		.of_match_table = mxc_rnga_of_match,
-	},
+		   .name = "mxc_rnga",
+		   },
 	.remove = __exit_p(mxc_rnga_remove),
 };
 

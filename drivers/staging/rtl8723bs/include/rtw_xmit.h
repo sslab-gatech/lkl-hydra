@@ -1,13 +1,20 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2011 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  *
  ******************************************************************************/
 #ifndef _RTW_XMIT_H_
 #define _RTW_XMIT_H_
 
-#include <linux/completion.h>
 
 #define MAX_XMITBUF_SZ	(20480)	/*  20k */
 
@@ -365,8 +372,8 @@ struct	xmit_priv {
 
 	_lock	lock;
 
-	struct completion xmit_comp;
-	struct completion terminate_xmitthread_comp;
+	_sema	xmit_sema;
+	_sema	terminate_xmitthread_sema;
 
 	/* struct __queue	blk_strms[MAX_NUMBLKS]; */
 	struct __queue	be_pending;
@@ -420,8 +427,8 @@ struct	xmit_priv {
 	struct tasklet_struct xmit_tasklet;
 #else
 	void *SdioXmitThread;
-	struct completion SdioXmitStart;
-	struct completion SdioXmitTerminate;
+	_sema		SdioXmitSema;
+	_sema		SdioXmitTerminateSema;
 #endif /* CONFIG_SDIO_TX_TASKLET */
 
 	struct __queue free_xmitbuf_queue;

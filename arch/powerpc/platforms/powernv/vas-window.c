@@ -21,9 +21,6 @@
 #include "vas.h"
 #include "copy-paste.h"
 
-#define CREATE_TRACE_POINTS
-#include "vas-trace.h"
-
 /*
  * Compute the paste address region for the window @window using the
  * ->paste_base_addr and ->paste_win_id_shift we got from device tree.
@@ -515,17 +512,35 @@ int init_winctx_regs(struct vas_window *window, struct vas_winctx *winctx)
 	return 0;
 }
 
+static DEFINE_SPINLOCK(vas_ida_lock);
+
 static void vas_release_window_id(struct ida *ida, int winid)
 {
-	ida_free(ida, winid);
+	spin_lock(&vas_ida_lock);
+	ida_remove(ida, winid);
+	spin_unlock(&vas_ida_lock);
 }
 
 static int vas_assign_window_id(struct ida *ida)
 {
-	int winid = ida_alloc_max(ida, VAS_WINDOWS_PER_CHIP - 1, GFP_KERNEL);
+	int rc, winid;
 
-	if (winid == -ENOSPC) {
-		pr_err("Too many (%d) open windows\n", VAS_WINDOWS_PER_CHIP);
+	do {
+		rc = ida_pre_get(ida, GFP_KERNEL);
+		if (!rc)
+			return -EAGAIN;
+
+		spin_lock(&vas_ida_lock);
+		rc = ida_get_new(ida, &winid);
+		spin_unlock(&vas_ida_lock);
+	} while (rc == -EAGAIN);
+
+	if (rc)
+		return rc;
+
+	if (winid > VAS_WINDOWS_PER_CHIP) {
+		pr_err("Too many (%d) open windows\n", winid);
+		vas_release_window_id(ida, winid);
 		return -EAGAIN;
 	}
 
@@ -865,8 +880,6 @@ struct vas_window *vas_rx_win_open(int vasid, enum vas_cop_type cop,
 	struct vas_winctx winctx;
 	struct vas_instance *vinst;
 
-	trace_vas_rx_win_open(current, vasid, cop, rxattr);
-
 	if (!rx_win_args_valid(cop, rxattr))
 		return ERR_PTR(-EINVAL);
 
@@ -995,8 +1008,6 @@ struct vas_window *vas_tx_win_open(int vasid, enum vas_cop_type cop,
 	struct vas_winctx winctx;
 	struct vas_instance *vinst;
 
-	trace_vas_tx_win_open(current, vasid, cop, attr);
-
 	if (!tx_win_args_valid(cop, attr))
 		return ERR_PTR(-EINVAL);
 
@@ -1088,8 +1099,6 @@ int vas_paste_crb(struct vas_window *txwin, int offset, bool re)
 	int rc;
 	void *addr;
 	uint64_t val;
-
-	trace_vas_paste_crb(current, txwin);
 
 	/*
 	 * Only NX windows are supported for now and hardware assumes

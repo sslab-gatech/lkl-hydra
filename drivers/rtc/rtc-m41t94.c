@@ -99,7 +99,8 @@ static int m41t94_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_hour, tm->tm_mday,
 		tm->tm_mon, tm->tm_year, tm->tm_wday);
 
-	return 0;
+	/* initial clock setting can be undefined */
+	return rtc_valid_tm(tm);
 }
 
 static const struct rtc_class_ops m41t94_rtc_ops = {

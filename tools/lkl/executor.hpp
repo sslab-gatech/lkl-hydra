@@ -10,13 +10,13 @@ extern "C"
 long lkl_syscall_nr[] = {
 	63, 	// read
 	64, 	// write
-	-1, 	// open
+	1024, 	// open
 	57, 	// close
 	1038, 	// newstat
 	80, 	// newfstat
 	1039, 	// newlstat
 	-1, 	// poll
-	-1, 	// lseek
+	62, 	// lseek
 	222, 	// mmap
 	226, 	// mprotect
 	215, 	// munmap
@@ -29,7 +29,7 @@ long lkl_syscall_nr[] = {
 	68, 	// pwrite64
 	65, 	// readv
 	66, 	// writev
-	-1, 	// access
+	1033, 	// access
 	1040, 	// pipe
 	-1, 	// select
 	124, 	// sched_yield
@@ -90,15 +90,15 @@ long lkl_syscall_nr[] = {
 	17, 	// getcwd
 	49, 	// chdir
 	50, 	// fchdir
-	-1, 	// rename
-	-1, 	// mkdir
-	-1, 	// rmdir
+	1034, 	// rename
+	1030, 	// mkdir
+	1031, 	// rmdir
 	-1, 	// creat
-	-1, 	// link
-	-1, 	// unlink
-	-1, 	// symlink
-	-1, 	// readlink
-	-1, 	// chmod
+	1025, 	// link
+	1026, 	// unlink
+	1036, 	// symlink
+	1035, 	// readlink
+	1028, 	// chmod
 	52, 	// fchmod
 	1029, 	// chown
 	55, 	// fchown
@@ -145,8 +145,8 @@ long lkl_syscall_nr[] = {
 	-1, 	// obsolete
 	92, 	// personality
 	-1, 	// ustat
-	-1, 	// statfs
-	-1, 	// fstatfs
+	43, 	// statfs
+	44, 	// fstatfs
 	-1, 	// sysfs
 	141, 	// getpriority
 	140, 	// setpriority
@@ -342,81 +342,5 @@ long lkl_syscall_nr[] = {
 	290, 	// pkey_free
 	291 	// statx
 };
-
-enum {
-	NR_open =		2,
-	NR_lseek =		8,
-	NR_access =		21,
-	NR_rename =		82,
-	NR_mkdir =		83,
-	NR_rmdir =		84,
-	NR_link =		86,
-	NR_unlink =		87,
-	NR_symlink =	88,
-	NR_readlink =	89,
-	NR_chmod =		90,
-	NR_statfs =		137,
-	NR_fstatfs =	138,
-};
-
-static long handle_deprecated_syscalls(long nr, long *params) {
-	long ret = 0;
-
-	switch(nr) {
-	case NR_open:
-		ret = lkl_sys_open((const char *)params[0],
-						   (int)params[1], (int)params[2]);
-		break;
-	case NR_lseek:
-		ret = lkl_sys_lseek((unsigned int)params[0], (off_t)params[1],
-							(unsigned int)params[2]);
-		break;
-	case NR_rename:
-		ret = lkl_sys_rename((const char *)params[0], (const char *)params[1]);
-		break;
-	case NR_access:
-		ret = lkl_sys_access((const char *)params[0], (int)params[1]);
-		break;
-	case NR_statfs:
-		ret = lkl_sys_statfs((const char *)params[0],
-							 (struct lkl_statfs *)params[1]);
-		break;
-	case NR_fstatfs:
-		ret = lkl_sys_fstatfs((int)params[0], (struct lkl_statfs*)params[1]);
-		break;
-	case NR_mkdir:
-		ret = lkl_sys_mkdir((const char *)params[0], (mode_t)params[1]);
-		break;
-	case NR_rmdir:
-		ret = lkl_sys_rmdir((const char *)params[0]);
-		break;
-	case NR_link:
-		ret = lkl_sys_link((const char *)params[0], (const char *)params[1]);
-		break;
-	case NR_unlink:
-		ret = lkl_sys_unlink((const char *)params[0]);
-		break;
-	case NR_symlink:
-		ret = lkl_sys_symlink((const char *)params[0], (const char *)params[1]);
-		break;
-	case NR_readlink:
-		ret = lkl_sys_readlink((const char *)params[0], (char *)params[1],
-							   (size_t)params[2]);
-		break;
-	case NR_chmod:
-		ret = lkl_sys_chmod((const char *)params[0], (mode_t)params[1]);
-		break;
-	}
-	return ret;
-}
-
-static long handle_syscalls(long nr, long *params) {
-
-	// hanlde deprecated syscalls in an ad-hoc fashion
-	if (lkl_syscall_nr[nr] == -1)
-		return handle_deprecated_syscalls(nr, params);
-
-	return lkl_syscall(lkl_syscall_nr[nr], params);
-}
 
 #endif

@@ -200,15 +200,6 @@ statement; in the latter case use braces in both branches:
 		otherwise();
 	}
 
-Also, use braces when a loop contains more than a single simple statement:
-
-.. code-block:: c
-
-	while (condition) {
-		if (test)
-			do_something();
-	}
-
 3.1) Spaces
 ***********
 
@@ -443,9 +434,6 @@ In function prototypes, include parameter names with their data types.
 Although this is not required by the C language, it is preferred in Linux
 because it is a simple way to add valuable information for the reader.
 
-Do not use the `extern' keyword with function prototypes as this makes
-lines longer and isn't strictly necessary.
-
 
 7) Centralized exiting of functions
 -----------------------------------
@@ -633,14 +621,6 @@ options ``-kr -i8`` (stands for ``K&R, 8 character indents``), or use
 ``indent`` has a lot of options, and especially when it comes to comment
 re-formatting you may want to take a look at the man page.  But
 remember: ``indent`` is not a fix for bad programming.
-
-Note that you can also use the ``clang-format`` tool to help you with
-these rules, to quickly re-format parts of your code automatically,
-and to review full files in order to spot coding style mistakes,
-typos and possible improvements. It is also handy for sorting ``#includes``,
-for aligning variables/macros, for reflowing text and other similar tasks.
-See the file :ref:`Documentation/process/clang-format.rst <clangformat>`
-for more details.
 
 
 10) Kconfig configuration files
@@ -1078,5 +1058,5 @@ gcc internals and indent, all available from http://www.gnu.org/manual/
 WG14 is the international standardization working group for the programming
 language C, URL: http://www.open-std.org/JTC1/SC22/WG14/
 
-Kernel :ref:`process/coding-style.rst <codingstyle>`, by greg@kroah.com at OLS 2002:
+Kernel process/coding-style.rst, by greg@kroah.com at OLS 2002:
 http://www.kroah.com/linux/talks/ols_2002_kernel_codingstyle_talk/html/

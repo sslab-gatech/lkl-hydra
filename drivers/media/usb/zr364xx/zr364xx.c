@@ -517,7 +517,8 @@ static void zr364xx_fillbuff(struct zr364xx_camera *cam,
 		printk(KERN_ERR KBUILD_MODNAME ": =======no frame\n");
 		return;
 	}
-	DBG("%s: Buffer %p size= %d\n", __func__, vbuf, pos);
+	DBG("%s: Buffer 0x%08lx size= %d\n", __func__,
+		(unsigned long)vbuf, pos);
 	/* tell v4l buffer was filled */
 
 	buf->vb.field_count = cam->frame_count * 2;
@@ -702,9 +703,9 @@ static int zr364xx_vidioc_querycap(struct file *file, void *priv,
 {
 	struct zr364xx_camera *cam = video_drvdata(file);
 
-	strscpy(cap->driver, DRIVER_DESC, sizeof(cap->driver));
-	strscpy(cap->card, cam->udev->product, sizeof(cap->card));
-	strscpy(cap->bus_info, dev_name(&cam->udev->dev),
+	strlcpy(cap->driver, DRIVER_DESC, sizeof(cap->driver));
+	strlcpy(cap->card, cam->udev->product, sizeof(cap->card));
+	strlcpy(cap->bus_info, dev_name(&cam->udev->dev),
 		sizeof(cap->bus_info));
 	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE |
 			    V4L2_CAP_READWRITE |
@@ -719,7 +720,7 @@ static int zr364xx_vidioc_enum_input(struct file *file, void *priv,
 {
 	if (i->index != 0)
 		return -EINVAL;
-	strscpy(i->name, DRIVER_DESC " Camera", sizeof(i->name));
+	strcpy(i->name, DRIVER_DESC " Camera");
 	i->type = V4L2_INPUT_TYPE_CAMERA;
 	return 0;
 }
@@ -765,7 +766,7 @@ static int zr364xx_vidioc_enum_fmt_vid_cap(struct file *file,
 	if (f->index > 0)
 		return -EINVAL;
 	f->flags = V4L2_FMT_FLAG_COMPRESSED;
-	strscpy(f->description, formats[0].name, sizeof(f->description));
+	strcpy(f->description, formats[0].name);
 	f->pixelformat = formats[0].fourcc;
 	return 0;
 }
@@ -1276,7 +1277,7 @@ static int zr364xx_mmap(struct file *file, struct vm_area_struct *vma)
 		DBG("%s: cam == NULL\n", __func__);
 		return -ENODEV;
 	}
-	DBG("mmap called, vma=%p\n", vma);
+	DBG("mmap called, vma=0x%08lx\n", (unsigned long)vma);
 
 	ret = videobuf_mmap_mapper(&cam->vb_vidq, vma);
 

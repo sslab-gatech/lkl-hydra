@@ -25,8 +25,6 @@ DECLARE_EVENT_CLASS(workqueue_work,
 	TP_printk("work struct %p", __entry->work)
 );
 
-struct pool_workqueue;
-
 /**
  * workqueue_queue_work - called when a work gets queued
  * @req_cpu:	the requested cpu

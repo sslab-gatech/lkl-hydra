@@ -84,7 +84,7 @@ static int m48t35_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_year += 100;
 
 	tm->tm_mon--;
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int m48t35_set_time(struct device *dev, struct rtc_time *tm)

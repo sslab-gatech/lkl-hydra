@@ -33,6 +33,7 @@
 
 #define IPP_REG_LIST_DCN(id) \
 	SRI(FORMAT_CONTROL, CNVC_CFG, id), \
+	SRI(DPP_CONTROL, DPP_TOP, id), \
 	SRI(CNVC_SURFACE_PIXEL_FORMAT, CNVC_CFG, id), \
 	SRI(CURSOR0_CONTROL, CNVC_CUR, id), \
 	SRI(CURSOR0_COLOR0, CNVC_CUR, id), \
@@ -129,6 +130,7 @@ struct dcn10_ipp_mask {
 };
 
 struct dcn10_ipp_registers {
+	uint32_t DPP_CONTROL;
 	uint32_t CURSOR_SETTINS;
 	uint32_t CURSOR_SETTINGS;
 	uint32_t CNVC_SURFACE_PIXEL_FORMAT;

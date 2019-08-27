@@ -36,7 +36,6 @@
 #include <linux/mlx5/cq.h>
 #include <linux/mlx5/driver.h>
 #include "mlx5_core.h"
-#include "lib/eq.h"
 
 enum {
 	QP_PID,
@@ -151,13 +150,22 @@ static ssize_t average_read(struct file *filp, char __user *buf, size_t count,
 	int ret;
 	char tbuf[22];
 
+	if (*pos)
+		return 0;
+
 	stats = filp->private_data;
 	spin_lock_irq(&stats->lock);
 	if (stats->n)
 		field = div64_u64(stats->sum, stats->n);
 	spin_unlock_irq(&stats->lock);
 	ret = snprintf(tbuf, sizeof(tbuf), "%llu\n", field);
-	return simple_read_from_buffer(buf, count, pos, tbuf, ret);
+	if (ret > 0) {
+		if (copy_to_user(buf, tbuf, ret))
+			return -EFAULT;
+	}
+
+	*pos += ret;
+	return ret;
 }
 
 static ssize_t average_write(struct file *filp, const char __user *buf,
@@ -350,16 +358,6 @@ out:
 	return param;
 }
 
-static int mlx5_core_eq_query(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
-			      u32 *out, int outlen)
-{
-	u32 in[MLX5_ST_SZ_DW(query_eq_in)] = {};
-
-	MLX5_SET(query_eq_in, in, opcode, MLX5_CMD_OP_QUERY_EQ);
-	MLX5_SET(query_eq_in, in, eq_number, eq->eqn);
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, outlen);
-}
-
 static u64 eq_read_field(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
 			 int index)
 {
@@ -444,6 +442,9 @@ static ssize_t dbg_read(struct file *filp, char __user *buf, size_t count,
 	u64 field;
 	int ret;
 
+	if (*pos)
+		return 0;
+
 	desc = filp->private_data;
 	d = (void *)(desc - desc->i) - sizeof(*d);
 	switch (d->type) {
@@ -469,7 +470,13 @@ static ssize_t dbg_read(struct file *filp, char __user *buf, size_t count,
 	else
 		ret = snprintf(tbuf, sizeof(tbuf), "0x%llx\n", field);
 
-	return simple_read_from_buffer(buf, count, pos, tbuf, ret);
+	if (ret > 0) {
+		if (copy_to_user(buf, tbuf, ret))
+			return -EFAULT;
+	}
+
+	*pos += ret;
+	return ret;
 }
 
 static const struct file_operations fops = {
@@ -487,7 +494,7 @@ static int add_res_tree(struct mlx5_core_dev *dev, enum dbg_rsc_type type,
 	int err;
 	int i;
 
-	d = kzalloc(struct_size(d, fields, nfile), GFP_KERNEL);
+	d = kzalloc(sizeof(*d) + nfile * sizeof(d->fields[0]), GFP_KERNEL);
 	if (!d)
 		return -ENOMEM;
 

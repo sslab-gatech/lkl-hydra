@@ -1029,7 +1029,8 @@ static int ioctl(struct tty_struct *tty,
 		return -ENODEV;
 	DBGINFO(("%s ioctl() cmd=%08X\n", info->device_name, cmd));
 
-	if (cmd != TIOCMIWAIT) {
+	if ((cmd != TIOCGSERIAL) && (cmd != TIOCSSERIAL) &&
+	    (cmd != TIOCMIWAIT)) {
 		if (tty_io_error(tty))
 		    return -EIO;
 	}
@@ -1185,13 +1186,14 @@ static long slgt_compat_ioctl(struct tty_struct *tty,
 			 unsigned int cmd, unsigned long arg)
 {
 	struct slgt_info *info = tty->driver_data;
-	int rc;
+	int rc = -ENOIOCTLCMD;
 
 	if (sanity_check(info, tty->name, "compat_ioctl"))
 		return -ENODEV;
 	DBGINFO(("%s compat_ioctl() cmd=%08X\n", info->device_name, cmd));
 
 	switch (cmd) {
+
 	case MGSL_IOCSPARAMS32:
 		rc = set_params32(info, compat_ptr(arg));
 		break;
@@ -1211,11 +1213,18 @@ static long slgt_compat_ioctl(struct tty_struct *tty,
 	case MGSL_IOCWAITGPIO:
 	case MGSL_IOCGXSYNC:
 	case MGSL_IOCGXCTRL:
-		rc = ioctl(tty, cmd, (unsigned long)compat_ptr(arg));
-		break;
-	default:
+	case MGSL_IOCSTXIDLE:
+	case MGSL_IOCTXENABLE:
+	case MGSL_IOCRXENABLE:
+	case MGSL_IOCTXABORT:
+	case TIOCMIWAIT:
+	case MGSL_IOCSIF:
+	case MGSL_IOCSXSYNC:
+	case MGSL_IOCSXCTRL:
 		rc = ioctl(tty, cmd, arg);
+		break;
 	}
+
 	DBGINFO(("%s compat_ioctl() cmd=%08X rc=%d\n", info->device_name, cmd, rc));
 	return rc;
 }
@@ -1306,6 +1315,19 @@ static int synclink_gt_proc_show(struct seq_file *m, void *v)
 	}
 	return 0;
 }
+
+static int synclink_gt_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, synclink_gt_proc_show, NULL);
+}
+
+static const struct file_operations synclink_gt_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= synclink_gt_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /*
  * return count of bytes in transmit buffer
@@ -3699,7 +3721,7 @@ static const struct tty_operations ops = {
 	.tiocmget = tiocmget,
 	.tiocmset = tiocmset,
 	.get_icount = get_icount,
-	.proc_show = synclink_gt_proc_show,
+	.proc_fops = &synclink_gt_proc_fops,
 };
 
 static void slgt_cleanup(void)

@@ -83,4 +83,10 @@ endif
 config NLM_COMMON
 	bool
 
+config IOMMU_HELPER
+	bool
+
+config NEED_SG_DMA_LENGTH
+	bool
+
 endif

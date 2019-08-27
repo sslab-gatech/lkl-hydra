@@ -42,8 +42,7 @@ struct qcom_usb_hs_phy {
 	struct notifier_block vbus_notify;
 };
 
-static int qcom_usb_hs_phy_set_mode(struct phy *phy,
-				    enum phy_mode mode, int submode)
+static int qcom_usb_hs_phy_set_mode(struct phy *phy, enum phy_mode mode)
 {
 	struct qcom_usb_hs_phy *uphy = phy_get_drvdata(phy);
 	u8 addr;
@@ -56,7 +55,6 @@ static int qcom_usb_hs_phy_set_mode(struct phy *phy,
 		case PHY_MODE_USB_OTG:
 		case PHY_MODE_USB_HOST:
 			val |= ULPI_INT_IDGRD;
-			/* fall through */
 		case PHY_MODE_USB_DEVICE:
 			val |= ULPI_INT_SESS_VALID;
 		default:

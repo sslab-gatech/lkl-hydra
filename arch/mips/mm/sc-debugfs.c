@@ -31,10 +31,17 @@ static ssize_t sc_prefetch_write(struct file *file,
 				 const char __user *user_buf,
 				 size_t count, loff_t *ppos)
 {
+	char buf[32];
+	ssize_t buf_size;
 	bool enabled;
 	int err;
 
-	err = kstrtobool_from_user(user_buf, count, &enabled);
+	buf_size = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, buf_size))
+		return -EFAULT;
+
+	buf[buf_size] = '\0';
+	err = strtobool(buf, &enabled);
 	if (err)
 		return err;
 

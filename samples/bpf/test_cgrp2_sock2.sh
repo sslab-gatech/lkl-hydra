@@ -28,9 +28,6 @@ function attach_bpf {
 }
 
 function cleanup {
-	if [ -d /tmp/cgroupv2/foo ]; then
-		test_cgrp2_sock -d /tmp/cgroupv2/foo
-	fi
 	ip link del veth0b
 	ip netns delete at_ns0
 	umount /tmp/cgroupv2

@@ -195,10 +195,8 @@ static int qman_offline_cpu(unsigned int cpu)
 	if (p) {
 		pcfg = qman_get_qm_portal_config(p);
 		if (pcfg) {
-			/* select any other online CPU */
-			cpu = cpumask_any_but(cpu_online_mask, cpu);
-			irq_set_affinity(pcfg->irq, cpumask_of(cpu));
-			qman_portal_update_sdest(pcfg, cpu);
+			irq_set_affinity(pcfg->irq, cpumask_of(0));
+			qman_portal_update_sdest(pcfg, 0);
 		}
 	}
 	return 0;
@@ -228,14 +226,6 @@ static int qman_portal_probe(struct platform_device *pdev)
 	struct resource *addr_phys[2];
 	int irq, cpu, err;
 	u32 val;
-
-	err = qman_is_probed();
-	if (!err)
-		return -EPROBE_DEFER;
-	if (err < 0) {
-		dev_err(&pdev->dev, "failing probe due to qman probe error\n");
-		return -ENODEV;
-	}
 
 	pcfg = devm_kmalloc(dev, sizeof(*pcfg), GFP_KERNEL);
 	if (!pcfg)

@@ -13,7 +13,7 @@
 #include <linux/export.h>
 #include <linux/sort.h>
 #include <sound/core.h>
-#include <sound/hda_codec.h>
+#include "hda_codec.h"
 #include "hda_local.h"
 #include "hda_auto_parser.h"
 
@@ -793,11 +793,11 @@ EXPORT_SYMBOL_GPL(snd_hda_add_verbs);
  */
 void snd_hda_apply_verbs(struct hda_codec *codec)
 {
-	const struct hda_verb **v;
 	int i;
-
-	snd_array_for_each(&codec->verbs, i, v)
+	for (i = 0; i < codec->verbs.used; i++) {
+		struct hda_verb **v = snd_array_elem(&codec->verbs, i);
 		snd_hda_sequence_write(codec, *v);
+	}
 }
 EXPORT_SYMBOL_GPL(snd_hda_apply_verbs);
 
@@ -890,10 +890,10 @@ EXPORT_SYMBOL_GPL(snd_hda_apply_fixup);
 static bool pin_config_match(struct hda_codec *codec,
 			     const struct hda_pintbl *pins)
 {
-	const struct hda_pincfg *pin;
 	int i;
 
-	snd_array_for_each(&codec->init_pins, i, pin) {
+	for (i = 0; i < codec->init_pins.used; i++) {
+		struct hda_pincfg *pin = snd_array_elem(&codec->init_pins, i);
 		hda_nid_t nid = pin->nid;
 		u32 cfg = pin->cfg;
 		const struct hda_pintbl *t_pins;

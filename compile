@@ -2,7 +2,7 @@
 
 import sys, argparse, errno, os, shutil, subprocess
 
-supported = ['ext4', 'xfs', 'btrfs', 'f2fs', 'gfs2', 'hfsplus', 'reiserfs', 'fat', 'sdcardfs']
+supported = ['ext4', 'xfs', 'btrfs', 'f2fs', 'gfs2', 'hfsplus', 'reiserfs', 'fat']
 
 def cmd(command, check=False, shell=True):
     print(command)
@@ -28,7 +28,7 @@ if __name__ == '__main__':
   #   sys.exit(1)
 
   if args.c:
-    cmd('make mrproper', check=True)
+    cmd('make clean', check=True)
     cmd('make -C tools/lkl clean', check=True)
 
   # copy config
@@ -39,6 +39,8 @@ if __name__ == '__main__':
   cmd('make -C tools/lkl -j CC="%s/../ff-gcc/ff-gcc fs/%s"' % (dir_path, args.type))
 
   # copy object file
+  cmd('cp -f tools/lkl/fsfuzz tools/lkl/%s-fsfuzz' % args.type)
   cmd('cp -f tools/lkl/executor tools/lkl/%s-executor' % args.type)
+  cmd('cp -f tools/lkl/tfuzz tools/lkl/%s-tfuzz' % args.type)
   cmd('cp -f tools/lkl/combined tools/lkl/%s-combined' % args.type)
   cmd('cp -f tools/lkl/combined-consistency tools/lkl/%s-combined-consistency' % args.type)

@@ -108,9 +108,9 @@
 					 (x) != OMAP_EHCI_PORT_MODE_PHY)
 
 struct usbtll_omap {
-	void __iomem	*base;
-	int		nch;		/* num. of channels */
-	struct clk	*ch_clk[0];	/* must be the last member */
+	int					nch;	/* num. of channels */
+	struct clk				**ch_clk;
+	void __iomem				*base;
 };
 
 /*-------------------------------------------------------------------------*/
@@ -216,49 +216,53 @@ static int usbtll_omap_probe(struct platform_device *pdev)
 	struct device				*dev =  &pdev->dev;
 	struct resource				*res;
 	struct usbtll_omap			*tll;
-	void __iomem				*base;
-	int					i, nch, ver;
+	int					ret = 0;
+	int					i, ver;
 
 	dev_dbg(dev, "starting TI HSUSB TLL Controller\n");
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
-
-	pm_runtime_enable(dev);
-	pm_runtime_get_sync(dev);
-
-	ver = usbtll_read(base, OMAP_USBTLL_REVISION);
-	switch (ver) {
-	case OMAP_USBTLL_REV1:
-	case OMAP_USBTLL_REV4:
-		nch = OMAP_TLL_CHANNEL_COUNT;
-		break;
-	case OMAP_USBTLL_REV2:
-	case OMAP_USBTLL_REV3:
-		nch = OMAP_REV2_TLL_CHANNEL_COUNT;
-		break;
-	default:
-		nch = OMAP_TLL_CHANNEL_COUNT;
-		dev_dbg(dev, "rev 0x%x not recognized, assuming %d channels\n",
-			ver, nch);
-		break;
-	}
-
-	tll = devm_kzalloc(dev, sizeof(*tll) + sizeof(tll->ch_clk[nch]),
-			   GFP_KERNEL);
+	tll = devm_kzalloc(dev, sizeof(struct usbtll_omap), GFP_KERNEL);
 	if (!tll) {
-		pm_runtime_put_sync(dev);
-		pm_runtime_disable(dev);
+		dev_err(dev, "Memory allocation failed\n");
 		return -ENOMEM;
 	}
 
-	tll->base = base;
-	tll->nch = nch;
-	platform_set_drvdata(pdev, tll);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	tll->base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(tll->base))
+		return PTR_ERR(tll->base);
 
-	for (i = 0; i < nch; i++) {
+	platform_set_drvdata(pdev, tll);
+	pm_runtime_enable(dev);
+	pm_runtime_get_sync(dev);
+
+	ver =  usbtll_read(tll->base, OMAP_USBTLL_REVISION);
+	switch (ver) {
+	case OMAP_USBTLL_REV1:
+	case OMAP_USBTLL_REV4:
+		tll->nch = OMAP_TLL_CHANNEL_COUNT;
+		break;
+	case OMAP_USBTLL_REV2:
+	case OMAP_USBTLL_REV3:
+		tll->nch = OMAP_REV2_TLL_CHANNEL_COUNT;
+		break;
+	default:
+		tll->nch = OMAP_TLL_CHANNEL_COUNT;
+		dev_dbg(dev,
+		 "USB TLL Rev : 0x%x not recognized, assuming %d channels\n",
+			ver, tll->nch);
+		break;
+	}
+
+	tll->ch_clk = devm_kzalloc(dev, sizeof(struct clk *) * tll->nch,
+						GFP_KERNEL);
+	if (!tll->ch_clk) {
+		ret = -ENOMEM;
+		dev_err(dev, "Couldn't allocate memory for channel clocks\n");
+		goto err_clk_alloc;
+	}
+
+	for (i = 0; i < tll->nch; i++) {
 		char clkname[] = "usb_tll_hs_usb_chx_clk";
 
 		snprintf(clkname, sizeof(clkname),
@@ -278,6 +282,12 @@ static int usbtll_omap_probe(struct platform_device *pdev)
 	spin_unlock(&tll_lock);
 
 	return 0;
+
+err_clk_alloc:
+	pm_runtime_put_sync(dev);
+	pm_runtime_disable(dev);
+
+	return ret;
 }
 
 /**

@@ -21,8 +21,6 @@
 
 #include "irq-gic-common.h"
 
-static DEFINE_RAW_SPINLOCK(irq_controller_lock);
-
 static const struct gic_kvm_info *gic_kvm_info;
 
 const struct gic_kvm_info *gic_get_kvm_info(void)
@@ -34,18 +32,6 @@ void gic_set_kvm_info(const struct gic_kvm_info *info)
 {
 	BUG_ON(gic_kvm_info != NULL);
 	gic_kvm_info = info;
-}
-
-void gic_enable_of_quirks(const struct device_node *np,
-			  const struct gic_quirk *quirks, void *data)
-{
-	for (; quirks->desc; quirks++) {
-		if (!of_device_is_compatible(np, quirks->compatible))
-			continue;
-		if (quirks->init(data))
-			pr_info("GIC: enabling workaround for %s\n",
-				quirks->desc);
-	}
 }
 
 void gic_enable_quirks(u32 iidr, const struct gic_quirk *quirks,
@@ -67,13 +53,11 @@ int gic_configure_irq(unsigned int irq, unsigned int type,
 	u32 confoff = (irq / 16) * 4;
 	u32 val, oldval;
 	int ret = 0;
-	unsigned long flags;
 
 	/*
 	 * Read current configuration register, and insert the config
 	 * for "irq", depending on "type".
 	 */
-	raw_spin_lock_irqsave(&irq_controller_lock, flags);
 	val = oldval = readl_relaxed(base + GIC_DIST_CONFIG + confoff);
 	if (type & IRQ_TYPE_LEVEL_MASK)
 		val &= ~confmask;
@@ -81,10 +65,8 @@ int gic_configure_irq(unsigned int irq, unsigned int type,
 		val |= confmask;
 
 	/* If the current configuration is the same, then we are done */
-	if (val == oldval) {
-		raw_spin_unlock_irqrestore(&irq_controller_lock, flags);
+	if (val == oldval)
 		return 0;
-	}
 
 	/*
 	 * Write back the new configuration, and possibly re-enable
@@ -102,7 +84,6 @@ int gic_configure_irq(unsigned int irq, unsigned int type,
 			pr_warn("GIC: PPI%d is secure or misconfigured\n",
 				irq - 16);
 	}
-	raw_spin_unlock_irqrestore(&irq_controller_lock, flags);
 
 	if (sync_access)
 		sync_access();

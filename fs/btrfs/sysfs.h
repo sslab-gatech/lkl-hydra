@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-
-#ifndef BTRFS_SYSFS_H
-#define BTRFS_SYSFS_H
+#ifndef _BTRFS_SYSFS_H_
+#define _BTRFS_SYSFS_H_
 
 /*
  * Data exported through sysfs
@@ -77,7 +76,7 @@ attr_to_btrfs_feature_attr(struct attribute *attr)
 }
 
 char *btrfs_printable_features(enum btrfs_feature_set set, u64 flags);
-extern const char * const btrfs_feature_set_names[FEAT_MAX];
+extern const char * const btrfs_feature_set_names[3];
 extern struct kobj_type space_info_ktype;
 extern struct kobj_type btrfs_raid_ktype;
 int btrfs_sysfs_add_device_link(struct btrfs_fs_devices *fs_devices,
@@ -91,4 +90,4 @@ void btrfs_sysfs_remove_fsid(struct btrfs_fs_devices *fs_devs);
 void btrfs_sysfs_feature_update(struct btrfs_fs_info *fs_info,
 		u64 bit, enum btrfs_feature_set set);
 
-#endif
+#endif /* _BTRFS_SYSFS_H_ */

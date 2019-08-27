@@ -123,13 +123,23 @@ static struct file_system_type proc_fs_type = {
 
 void __init proc_root_init(void)
 {
-	proc_init_kmemcache();
+	int err;
+
+	proc_init_inodecache();
 	set_proc_pid_nlink();
+	err = register_filesystem(&proc_fs_type);
+	if (err)
+		return;
+
 	proc_self_init();
 	proc_thread_self_init();
 	proc_symlink("mounts", NULL, "self/mounts");
 
 	proc_net_init();
+
+#ifdef CONFIG_SYSVIPC
+	proc_mkdir("sysvipc", NULL);
+#endif
 	proc_mkdir("fs", NULL);
 	proc_mkdir("driver", NULL);
 	proc_create_mount_point("fs/nfsd"); /* somewhere for the nfsd filesystem to be mounted */
@@ -140,8 +150,6 @@ void __init proc_root_init(void)
 	proc_tty_init();
 	proc_mkdir("bus", NULL);
 	proc_sys_init();
-
-	register_filesystem(&proc_fs_type);
 }
 
 static int proc_root_getattr(const struct path *path, struct kstat *stat,
@@ -199,11 +207,11 @@ struct proc_dir_entry proc_root = {
 	.namelen	= 5, 
 	.mode		= S_IFDIR | S_IRUGO | S_IXUGO, 
 	.nlink		= 2, 
-	.refcnt		= REFCOUNT_INIT(1),
+	.count		= ATOMIC_INIT(1),
 	.proc_iops	= &proc_root_inode_operations, 
 	.proc_fops	= &proc_root_operations,
 	.parent		= &proc_root,
-	.subdir		= RB_ROOT,
+	.subdir		= RB_ROOT_CACHED,
 	.name		= "/proc",
 };
 

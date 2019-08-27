@@ -39,7 +39,7 @@
 #define DRV_VERSION		"1.0"
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
-static unsigned int timeout;
+static unsigned int timeout = WDT_MAX_TIMEOUT;
 
 /*
  * This structure stores the register offsets for different variants

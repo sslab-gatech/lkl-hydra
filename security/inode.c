@@ -13,8 +13,7 @@
  */
 
 /* #define DEBUG */
-#include <linux/sysfs.h>
-#include <linux/kobject.h>
+#include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/pagemap.h>
@@ -342,4 +341,7 @@ static int __init securityfs_init(void)
 #endif
 	return 0;
 }
+
 core_initcall(securityfs_init);
+MODULE_LICENSE("GPL");
+

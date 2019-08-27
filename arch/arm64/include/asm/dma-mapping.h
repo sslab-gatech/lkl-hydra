@@ -24,9 +24,15 @@
 #include <xen/xen.h>
 #include <asm/xen/hypervisor.h>
 
+extern const struct dma_map_ops dummy_dma_ops;
+
 static inline const struct dma_map_ops *get_arch_dma_ops(struct bus_type *bus)
 {
-	return NULL;
+	/*
+	 * We expect no ISA devices, and all other DMA masters are expected to
+	 * have someone call arch_setup_dma_ops at device creation time.
+	 */
+	return &dummy_dma_ops;
 }
 
 void arch_setup_dma_ops(struct device *dev, u64 dma_base, u64 size,
@@ -38,13 +44,10 @@ void arch_teardown_dma_ops(struct device *dev);
 #define arch_teardown_dma_ops	arch_teardown_dma_ops
 #endif
 
-/*
- * Do not use this function in a driver, it is only provided for
- * arch/arm/mm/xen.c, which is used by arm64 as well.
- */
+/* do not use this function in a driver */
 static inline bool is_device_dma_coherent(struct device *dev)
 {
-	return dev->dma_coherent;
+	return dev->archdata.dma_coherent;
 }
 
 #endif	/* __KERNEL__ */

@@ -16,6 +16,5 @@
  */
 
 #define __ARCH_WANT_RENAMEAT
-#define __ARCH_WANT_NEW_STAT
 
 #include <asm-generic/unistd.h>

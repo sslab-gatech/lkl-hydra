@@ -51,8 +51,6 @@ struct srp_internal {
 	struct transport_container rport_attr_cont;
 };
 
-static int scsi_is_srp_rport(const struct device *dev);
-
 #define to_srp_internal(tmpl) container_of(tmpl, struct srp_internal, t)
 
 #define	dev_to_rport(d)	container_of(d, struct srp_rport, dev)
@@ -62,24 +60,9 @@ static inline struct Scsi_Host *rport_to_shost(struct srp_rport *r)
 	return dev_to_shost(r->dev.parent);
 }
 
-static int find_child_rport(struct device *dev, void *data)
-{
-	struct device **child = data;
-
-	if (scsi_is_srp_rport(dev)) {
-		WARN_ON_ONCE(*child);
-		*child = dev;
-	}
-	return 0;
-}
-
 static inline struct srp_rport *shost_to_rport(struct Scsi_Host *shost)
 {
-	struct device *child = NULL;
-
-	WARN_ON_ONCE(device_for_each_child(&shost->shost_gendev, &child,
-					   find_child_rport) < 0);
-	return child ? dev_to_rport(child) : NULL;
+	return transport_class_to_srp_rport(&shost->shost_gendev);
 }
 
 /**
@@ -604,7 +587,7 @@ EXPORT_SYMBOL(srp_reconnect_rport);
  *
  * If a timeout occurs while an rport is in the blocked state, ask the SCSI
  * EH to continue waiting (BLK_EH_RESET_TIMER). Otherwise let the SCSI core
- * handle the timeout (BLK_EH_DONE).
+ * handle the timeout (BLK_EH_NOT_HANDLED).
  *
  * Note: This function is called from soft-IRQ context and with the request
  * queue lock held.
@@ -617,10 +600,9 @@ enum blk_eh_timer_return srp_timed_out(struct scsi_cmnd *scmd)
 	struct srp_rport *rport = shost_to_rport(shost);
 
 	pr_debug("timeout for sdev %s\n", dev_name(&sdev->sdev_gendev));
-	return rport && rport->fast_io_fail_tmo < 0 &&
-		rport->dev_loss_tmo < 0 &&
+	return rport->fast_io_fail_tmo < 0 && rport->dev_loss_tmo < 0 &&
 		i->f->reset_timer_if_blocked && scsi_device_blocked(sdev) ?
-		BLK_EH_RESET_TIMER : BLK_EH_DONE;
+		BLK_EH_RESET_TIMER : BLK_EH_NOT_HANDLED;
 }
 EXPORT_SYMBOL(srp_timed_out);
 

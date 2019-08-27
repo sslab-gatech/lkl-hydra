@@ -43,7 +43,8 @@ static irqreturn_t pcap_rtc_irq(int irq, void *_pcap_rtc)
 
 static int pcap_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
-	struct pcap_rtc *pcap_rtc = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pcap_rtc *pcap_rtc = platform_get_drvdata(pdev);
 	struct rtc_time *tm = &alrm->time;
 	unsigned long secs;
 	u32 tod;	/* time of day, seconds since midnight */
@@ -62,7 +63,8 @@ static int pcap_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 
 static int pcap_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
-	struct pcap_rtc *pcap_rtc = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pcap_rtc *pcap_rtc = platform_get_drvdata(pdev);
 	struct rtc_time *tm = &alrm->time;
 	unsigned long secs;
 	u32 tod, days;
@@ -80,7 +82,8 @@ static int pcap_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 
 static int pcap_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
-	struct pcap_rtc *pcap_rtc = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pcap_rtc *pcap_rtc = platform_get_drvdata(pdev);
 	unsigned long secs;
 	u32 tod, days;
 
@@ -92,12 +95,13 @@ static int pcap_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	rtc_time_to_tm(secs, tm);
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int pcap_rtc_set_mmss(struct device *dev, unsigned long secs)
 {
-	struct pcap_rtc *pcap_rtc = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pcap_rtc *pcap_rtc = platform_get_drvdata(pdev);
 	u32 tod, days;
 
 	tod = secs % SEC_PER_DAY;
@@ -111,7 +115,8 @@ static int pcap_rtc_set_mmss(struct device *dev, unsigned long secs)
 
 static int pcap_rtc_irq_enable(struct device *dev, int pirq, unsigned int en)
 {
-	struct pcap_rtc *pcap_rtc = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pcap_rtc *pcap_rtc = platform_get_drvdata(pdev);
 
 	if (en)
 		enable_irq(pcap_to_irq(pcap_rtc->pcap, pirq));

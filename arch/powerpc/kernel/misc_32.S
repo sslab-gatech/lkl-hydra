@@ -34,7 +34,6 @@
 #include <asm/bug.h>
 #include <asm/ptrace.h>
 #include <asm/export.h>
-#include <asm/feature-fixups.h>
 
 	.text
 
@@ -153,7 +152,7 @@ _GLOBAL(call_setup_cpu)
 	mtctr	r5
 	bctr
 
-#if defined(CONFIG_CPU_FREQ_PMAC) && defined(CONFIG_PPC_BOOK3S_32)
+#if defined(CONFIG_CPU_FREQ_PMAC) && defined(CONFIG_6xx)
 
 /* This gets called by via-pmu.c to switch the PLL selection
  * on 750fx CPU. This function should really be moved to some
@@ -223,7 +222,7 @@ _GLOBAL(low_choose_7447a_dfs)
 	mtmsr	r7
 	blr
 
-#endif /* CONFIG_CPU_FREQ_PMAC && CONFIG_PPC_BOOK3S_32 */
+#endif /* CONFIG_CPU_FREQ_PMAC && CONFIG_6xx */
 
 /*
  * complement mask on the msr then "or" some values on.

@@ -129,7 +129,6 @@ static const struct key_entry acer_wmi_keymap[] __initconst = {
 	{KE_IGNORE, 0x83, {KEY_TOUCHPAD_TOGGLE} },
 	{KE_KEY, 0x85, {KEY_TOUCHPAD_TOGGLE} },
 	{KE_KEY, 0x86, {KEY_WLAN} },
-	{KE_KEY, 0x87, {KEY_POWER} },
 	{KE_END, 0}
 };
 
@@ -672,7 +671,10 @@ static void __init find_quirks(void)
 
 static bool has_cap(u32 cap)
 {
-	return interface->capability & cap;
+	if ((interface->capability & cap) != 0)
+		return 1;
+
+	return 0;
 }
 
 /*
@@ -2213,7 +2215,7 @@ static int __init acer_wmi_init(void)
 	if (wmi_has_guid(AMW0_GUID1) &&
 	    !dmi_check_system(amw0_whitelist) &&
 	    quirks == &quirk_unknown) {
-		pr_debug("Unsupported machine has AMW0_GUID1, unable to load\n");
+		pr_err("Unsupported machine has AMW0_GUID1, unable to load\n");
 		return -ENODEV;
 	}
 

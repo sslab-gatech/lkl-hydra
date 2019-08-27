@@ -273,13 +273,14 @@ static int saa7134_alsa_dma_init(struct saa7134_dev *dev, int nr_pages)
 		return -ENOMEM;
 	}
 
-	pr_debug("vmalloc is at addr %p, size=%d\n",
-		 dma->vaddr, nr_pages << PAGE_SHIFT);
+	pr_debug("vmalloc is at addr 0x%08lx, size=%d\n",
+				(unsigned long)dma->vaddr,
+				nr_pages << PAGE_SHIFT);
 
 	memset(dma->vaddr, 0, nr_pages << PAGE_SHIFT);
 	dma->nr_pages = nr_pages;
 
-	dma->sglist = vzalloc(array_size(sizeof(*dma->sglist), dma->nr_pages));
+	dma->sglist = vzalloc(dma->nr_pages * sizeof(*dma->sglist));
 	if (NULL == dma->sglist)
 		goto vzalloc_err;
 
@@ -901,7 +902,7 @@ static int snd_card_saa7134_pcm(snd_card_saa7134_t *saa7134, int device)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_card_saa7134_capture_ops);
 	pcm->private_data = saa7134;
 	pcm->info_flags = 0;
-	strscpy(pcm->name, "SAA7134 PCM", sizeof(pcm->name));
+	strcpy(pcm->name, "SAA7134 PCM");
 	return 0;
 }
 
@@ -1074,7 +1075,7 @@ static int snd_card_saa7134_new_mixer(snd_card_saa7134_t * chip)
 	unsigned int idx;
 	int err, addr;
 
-	strscpy(card->mixername, "SAA7134 Mixer", sizeof(card->mixername));
+	strcpy(card->mixername, "SAA7134 Mixer");
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_saa7134_volume_controls); idx++) {
 		kcontrol = snd_ctl_new1(&snd_saa7134_volume_controls[idx],
@@ -1138,7 +1139,7 @@ static int alsa_card_saa7134_create(struct saa7134_dev *dev, int devnum)
 	if (err < 0)
 		return err;
 
-	strscpy(card->driver, "SAA7134", sizeof(card->driver));
+	strcpy(card->driver, "SAA7134");
 
 	/* Card "creation" */
 
@@ -1178,7 +1179,7 @@ static int alsa_card_saa7134_create(struct saa7134_dev *dev, int devnum)
 
 	/* End of "creation" */
 
-	strscpy(card->shortname, "SAA7134", sizeof(card->shortname));
+	strcpy(card->shortname, "SAA7134");
 	sprintf(card->longname, "%s at 0x%lx irq %d",
 		chip->dev->name, chip->iobase, chip->irq);
 

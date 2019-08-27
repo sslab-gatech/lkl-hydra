@@ -19,10 +19,10 @@
  *
  */
 #include <linux/mm.h>
+#include <asm/tlbflush.h>
 #include <asm/mmu.h>
 
 #ifdef CONFIG_PPC_MMU_NOHASH
-#include <asm/trace.h>
 
 /*
  * On 40x and 8xx, we directly inline tlbia and tlbivax
@@ -31,12 +31,10 @@
 static inline void _tlbil_all(void)
 {
 	asm volatile ("sync; tlbia; isync" : : : "memory");
-	trace_tlbia(MMU_NO_CONTEXT);
 }
 static inline void _tlbil_pid(unsigned int pid)
 {
 	asm volatile ("sync; tlbia; isync" : : : "memory");
-	trace_tlbia(pid);
 }
 #define _tlbil_pid_noind(pid)	_tlbil_pid(pid)
 
@@ -58,7 +56,6 @@ static inline void _tlbil_va(unsigned long address, unsigned int pid,
 			     unsigned int tsize, unsigned int ind)
 {
 	asm volatile ("tlbie %0; sync" : : "r" (address) : "memory");
-	trace_tlbie(0, 0, address, pid, 0, 0, 0);
 }
 #elif defined(CONFIG_PPC_BOOK3E)
 extern void _tlbil_va(unsigned long address, unsigned int pid,
@@ -86,7 +83,7 @@ static inline void _tlbivax_bcast(unsigned long address, unsigned int pid,
 #else /* CONFIG_PPC_MMU_NOHASH */
 
 extern void hash_preload(struct mm_struct *mm, unsigned long ea,
-			 bool is_exec, unsigned long trap);
+			 unsigned long access, unsigned long trap);
 
 
 extern void _tlbie(unsigned long address);
@@ -101,6 +98,7 @@ extern void setbat(int index, unsigned long virt, phys_addr_t phys,
 		   unsigned int size, pgprot_t prot);
 
 extern int __map_without_bats;
+extern int __allow_ioremap_reserved;
 extern unsigned int rtas_data, rtas_size;
 
 struct hash_pte;
@@ -155,7 +153,7 @@ struct tlbcam {
 };
 #endif
 
-#if defined(CONFIG_PPC_BOOK3S_32) || defined(CONFIG_FSL_BOOKE) || defined(CONFIG_PPC_8xx)
+#if defined(CONFIG_6xx) || defined(CONFIG_FSL_BOOKE) || defined(CONFIG_PPC_8xx)
 /* 6xx have BATS */
 /* FSL_BOOKE have TLBCAM */
 /* 8xx have LTLB */

@@ -19,7 +19,6 @@
 #include "aq_pci_func.h"
 #include "hw_atl/hw_atl_a0.h"
 #include "hw_atl/hw_atl_b0.h"
-#include "aq_filters.h"
 
 static const struct pci_device_id aq_pci_tbl[] = {
 	{ PCI_VDEVICE(AQUANTIA, AQ_DEVICE_ID_0001), },
@@ -85,7 +84,7 @@ static int aq_pci_probe_get_hw_by_id(struct pci_dev *pdev,
 				     const struct aq_hw_ops **ops,
 				     const struct aq_hw_caps_s **caps)
 {
-	int i;
+	int i = 0;
 
 	if (pdev->vendor != PCI_VENDOR_ID_AQUANTIA)
 		return -EINVAL;
@@ -108,7 +107,7 @@ static int aq_pci_probe_get_hw_by_id(struct pci_dev *pdev,
 
 int aq_pci_func_init(struct pci_dev *pdev)
 {
-	int err;
+	int err = 0;
 
 	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
 	if (!err) {
@@ -142,7 +141,7 @@ int aq_pci_func_alloc_irq(struct aq_nic_s *self, unsigned int i,
 			  char *name, void *aq_vec, cpumask_t *affinity_mask)
 {
 	struct pci_dev *pdev = self->pdev;
-	int err;
+	int err = 0;
 
 	if (pdev->msix_enabled || pdev->msi_enabled)
 		err = request_irq(pci_irq_vector(pdev, i), aq_vec_isr, 0,
@@ -165,7 +164,7 @@ int aq_pci_func_alloc_irq(struct aq_nic_s *self, unsigned int i,
 void aq_pci_func_free_irqs(struct aq_nic_s *self)
 {
 	struct pci_dev *pdev = self->pdev;
-	unsigned int i;
+	unsigned int i = 0U;
 
 	for (i = 32U; i--;) {
 		if (!((1U << i) & self->msix_entry_mask))
@@ -195,8 +194,8 @@ static void aq_pci_free_irq_vectors(struct aq_nic_s *self)
 static int aq_pci_probe(struct pci_dev *pdev,
 			const struct pci_device_id *pci_id)
 {
-	struct aq_nic_s *self;
-	int err;
+	struct aq_nic_s *self = NULL;
+	int err = 0;
 	struct net_device *ndev;
 	resource_size_t mmio_pa;
 	u32 bar;
@@ -268,15 +267,16 @@ static int aq_pci_probe(struct pci_dev *pdev,
 	numvecs = min(numvecs, num_online_cpus());
 	/*enable interrupts */
 #if !AQ_CFG_FORCE_LEGACY_INT
-	err = pci_alloc_irq_vectors(self->pdev, 1, numvecs,
-				    PCI_IRQ_MSIX | PCI_IRQ_MSI |
-				    PCI_IRQ_LEGACY);
+	err = pci_alloc_irq_vectors(self->pdev, numvecs, numvecs,
+				    PCI_IRQ_MSIX);
 
-	if (err < 0)
-		goto err_hwinit;
-	numvecs = err;
+	if (err < 0) {
+		err = pci_alloc_irq_vectors(self->pdev, 1, 1,
+					    PCI_IRQ_MSI | PCI_IRQ_LEGACY);
+		if (err < 0)
+			goto err_hwinit;
+	}
 #endif
-	self->irqvecs = numvecs;
 
 	/* net device init */
 	aq_nic_cfg_start(self);
@@ -298,9 +298,9 @@ err_free_aq_hw:
 	kfree(self->aq_hw);
 err_ioremap:
 	free_netdev(ndev);
-err_ndev:
-	pci_release_regions(pdev);
 err_pci_func:
+	pci_release_regions(pdev);
+err_ndev:
 	pci_disable_device(pdev);
 	return err;
 }
@@ -310,7 +310,6 @@ static void aq_pci_remove(struct pci_dev *pdev)
 	struct aq_nic_s *self = pci_get_drvdata(pdev);
 
 	if (self->ndev) {
-		aq_clear_rxnfc_all_rules(self);
 		if (self->ndev->reg_state == NETREG_REGISTERED)
 			unregister_netdev(self->ndev);
 		aq_nic_free_vectors(self);

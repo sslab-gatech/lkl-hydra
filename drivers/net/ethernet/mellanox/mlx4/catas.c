@@ -178,12 +178,10 @@ void mlx4_enter_error_state(struct mlx4_dev_persistent *persist)
 
 	dev = persist->dev;
 	mlx4_err(dev, "device is going to be reset\n");
-	if (mlx4_is_slave(dev)) {
+	if (mlx4_is_slave(dev))
 		err = mlx4_reset_slave(dev);
-	} else {
-		mlx4_crdump_collect(dev);
+	else
 		err = mlx4_reset_master(dev);
-	}
 
 	if (!err) {
 		mlx4_err(dev, "device was reset successfully\n");
@@ -214,7 +212,7 @@ static void mlx4_handle_error_state(struct mlx4_dev_persistent *persist)
 	mutex_lock(&persist->interface_state_mutex);
 	if (persist->interface_state & MLX4_INTERFACE_STATE_UP &&
 	    !(persist->interface_state & MLX4_INTERFACE_STATE_DELETION)) {
-		err = mlx4_restart_one(persist->pdev, false, NULL);
+		err = mlx4_restart_one(persist->pdev);
 		mlx4_info(persist->dev, "mlx4_restart_one was ended, ret=%d\n",
 			  err);
 	}

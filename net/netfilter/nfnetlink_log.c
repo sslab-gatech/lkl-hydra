@@ -37,6 +37,7 @@
 #include <net/sock.h>
 #include <net/netfilter/nf_log.h>
 #include <net/netns/generic.h>
+#include <net/netfilter/nfnetlink_log.h>
 
 #include <linux/atomic.h>
 #include <linux/refcount.h>
@@ -46,7 +47,6 @@
 #include "../bridge/br_private.h"
 #endif
 
-#define NFULNL_COPY_DISABLED	0xff
 #define NFULNL_NLBUFSIZ_DEFAULT	NLMSG_GOODSIZE
 #define NFULNL_TIMEOUT_DEFAULT 	100	/* every second */
 #define NFULNL_QTHRESH_DEFAULT 	100	/* 100 packets */
@@ -148,7 +148,7 @@ static void
 instance_put(struct nfulnl_instance *inst)
 {
 	if (inst && refcount_dec_and_test(&inst->use))
-		call_rcu(&inst->rcu, nfulnl_instance_free_rcu);
+		call_rcu_bh(&inst->rcu, nfulnl_instance_free_rcu);
 }
 
 static void nfulnl_timer(struct timer_list *t);
@@ -618,7 +618,7 @@ static const struct nf_loginfo default_loginfo = {
 };
 
 /* log handler for internal netfilter logging api */
-static void
+void
 nfulnl_log_packet(struct net *net,
 		  u_int8_t pf,
 		  unsigned int hooknum,
@@ -633,7 +633,7 @@ nfulnl_log_packet(struct net *net,
 	struct nfulnl_instance *inst;
 	const struct nf_loginfo *li;
 	unsigned int qthreshold;
-	unsigned int plen = 0;
+	unsigned int plen;
 	struct nfnl_log_net *log = nfnl_log_pernet(net);
 	const struct nfnl_ct_hook *nfnl_ct = NULL;
 	struct nf_conn *ct = NULL;
@@ -648,6 +648,7 @@ nfulnl_log_packet(struct net *net,
 	if (!inst)
 		return;
 
+	plen = 0;
 	if (prefix)
 		plen = strlen(prefix) + 1;
 
@@ -759,6 +760,7 @@ alloc_failure:
 	/* FIXME: statistics */
 	goto unlock_and_release;
 }
+EXPORT_SYMBOL_GPL(nfulnl_log_packet);
 
 static int
 nfulnl_rcv_nl_event(struct notifier_block *this,
@@ -1044,6 +1046,20 @@ static const struct seq_operations nful_seq_ops = {
 	.stop	= seq_stop,
 	.show	= seq_show,
 };
+
+static int nful_open(struct inode *inode, struct file *file)
+{
+	return seq_open_net(inode, file, &nful_seq_ops,
+			    sizeof(struct iter_state));
+}
+
+static const struct file_operations nful_file_ops = {
+	.open	 = nful_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = seq_release_net,
+};
+
 #endif /* PROC_FS */
 
 static int __net_init nfnl_log_net_init(struct net *net)
@@ -1061,8 +1077,8 @@ static int __net_init nfnl_log_net_init(struct net *net)
 	spin_lock_init(&log->instances_lock);
 
 #ifdef CONFIG_PROC_FS
-	proc = proc_create_net("nfnetlink_log", 0440, net->nf.proc_netfilter,
-			&nful_seq_ops, sizeof(struct iter_state));
+	proc = proc_create("nfnetlink_log", 0440,
+			   net->nf.proc_netfilter, &nful_file_ops);
 	if (!proc)
 		return -ENOMEM;
 

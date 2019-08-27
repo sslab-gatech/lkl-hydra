@@ -861,9 +861,8 @@ static int aspeed_smc_probe(struct platform_device *pdev)
 		return -ENODEV;
 	info = match->data;
 
-	controller = devm_kzalloc(&pdev->dev,
-				  struct_size(controller, chips, info->nce),
-				  GFP_KERNEL);
+	controller = devm_kzalloc(&pdev->dev, sizeof(*controller) +
+		info->nce * sizeof(controller->chips[0]), GFP_KERNEL);
 	if (!controller)
 		return -ENOMEM;
 	controller->info = info;

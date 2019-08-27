@@ -171,7 +171,7 @@ static int ahci_da850_probe(struct platform_device *pdev)
 	u32 mpy;
 	int rc;
 
-	hpriv = ahci_platform_get_resources(pdev, 0);
+	hpriv = ahci_platform_get_resources(pdev);
 	if (IS_ERR(hpriv))
 		return PTR_ERR(hpriv);
 

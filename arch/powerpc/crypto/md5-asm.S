@@ -11,7 +11,6 @@
  */
 #include <asm/ppc_asm.h>
 #include <asm/asm-offsets.h>
-#include <asm/asm-compat.h>
 
 #define rHP	r3
 #define rWP	r4

@@ -1,7 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2016  Realtek Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -25,13 +36,13 @@ void odm_edca_turbo_init(void *dm_void)
 	dm->dm_edca_table.is_current_turbo_edca = false;
 	dm->dm_edca_table.is_cur_rdl_state = false;
 
-	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Original VO PARAM: 0x%x\n",
+	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Orginial VO PARAM: 0x%x\n",
 		     odm_read_4byte(dm, ODM_EDCA_VO_PARAM));
-	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Original VI PARAM: 0x%x\n",
+	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Orginial VI PARAM: 0x%x\n",
 		     odm_read_4byte(dm, ODM_EDCA_VI_PARAM));
-	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Original BE PARAM: 0x%x\n",
+	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Orginial BE PARAM: 0x%x\n",
 		     odm_read_4byte(dm, ODM_EDCA_BE_PARAM));
-	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Original BK PARAM: 0x%x\n",
+	ODM_RT_TRACE(dm, ODM_COMP_EDCA_TURBO, "Orginial BK PARAM: 0x%x\n",
 		     odm_read_4byte(dm, ODM_EDCA_BK_PARAM));
 
 } /* ODM_InitEdcaTurbo */

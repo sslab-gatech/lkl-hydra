@@ -17,7 +17,6 @@
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
 #include <asm/cputable.h>
-#include <asm/feature-fixups.h>
 
 /*
  * Flush and disable all data caches (dL1, L2, L3). This is used
@@ -28,7 +27,7 @@
  */
 
 _GLOBAL(flush_disable_caches)
-#ifndef CONFIG_PPC_BOOK3S_32
+#ifndef CONFIG_6xx
 	blr
 #else
 BEGIN_FTR_SECTION
@@ -356,4 +355,4 @@ END_FTR_SECTION_IFSET(CPU_FTR_L3CR)
 	mtmsr	r11		/* restore DR and EE */
 	isync
 	blr
-#endif	/* CONFIG_PPC_BOOK3S_32 */
+#endif	/* CONFIG_6xx */

@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2006 Silicon Graphics, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include <linux/log2.h>
 
@@ -158,6 +170,7 @@ xfs_init_local_fork(
 	}
 
 	ifp->if_bytes = size;
+	ifp->if_real_bytes = real_size;
 	ifp->if_flags &= ~(XFS_IFEXTENTS | XFS_IFBROOT);
 	ifp->if_flags |= XFS_IFINLINE;
 }
@@ -182,9 +195,8 @@ xfs_iformat_local(
 	"corrupt inode %Lu (bad size %d for local fork, size = %d).",
 			(unsigned long long) ip->i_ino, size,
 			XFS_DFORK_SIZE(dip, ip->i_mount, whichfork));
-		xfs_inode_verifier_error(ip, -EFSCORRUPTED,
-				"xfs_iformat_local", dip, sizeof(*dip),
-				__this_address);
+		XFS_CORRUPTION_ERROR("xfs_iformat_local", XFS_ERRLEVEL_LOW,
+				     ip->i_mount, dip);
 		return -EFSCORRUPTED;
 	}
 
@@ -219,12 +231,12 @@ xfs_iformat_extents(
 	if (unlikely(size < 0 || size > XFS_DFORK_SIZE(dip, mp, whichfork))) {
 		xfs_warn(ip->i_mount, "corrupt inode %Lu ((a)extents = %d).",
 			(unsigned long long) ip->i_ino, nex);
-		xfs_inode_verifier_error(ip, -EFSCORRUPTED,
-				"xfs_iformat_extents(1)", dip, sizeof(*dip),
-				__this_address);
+		XFS_CORRUPTION_ERROR("xfs_iformat_extents(1)", XFS_ERRLEVEL_LOW,
+				     mp, dip);
 		return -EFSCORRUPTED;
 	}
 
+	ifp->if_real_bytes = 0;
 	ifp->if_bytes = 0;
 	ifp->if_u1.if_root = NULL;
 	ifp->if_height = 0;
@@ -233,14 +245,10 @@ xfs_iformat_extents(
 
 		xfs_iext_first(ifp, &icur);
 		for (i = 0; i < nex; i++, dp++) {
-			xfs_failaddr_t	fa;
-
 			xfs_bmbt_disk_get_all(dp, &new);
-			fa = xfs_bmap_validate_extent(ip, whichfork, &new);
-			if (fa) {
-				xfs_inode_verifier_error(ip, -EFSCORRUPTED,
-						"xfs_iformat_extents(2)",
-						dp, sizeof(*dp), fa);
+			if (!xfs_bmbt_validate_extent(mp, whichfork, &new)) {
+				XFS_ERROR_REPORT("xfs_iformat_extents(2)",
+						 XFS_ERRLEVEL_LOW, mp);
 				return -EFSCORRUPTED;
 			}
 
@@ -269,7 +277,7 @@ xfs_iformat_btree(
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	xfs_bmdr_block_t	*dfp;
-	struct xfs_ifork	*ifp;
+	xfs_ifork_t		*ifp;
 	/* REFERENCED */
 	int			nrecs;
 	int			size;
@@ -297,9 +305,8 @@ xfs_iformat_btree(
 		     level == 0 || level > XFS_BTREE_MAXLEVELS) {
 		xfs_warn(mp, "corrupt inode %Lu (btree).",
 					(unsigned long long) ip->i_ino);
-		xfs_inode_verifier_error(ip, -EFSCORRUPTED,
-				"xfs_iformat_btree", dfp, size,
-				__this_address);
+		XFS_CORRUPTION_ERROR("xfs_iformat_btree", XFS_ERRLEVEL_LOW,
+					 mp, dip);
 		return -EFSCORRUPTED;
 	}
 
@@ -315,6 +322,7 @@ xfs_iformat_btree(
 	ifp->if_flags &= ~XFS_IFEXTENTS;
 	ifp->if_flags |= XFS_IFBROOT;
 
+	ifp->if_real_bytes = 0;
 	ifp->if_bytes = 0;
 	ifp->if_u1.if_root = NULL;
 	ifp->if_height = 0;
@@ -347,7 +355,7 @@ xfs_iroot_realloc(
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	int			cur_max;
-	struct xfs_ifork	*ifp;
+	xfs_ifork_t		*ifp;
 	struct xfs_btree_block	*new_broot;
 	int			new_max;
 	size_t			new_size;
@@ -468,34 +476,55 @@ xfs_iroot_realloc(
  */
 void
 xfs_idata_realloc(
-	struct xfs_inode	*ip,
-	int			byte_diff,
-	int			whichfork)
+	xfs_inode_t	*ip,
+	int		byte_diff,
+	int		whichfork)
 {
-	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
-	int			new_size = (int)ifp->if_bytes + byte_diff;
+	xfs_ifork_t	*ifp;
+	int		new_size;
+	int		real_size;
 
-	ASSERT(new_size >= 0);
-	ASSERT(new_size <= XFS_IFORK_SIZE(ip, whichfork));
-
-	if (byte_diff == 0)
+	if (byte_diff == 0) {
 		return;
+	}
+
+	ifp = XFS_IFORK_PTR(ip, whichfork);
+	new_size = (int)ifp->if_bytes + byte_diff;
+	ASSERT(new_size >= 0);
 
 	if (new_size == 0) {
 		kmem_free(ifp->if_u1.if_data);
 		ifp->if_u1.if_data = NULL;
-		ifp->if_bytes = 0;
-		return;
+		real_size = 0;
+	} else {
+		/*
+		 * Stuck with malloc/realloc.
+		 * For inline data, the underlying buffer must be
+		 * a multiple of 4 bytes in size so that it can be
+		 * logged and stay on word boundaries.  We enforce
+		 * that here.
+		 */
+		real_size = roundup(new_size, 4);
+		if (ifp->if_u1.if_data == NULL) {
+			ASSERT(ifp->if_real_bytes == 0);
+			ifp->if_u1.if_data = kmem_alloc(real_size,
+							KM_SLEEP | KM_NOFS);
+		} else {
+			/*
+			 * Only do the realloc if the underlying size
+			 * is really changing.
+			 */
+			if (ifp->if_real_bytes != real_size) {
+				ifp->if_u1.if_data =
+					kmem_realloc(ifp->if_u1.if_data,
+							real_size,
+							KM_SLEEP | KM_NOFS);
+			}
+		}
 	}
-
-	/*
-	 * For inline data, the underlying buffer must be a multiple of 4 bytes
-	 * in size so that it can be logged and stay on word boundaries.
-	 * We enforce that here.
-	 */
-	ifp->if_u1.if_data = kmem_realloc(ifp->if_u1.if_data,
-			roundup(new_size, 4), KM_SLEEP | KM_NOFS);
+	ifp->if_real_bytes = real_size;
 	ifp->if_bytes = new_size;
+	ASSERT(ifp->if_bytes <= XFS_IFORK_SIZE(ip, whichfork));
 }
 
 void
@@ -503,7 +532,7 @@ xfs_idestroy_fork(
 	xfs_inode_t	*ip,
 	int		whichfork)
 {
-	struct xfs_ifork	*ifp;
+	xfs_ifork_t	*ifp;
 
 	ifp = XFS_IFORK_PTR(ip, whichfork);
 	if (ifp->if_broot != NULL) {
@@ -519,12 +548,16 @@ xfs_idestroy_fork(
 	 */
 	if (XFS_IFORK_FORMAT(ip, whichfork) == XFS_DINODE_FMT_LOCAL) {
 		if (ifp->if_u1.if_data != NULL) {
+			ASSERT(ifp->if_real_bytes != 0);
 			kmem_free(ifp->if_u1.if_data);
 			ifp->if_u1.if_data = NULL;
+			ifp->if_real_bytes = 0;
 		}
 	} else if ((ifp->if_flags & XFS_IFEXTENTS) && ifp->if_height) {
 		xfs_iext_destroy(ifp);
 	}
+
+	ASSERT(ifp->if_real_bytes == 0);
 
 	if (whichfork == XFS_ATTR_FORK) {
 		kmem_zone_free(xfs_ifork_zone, ip->i_afp);
@@ -562,7 +595,7 @@ xfs_iextents_copy(
 	for_each_xfs_iext(ifp, &icur, &rec) {
 		if (isnullstartblock(rec.br_startblock))
 			continue;
-		ASSERT(xfs_bmap_validate_extent(ip, whichfork, &rec) == NULL);
+		ASSERT(xfs_bmbt_validate_extent(ip->i_mount, whichfork, &rec));
 		xfs_bmbt_disk_set_all(dp, &rec);
 		trace_xfs_write_extent(ip, &icur, state, _RET_IP_);
 		copied += sizeof(struct xfs_bmbt_rec);
@@ -592,7 +625,7 @@ xfs_iflush_fork(
 	int			whichfork)
 {
 	char			*cp;
-	struct xfs_ifork	*ifp;
+	xfs_ifork_t		*ifp;
 	xfs_mount_t		*mp;
 	static const short	brootflag[2] =
 		{ XFS_ILOG_DBROOT, XFS_ILOG_ABROOT };

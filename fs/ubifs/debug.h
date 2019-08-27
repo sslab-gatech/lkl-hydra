@@ -148,21 +148,19 @@ struct ubifs_global_debug_info {
 	unsigned int tst_rcvry:1;
 };
 
-void ubifs_assert_failed(struct ubifs_info *c, const char *expr,
-	const char *file, int line);
-
-#define ubifs_assert(c, expr) do {                                             \
+#define ubifs_assert(expr) do {                                                \
 	if (unlikely(!(expr))) {                                               \
-		ubifs_assert_failed((struct ubifs_info *)c, #expr, __FILE__,   \
-		 __LINE__);                                                    \
+		pr_crit("UBIFS assert failed in %s at %u (pid %d)\n",          \
+		       __func__, __LINE__, current->pid);                      \
+		dump_stack();                                                  \
 	}                                                                      \
 } while (0)
 
 #define ubifs_assert_cmt_locked(c) do {                                        \
 	if (unlikely(down_write_trylock(&(c)->commit_sem))) {                  \
 		up_write(&(c)->commit_sem);                                    \
-		ubifs_err(c, "commit lock is not locked!\n");                  \
-		ubifs_assert(c, 0);                                            \
+		pr_crit("commit lock is not locked!\n");                       \
+		ubifs_assert(0);                                               \
 	}                                                                      \
 } while (0)
 

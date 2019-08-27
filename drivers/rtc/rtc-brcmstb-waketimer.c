@@ -60,9 +60,6 @@ static void brcmstb_waketmr_set_alarm(struct brcmstb_waketmr *timer,
 {
 	brcmstb_waketmr_clear_alarm(timer);
 
-	/* Make sure we are actually counting in seconds */
-	writel_relaxed(timer->rate, timer->base + BRCMSTB_WKTMR_PRESCALER);
-
 	writel_relaxed(secs + 1, timer->base + BRCMSTB_WKTMR_ALARM);
 }
 
@@ -145,6 +142,9 @@ static int brcmstb_waketmr_settime(struct device *dev,
 
 	sec = rtc_tm_to_time64(tm);
 
+	if (sec > U32_MAX || sec < 0)
+		return -EINVAL;
+
 	writel_relaxed(sec, timer->base + BRCMSTB_WKTMR_COUNTER);
 
 	return 0;
@@ -180,6 +180,9 @@ static int brcmstb_waketmr_setalarm(struct device *dev,
 		sec = rtc_tm_to_time64(&alarm->time);
 	else
 		sec = 0;
+
+	if (sec > U32_MAX || sec < 0)
+		return -EINVAL;
 
 	brcmstb_waketmr_set_alarm(timer, sec);
 
@@ -223,10 +226,6 @@ static int brcmstb_waketmr_probe(struct platform_device *pdev)
 	if (IS_ERR(timer->base))
 		return PTR_ERR(timer->base);
 
-	timer->rtc = devm_rtc_allocate_device(dev);
-	if (IS_ERR(timer->rtc))
-		return PTR_ERR(timer->rtc);
-
 	/*
 	 * Set wakeup capability before requesting wakeup interrupt, so we can
 	 * process boot-time "wakeups" (e.g., from S5 soft-off)
@@ -259,12 +258,11 @@ static int brcmstb_waketmr_probe(struct platform_device *pdev)
 	timer->reboot_notifier.notifier_call = brcmstb_waketmr_reboot;
 	register_reboot_notifier(&timer->reboot_notifier);
 
-	timer->rtc->ops = &brcmstb_waketmr_ops;
-	timer->rtc->range_max = U32_MAX;
-
-	ret = rtc_register_device(timer->rtc);
-	if (ret) {
+	timer->rtc = rtc_device_register("brcmstb-waketmr", dev,
+					 &brcmstb_waketmr_ops, THIS_MODULE);
+	if (IS_ERR(timer->rtc)) {
 		dev_err(dev, "unable to register device\n");
+		ret = PTR_ERR(timer->rtc);
 		goto err_notifier;
 	}
 
@@ -287,6 +285,7 @@ static int brcmstb_waketmr_remove(struct platform_device *pdev)
 	struct brcmstb_waketmr *timer = dev_get_drvdata(&pdev->dev);
 
 	unregister_reboot_notifier(&timer->reboot_notifier);
+	rtc_device_unregister(timer->rtc);
 
 	return 0;
 }

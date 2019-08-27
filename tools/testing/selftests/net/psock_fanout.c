@@ -50,7 +50,6 @@
 #include <linux/filter.h>
 #include <linux/bpf.h>
 #include <linux/if_packet.h>
-#include <net/if.h>
 #include <net/ethernet.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
@@ -74,26 +73,11 @@
  * @return -1 if mode is bad, a valid socket otherwise */
 static int sock_fanout_open(uint16_t typeflags, uint16_t group_id)
 {
-	struct sockaddr_ll addr = {0};
 	int fd, val;
 
-	fd = socket(PF_PACKET, SOCK_RAW, 0);
+	fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP));
 	if (fd < 0) {
 		perror("socket packet");
-		exit(1);
-	}
-
-	pair_udp_setfilter(fd);
-
-	addr.sll_family = AF_PACKET;
-	addr.sll_protocol = htons(ETH_P_IP);
-	addr.sll_ifindex = if_nametoindex("lo");
-	if (addr.sll_ifindex == 0) {
-		perror("if_nametoindex");
-		exit(1);
-	}
-	if (bind(fd, (void *) &addr, sizeof(addr))) {
-		perror("bind packet");
 		exit(1);
 	}
 
@@ -106,6 +90,7 @@ static int sock_fanout_open(uint16_t typeflags, uint16_t group_id)
 		return -1;
 	}
 
+	pair_udp_setfilter(fd);
 	return fd;
 }
 
@@ -143,8 +128,6 @@ static void sock_fanout_getopts(int fd, uint16_t *typeflags, uint16_t *group_id)
 
 static void sock_fanout_set_ebpf(int fd)
 {
-	static char log_buf[65536];
-
 	const int len_off = __builtin_offsetof(struct __sk_buff, len);
 	struct bpf_insn prog[] = {
 		{ BPF_ALU64 | BPF_MOV | BPF_X,   6, 1, 0, 0 },
@@ -157,6 +140,7 @@ static void sock_fanout_set_ebpf(int fd)
 		{ BPF_ALU   | BPF_MOV | BPF_K,   0, 0, 0, 0 },
 		{ BPF_JMP   | BPF_EXIT,          0, 0, 0, 0 }
 	};
+	char log_buf[512];
 	union bpf_attr attr;
 	int pfd;
 
@@ -244,7 +228,7 @@ static int sock_fanout_read(int fds[], char *rings[], const int expect[])
 
 	if ((!(ret[0] == expect[0] && ret[1] == expect[1])) &&
 	    (!(ret[0] == expect[1] && ret[1] == expect[0]))) {
-		fprintf(stderr, "warning: incorrect queue lengths\n");
+		fprintf(stderr, "ERROR: incorrect queue lengths\n");
 		return 1;
 	}
 
@@ -363,8 +347,7 @@ static int test_datapath(uint16_t typeflags, int port_off,
 	uint8_t type = typeflags & 0xFF;
 	int fds[2], fds_udp[2][2], ret;
 
-	fprintf(stderr, "\ntest: datapath 0x%hx ports %hu,%hu\n",
-		typeflags, PORT_BASE, PORT_BASE + port_off);
+	fprintf(stderr, "test: datapath 0x%hx\n", typeflags);
 
 	fds[0] = sock_fanout_open(typeflags, 0);
 	fds[1] = sock_fanout_open(typeflags, 0);
@@ -435,7 +418,7 @@ int main(int argc, char **argv)
 	const int expect_cpu1[2][2]	= { { 0, 20 },  { 0, 20 } };
 	const int expect_bpf[2][2]	= { { 15, 5 },  { 15, 20 } };
 	const int expect_uniqueid[2][2] = { { 20, 20},  { 20, 20 } };
-	int port_off = 2, tries = 20, ret;
+	int port_off = 2, tries = 5, ret;
 
 	test_control_single();
 	test_control_group();
@@ -444,14 +427,10 @@ int main(int argc, char **argv)
 	/* find a set of ports that do not collide onto the same socket */
 	ret = test_datapath(PACKET_FANOUT_HASH, port_off,
 			    expect_hash[0], expect_hash[1]);
-	while (ret) {
+	while (ret && tries--) {
 		fprintf(stderr, "info: trying alternate ports (%d)\n", tries);
 		ret = test_datapath(PACKET_FANOUT_HASH, ++port_off,
 				    expect_hash[0], expect_hash[1]);
-		if (!--tries) {
-			fprintf(stderr, "too many collisions\n");
-			return 1;
-		}
 	}
 
 	ret |= test_datapath(PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_ROLLOVER,

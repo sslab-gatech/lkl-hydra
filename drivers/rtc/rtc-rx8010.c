@@ -138,7 +138,7 @@ static int rx8010_get_time(struct device *dev, struct rtc_time *dt)
 	dt->tm_year = bcd2bin(date[RX8010_YEAR - RX8010_SEC]) + 100;
 	dt->tm_wday = ffs(date[RX8010_WDAY - RX8010_SEC] & 0x7f);
 
-	return 0;
+	return rtc_valid_tm(dt);
 }
 
 static int rx8010_set_time(struct device *dev, struct rtc_time *dt)

@@ -4,7 +4,7 @@
  *  Copyright (C) 2008 Thomas Gleixner <tglx@linutronix.de>
  *  Copyright (C) 2008-2011 Red Hat, Inc., Ingo Molnar
  *  Copyright (C) 2008-2011 Red Hat, Inc., Peter Zijlstra
- *  Copyright  Â©  2009 Paul Mackerras, IBM Corp. <paulus@au1.ibm.com>
+ *  Copyright  ©  2009 Paul Mackerras, IBM Corp. <paulus@au1.ibm.com>
  *
  * For licensing details see kernel-base/COPYING
  */
@@ -119,20 +119,23 @@ int get_callchain_buffers(int event_max_stack)
 		goto exit;
 	}
 
-	/*
-	 * If requesting per event more than the global cap,
-	 * return a different error to help userspace figure
-	 * this out.
-	 *
-	 * And also do it here so that we have &callchain_mutex held.
-	 */
-	if (event_max_stack > sysctl_perf_event_max_stack) {
-		err = -EOVERFLOW;
+	if (count > 1) {
+		/* If the allocation failed, give up */
+		if (!callchain_cpus_entries)
+			err = -ENOMEM;
+		/*
+		 * If requesting per event more than the global cap,
+		 * return a different error to help userspace figure
+		 * this out.
+		 *
+		 * And also do it here so that we have &callchain_mutex held.
+		 */
+		if (event_max_stack > sysctl_perf_event_max_stack)
+			err = -EOVERFLOW;
 		goto exit;
 	}
 
-	if (count == 1)
-		err = alloc_callchain_buffers();
+	err = alloc_callchain_buffers();
 exit:
 	if (err)
 		atomic_dec(&nr_callchain_events);

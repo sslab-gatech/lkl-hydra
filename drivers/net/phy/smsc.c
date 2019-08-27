@@ -168,6 +168,9 @@ static void smsc_get_strings(struct phy_device *phydev, u8 *data)
 	}
 }
 
+#ifndef UINT64_MAX
+#define UINT64_MAX              (u64)(~((u64)0))
+#endif
 static u64 smsc_get_stat(struct phy_device *phydev, int i)
 {
 	struct smsc_hw_stat stat = smsc_hw_stats[i];
@@ -176,7 +179,7 @@ static u64 smsc_get_stat(struct phy_device *phydev, int i)
 
 	val = phy_read(phydev, stat.reg);
 	if (val < 0)
-		ret = U64_MAX;
+		ret = UINT64_MAX;
 	else
 		ret = val;
 
@@ -219,6 +222,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN83C185",
 
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 
 	.probe		= smsc_phy_probe,
 
@@ -238,6 +242,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN8187",
 
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 
 	.probe		= smsc_phy_probe,
 
@@ -262,6 +267,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN8700",
 
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 
 	.probe		= smsc_phy_probe,
 
@@ -287,6 +293,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN911x Internal PHY",
 
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 
 	.probe		= smsc_phy_probe,
 
@@ -305,7 +312,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN8710/LAN8720",
 
 	.features	= PHY_BASIC_FEATURES,
-	.flags		= PHY_RST_AFTER_CLK_EN,
+	.flags		= PHY_HAS_INTERRUPT | PHY_RST_AFTER_CLK_EN,
 
 	.probe		= smsc_phy_probe,
 
@@ -331,6 +338,7 @@ static struct phy_driver smsc_phy_driver[] = {
 	.name		= "SMSC LAN8740",
 
 	.features	= PHY_BASIC_FEATURES,
+	.flags		= PHY_HAS_INTERRUPT,
 
 	.probe		= smsc_phy_probe,
 

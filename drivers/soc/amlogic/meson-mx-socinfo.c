@@ -104,7 +104,7 @@ static const struct of_device_id meson_mx_socinfo_analog_top_ids[] = {
 	{ /* sentinel */ }
 };
 
-static int __init meson_mx_socinfo_init(void)
+int __init meson_mx_socinfo_init(void)
 {
 	struct soc_device_attribute *soc_dev_attr;
 	struct soc_device *soc_dev;

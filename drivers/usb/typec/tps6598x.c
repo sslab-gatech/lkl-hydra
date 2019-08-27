@@ -73,7 +73,6 @@ struct tps6598x {
 	struct device *dev;
 	struct regmap *regmap;
 	struct mutex lock; /* device lock */
-	u8 i2c_protocol:1;
 
 	struct typec_port *port;
 	struct typec_partner *partner;
@@ -81,48 +80,19 @@ struct tps6598x {
 	struct typec_capability typec_cap;
 };
 
-/*
- * Max data bytes for Data1, Data2, and other registers. See ch 1.3.2:
- * http://www.ti.com/lit/ug/slvuan1a/slvuan1a.pdf
- */
-#define TPS_MAX_LEN	64
-
-static int
-tps6598x_block_read(struct tps6598x *tps, u8 reg, void *val, size_t len)
-{
-	u8 data[TPS_MAX_LEN + 1];
-	int ret;
-
-	if (WARN_ON(len + 1 > sizeof(data)))
-		return -EINVAL;
-
-	if (!tps->i2c_protocol)
-		return regmap_raw_read(tps->regmap, reg, val, len);
-
-	ret = regmap_raw_read(tps->regmap, reg, data, sizeof(data));
-	if (ret)
-		return ret;
-
-	if (data[0] < len)
-		return -EIO;
-
-	memcpy(val, &data[1], len);
-	return 0;
-}
-
 static inline int tps6598x_read16(struct tps6598x *tps, u8 reg, u16 *val)
 {
-	return tps6598x_block_read(tps, reg, val, sizeof(u16));
+	return regmap_raw_read(tps->regmap, reg, val, sizeof(u16));
 }
 
 static inline int tps6598x_read32(struct tps6598x *tps, u8 reg, u32 *val)
 {
-	return tps6598x_block_read(tps, reg, val, sizeof(u32));
+	return regmap_raw_read(tps->regmap, reg, val, sizeof(u32));
 }
 
 static inline int tps6598x_read64(struct tps6598x *tps, u8 reg, u64 *val)
 {
-	return tps6598x_block_read(tps, reg, val, sizeof(u64));
+	return regmap_raw_read(tps->regmap, reg, val, sizeof(u64));
 }
 
 static inline int tps6598x_write16(struct tps6598x *tps, u8 reg, u16 val)
@@ -151,8 +121,8 @@ static int tps6598x_read_partner_identity(struct tps6598x *tps)
 	struct tps6598x_rx_identity_reg id;
 	int ret;
 
-	ret = tps6598x_block_read(tps, TPS_REG_RX_IDENTITY_SOP,
-				  &id, sizeof(id));
+	ret = regmap_raw_read(tps->regmap, TPS_REG_RX_IDENTITY_SOP,
+			      &id, sizeof(id));
 	if (ret)
 		return ret;
 
@@ -188,14 +158,14 @@ static int tps6598x_connect(struct tps6598x *tps, u32 status)
 		desc.identity = &tps->partner_identity;
 	}
 
+	tps->partner = typec_register_partner(tps->port, &desc);
+	if (!tps->partner)
+		return -ENODEV;
+
 	typec_set_pwr_opmode(tps->port, mode);
 	typec_set_pwr_role(tps->port, TPS_STATUS_PORTROLE(status));
 	typec_set_vconn_role(tps->port, TPS_STATUS_VCONN(status));
 	typec_set_data_role(tps->port, TPS_STATUS_DATAROLE(status));
-
-	tps->partner = typec_register_partner(tps->port, &desc);
-	if (IS_ERR(tps->partner))
-		return PTR_ERR(tps->partner);
 
 	if (desc.identity)
 		typec_partner_set_identity(tps->partner);
@@ -205,8 +175,7 @@ static int tps6598x_connect(struct tps6598x *tps, u32 status)
 
 static void tps6598x_disconnect(struct tps6598x *tps, u32 status)
 {
-	if (!IS_ERR(tps->partner))
-		typec_unregister_partner(tps->partner);
+	typec_unregister_partner(tps->partner);
 	tps->partner = NULL;
 	typec_set_pwr_opmode(tps->port, TYPEC_PWR_MODE_USB);
 	typec_set_pwr_role(tps->port, TPS_STATUS_PORTROLE(status));
@@ -254,13 +223,13 @@ static int tps6598x_exec_cmd(struct tps6598x *tps, const char *cmd,
 	} while (val);
 
 	if (out_len) {
-		ret = tps6598x_block_read(tps, TPS_REG_DATA1,
-					  out_data, out_len);
+		ret = regmap_raw_read(tps->regmap, TPS_REG_DATA1,
+				      out_data, out_len);
 		if (ret)
 			return ret;
 		val = out_data[0];
 	} else {
-		ret = tps6598x_block_read(tps, TPS_REG_DATA1, &val, sizeof(u8));
+		ret = regmap_read(tps->regmap, TPS_REG_DATA1, &val);
 		if (ret)
 			return ret;
 	}
@@ -415,16 +384,6 @@ static int tps6598x_probe(struct i2c_client *client)
 	if (!vid)
 		return -ENODEV;
 
-	/*
-	 * Checking can the adapter handle SMBus protocol. If it can not, the
-	 * driver needs to take care of block reads separately.
-	 *
-	 * FIXME: Testing with I2C_FUNC_I2C. regmap-i2c uses I2C protocol
-	 * unconditionally if the adapter has I2C_FUNC_I2C set.
-	 */
-	if (i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
-		tps->i2c_protocol = true;
-
 	ret = tps6598x_read32(tps, TPS_REG_STATUS, &status);
 	if (ret < 0)
 		return ret;
@@ -433,42 +392,34 @@ static int tps6598x_probe(struct i2c_client *client)
 	if (ret < 0)
 		return ret;
 
-	tps->typec_cap.revision = USB_TYPEC_REV_1_2;
-	tps->typec_cap.pd_revision = 0x200;
-	tps->typec_cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
-	tps->typec_cap.pr_set = tps6598x_pr_set;
-	tps->typec_cap.dr_set = tps6598x_dr_set;
-
 	switch (TPS_SYSCONF_PORTINFO(conf)) {
 	case TPS_PORTINFO_SINK_ACCESSORY:
 	case TPS_PORTINFO_SINK:
-		tps->typec_cap.type = TYPEC_PORT_SNK;
-		tps->typec_cap.data = TYPEC_PORT_UFP;
+		tps->typec_cap.type = TYPEC_PORT_UFP;
 		break;
 	case TPS_PORTINFO_DRP_UFP_DRD:
 	case TPS_PORTINFO_DRP_DFP_DRD:
-		tps->typec_cap.type = TYPEC_PORT_DRP;
-		tps->typec_cap.data = TYPEC_PORT_DRD;
-		break;
+		tps->typec_cap.dr_set = tps6598x_dr_set;
+		/* fall through */
 	case TPS_PORTINFO_DRP_UFP:
-		tps->typec_cap.type = TYPEC_PORT_DRP;
-		tps->typec_cap.data = TYPEC_PORT_UFP;
-		break;
 	case TPS_PORTINFO_DRP_DFP:
+		tps->typec_cap.pr_set = tps6598x_pr_set;
 		tps->typec_cap.type = TYPEC_PORT_DRP;
-		tps->typec_cap.data = TYPEC_PORT_DFP;
 		break;
 	case TPS_PORTINFO_SOURCE:
-		tps->typec_cap.type = TYPEC_PORT_SRC;
-		tps->typec_cap.data = TYPEC_PORT_DFP;
+		tps->typec_cap.type = TYPEC_PORT_DFP;
 		break;
 	default:
 		return -ENODEV;
 	}
 
+	tps->typec_cap.revision = USB_TYPEC_REV_1_2;
+	tps->typec_cap.pd_revision = 0x200;
+	tps->typec_cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
+
 	tps->port = typec_register_port(&client->dev, &tps->typec_cap);
-	if (IS_ERR(tps->port))
-		return PTR_ERR(tps->port);
+	if (!tps->port)
+		return -ENODEV;
 
 	if (status & TPS_STATUS_PLUG_PRESENT) {
 		ret = tps6598x_connect(tps, status);
@@ -501,19 +452,19 @@ static int tps6598x_remove(struct i2c_client *client)
 	return 0;
 }
 
-static const struct i2c_device_id tps6598x_id[] = {
-	{ "tps6598x" },
+static const struct acpi_device_id tps6598x_acpi_match[] = {
+	{ "INT3515", 0 },
 	{ }
 };
-MODULE_DEVICE_TABLE(i2c, tps6598x_id);
+MODULE_DEVICE_TABLE(acpi, tps6598x_acpi_match);
 
 static struct i2c_driver tps6598x_i2c_driver = {
 	.driver = {
 		.name = "tps6598x",
+		.acpi_match_table = tps6598x_acpi_match,
 	},
 	.probe_new = tps6598x_probe,
 	.remove = tps6598x_remove,
-	.id_table = tps6598x_id,
 };
 module_i2c_driver(tps6598x_i2c_driver);
 

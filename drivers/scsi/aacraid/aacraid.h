@@ -40,7 +40,6 @@
 #define nblank(x) _nblank(x)[0]
 
 #include <linux/interrupt.h>
-#include <linux/completion.h>
 #include <linux/pci.h>
 #include <scsi/scsi_host.h>
 
@@ -1232,7 +1231,6 @@ struct src_registers {
 
 #define SRC_ODR_SHIFT		12
 #define SRC_IDR_SHIFT		9
-#define SRC_MSI_READ_MASK	0x1000
 
 typedef void (*fib_callback)(void *ctxt, struct fib *fibctx);
 
@@ -1242,7 +1240,7 @@ struct aac_fib_context {
 	u32			unique;		// unique value representing this context
 	ulong			jiffies;	// used for cleanup - dmb changed to ulong
 	struct list_head	next;		// used to link context's into a linked list
-	struct completion	completion;	// this is used to wait for the next fib to arrive.
+	struct semaphore	wait_sem;	// this is used to wait for the next fib to arrive.
 	int			wait;		// Set to true when thread is in WaitForSingleObject
 	unsigned long		count;		// total number of FIBs on FibList
 	struct list_head	fib_list;	// this holds fibs and their attachd hw_fibs
@@ -1314,7 +1312,7 @@ struct fib {
 	 *	This is the event the sendfib routine will wait on if the
 	 *	caller did not pass one and this is synch io.
 	 */
-	struct completion	event_wait;
+	struct semaphore	event_wait;
 	spinlock_t		event_lock;
 
 	u32			done;	/* gets set to 1 when fib is complete */
@@ -1347,7 +1345,7 @@ struct fib {
 struct aac_hba_map_info {
 	__le32	rmw_nexus;		/* nexus for native HBA devices */
 	u8		devtype;	/* device type */
-	s8		reset_state;	/* 0 - no reset, 1..x - */
+	u8		reset_state;	/* 0 - no reset, 1..x - */
 					/* after xth TM LUN reset */
 	u16		qd_limit;
 	u32		scan_counter;
@@ -1530,7 +1528,6 @@ struct aac_bus_info_response {
 #define AAC_COMM_MESSAGE_TYPE3		5
 
 #define AAC_EXTOPT_SA_FIRMWARE		cpu_to_le32(1<<1)
-#define AAC_EXTOPT_SOFT_RESET		cpu_to_le32(1<<16)
 
 /* MSIX context */
 struct aac_msix_ctx {
@@ -1665,7 +1662,6 @@ struct aac_dev
 	u8			raw_io_64;
 	u8			printf_enabled;
 	u8			in_reset;
-	u8			in_soft_reset;
 	u8			msi;
 	u8			sa_firmware;
 	int			management_fib_count;
@@ -2508,7 +2504,6 @@ struct aac_hba_info {
 #define RCV_TEMP_READINGS		0x00000025
 #define GET_COMM_PREFERRED_SETTINGS	0x00000026
 #define IOP_RESET_FW_FIB_DUMP		0x00000034
-#define DROP_IO			0x00000035
 #define IOP_RESET			0x00001000
 #define IOP_RESET_ALWAYS		0x00001001
 #define RE_INIT_ADAPTER		0x000000ee
@@ -2544,7 +2539,6 @@ struct aac_hba_info {
 #define	FLASH_UPD_PENDING		0x00002000
 #define	FLASH_UPD_SUCCESS		0x00004000
 #define	FLASH_UPD_FAILED		0x00008000
-#define	INVALID_OMR			0xffffffff
 #define	FWUPD_TIMEOUT			(5 * 60)
 
 /*

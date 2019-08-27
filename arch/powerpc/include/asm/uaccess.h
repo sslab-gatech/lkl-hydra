@@ -2,6 +2,7 @@
 #ifndef _ARCH_POWERPC_UACCESS_H
 #define _ARCH_POWERPC_UACCESS_H
 
+#include <asm/asm-compat.h>
 #include <asm/ppc_asm.h>
 #include <asm/processor.h>
 #include <asm/page.h>
@@ -29,14 +30,8 @@
 #endif
 
 #define get_ds()	(KERNEL_DS)
-#define get_fs()	(current->thread.addr_limit)
-
-static inline void set_fs(mm_segment_t fs)
-{
-	current->thread.addr_limit = fs;
-	/* On user-mode return check addr_limit (fs) is correct */
-	set_thread_flag(TIF_FSCHECK);
-}
+#define get_fs()	(current->thread.fs)
+#define set_fs(val)	(current->thread.fs = (val))
 
 #define segment_eq(a, b)	((a).seg == (b).seg)
 
@@ -52,18 +47,14 @@ static inline void set_fs(mm_segment_t fs)
 
 #else
 
-static inline int __access_ok(unsigned long addr, unsigned long size,
-			mm_segment_t seg)
-{
-	if (addr > seg.seg)
-		return 0;
-	return (size == 0 || size - 1 <= seg.seg - addr);
-}
+#define __access_ok(addr, size, segment)	\
+	(((addr) <= (segment).seg) &&		\
+	 (((size) == 0) || (((size) - 1) <= ((segment).seg - (addr)))))
 
 #endif
 
-#define access_ok(addr, size)		\
-	(__chk_user_ptr(addr),		\
+#define access_ok(type, addr, size)		\
+	(__chk_user_ptr(addr),			\
 	 __access_ok((__force unsigned long)(addr), (size), get_fs()))
 
 /*
@@ -166,7 +157,7 @@ do {								\
 	long __pu_err = -EFAULT;					\
 	__typeof__(*(ptr)) __user *__pu_addr = (ptr);			\
 	might_fault();							\
-	if (access_ok(__pu_addr, size))			\
+	if (access_ok(VERIFY_WRITE, __pu_addr, size))			\
 		__put_user_size((x), __pu_addr, (size), __pu_err);	\
 	__pu_err;							\
 })
@@ -249,22 +240,14 @@ do {								\
 	}							\
 } while (0)
 
-/*
- * This is a type: either unsigned long, if the argument fits into
- * that type, or otherwise unsigned long long.
- */
-#define __long_type(x) \
-	__typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
-
 #define __get_user_nocheck(x, ptr, size)			\
 ({								\
 	long __gu_err;						\
-	__long_type(*(ptr)) __gu_val;				\
-	__typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
+	unsigned long __gu_val;					\
+	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
 	__chk_user_ptr(ptr);					\
 	if (!is_kernel_addr((unsigned long)__gu_addr))		\
 		might_fault();					\
-	barrier_nospec();					\
 	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
 	(x) = (__typeof__(*(ptr)))__gu_val;			\
 	__gu_err;						\
@@ -273,13 +256,11 @@ do {								\
 #define __get_user_check(x, ptr, size)					\
 ({									\
 	long __gu_err = -EFAULT;					\
-	__long_type(*(ptr)) __gu_val = 0;				\
-	__typeof__(*(ptr)) __user *__gu_addr = (ptr);		\
+	unsigned long  __gu_val = 0;					\
+	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);		\
 	might_fault();							\
-	if (access_ok(__gu_addr, (size))) {		\
-		barrier_nospec();					\
+	if (access_ok(VERIFY_READ, __gu_addr, (size)))			\
 		__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
-	}								\
 	(x) = (__force __typeof__(*(ptr)))__gu_val;				\
 	__gu_err;							\
 })
@@ -287,10 +268,9 @@ do {								\
 #define __get_user_nosleep(x, ptr, size)			\
 ({								\
 	long __gu_err;						\
-	__long_type(*(ptr)) __gu_val;				\
-	__typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
+	unsigned long __gu_val;					\
+	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
 	__chk_user_ptr(ptr);					\
-	barrier_nospec();					\
 	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
 	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;						\
@@ -318,19 +298,15 @@ static inline unsigned long raw_copy_from_user(void *to,
 
 		switch (n) {
 		case 1:
-			barrier_nospec();
 			__get_user_size(*(u8 *)to, from, 1, ret);
 			break;
 		case 2:
-			barrier_nospec();
 			__get_user_size(*(u16 *)to, from, 2, ret);
 			break;
 		case 4:
-			barrier_nospec();
 			__get_user_size(*(u32 *)to, from, 4, ret);
 			break;
 		case 8:
-			barrier_nospec();
 			__get_user_size(*(u64 *)to, from, 8, ret);
 			break;
 		}
@@ -338,7 +314,6 @@ static inline unsigned long raw_copy_from_user(void *to,
 			return 0;
 	}
 
-	barrier_nospec();
 	return __copy_tofrom_user((__force void __user *)to, from, n);
 }
 
@@ -374,7 +349,7 @@ extern unsigned long __clear_user(void __user *addr, unsigned long size);
 static inline unsigned long clear_user(void __user *addr, unsigned long size)
 {
 	might_fault();
-	if (likely(access_ok(addr, size)))
+	if (likely(access_ok(VERIFY_WRITE, addr, size)))
 		return __clear_user(addr, size);
 	return size;
 }

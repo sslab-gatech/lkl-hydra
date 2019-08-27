@@ -62,7 +62,6 @@ static int get_exported_devices(char *host, int sockfd)
 	struct usbip_usb_interface uintf;
 	unsigned int i;
 	int rc, j;
-	int status;
 
 	rc = usbip_net_send_op_common(sockfd, OP_REQ_DEVLIST, 0);
 	if (rc < 0) {
@@ -70,10 +69,9 @@ static int get_exported_devices(char *host, int sockfd)
 		return -1;
 	}
 
-	rc = usbip_net_recv_op_common(sockfd, &code, &status);
+	rc = usbip_net_recv_op_common(sockfd, &code);
 	if (rc < 0) {
-		err("Exported Device List Request failed - %s\n",
-		    usbip_op_common_status_string(status));
+		dbg("usbip_net_recv_op_common failed");
 		return -1;
 	}
 

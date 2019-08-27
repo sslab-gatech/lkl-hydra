@@ -191,7 +191,7 @@ mspec_close(struct vm_area_struct *vma)
  *
  * Creates a mspec page and maps it to user space.
  */
-static vm_fault_t
+static int
 mspec_fault(struct vm_fault *vmf)
 {
 	unsigned long paddr, maddr;
@@ -223,7 +223,14 @@ mspec_fault(struct vm_fault *vmf)
 
 	pfn = paddr >> PAGE_SHIFT;
 
-	return vmf_insert_pfn(vmf->vma, vmf->address, pfn);
+	/*
+	 * vm_insert_pfn can fail with -EBUSY, but in that case it will
+	 * be because another thread has installed the pte first, so it
+	 * is no problem.
+	 */
+	vm_insert_pfn(vmf->vma, vmf->address, pfn);
+
+	return VM_FAULT_NOPAGE;
 }
 
 static const struct vm_operations_struct mspec_vm_ops = {

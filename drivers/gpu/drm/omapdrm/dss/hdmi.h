@@ -29,8 +29,6 @@
 #include "omapdss.h"
 #include "dss.h"
 
-struct dss_device;
-
 /* HDMI Wrapper */
 
 #define HDMI_WP_REVISION			0x0
@@ -313,21 +311,21 @@ void hdmi_wp_clear_irqenable(struct hdmi_wp_data *wp, u32 mask);
 int hdmi_wp_set_phy_pwr(struct hdmi_wp_data *wp, enum hdmi_phy_pwr val);
 int hdmi_wp_set_pll_pwr(struct hdmi_wp_data *wp, enum hdmi_pll_pwr val);
 void hdmi_wp_video_config_format(struct hdmi_wp_data *wp,
-		const struct hdmi_video_format *video_fmt);
+		struct hdmi_video_format *video_fmt);
 void hdmi_wp_video_config_interface(struct hdmi_wp_data *wp,
-		const struct videomode *vm);
+		struct videomode *vm);
 void hdmi_wp_video_config_timing(struct hdmi_wp_data *wp,
-		const struct videomode *vm);
+		struct videomode *vm);
 void hdmi_wp_init_vid_fmt_timings(struct hdmi_video_format *video_fmt,
-		struct videomode *vm, const struct hdmi_config *param);
+		struct videomode *vm, struct hdmi_config *param);
 int hdmi_wp_init(struct platform_device *pdev, struct hdmi_wp_data *wp,
 		 unsigned int version);
 phys_addr_t hdmi_wp_get_audio_dma_addr(struct hdmi_wp_data *wp);
 
 /* HDMI PLL funcs */
 void hdmi_pll_dump(struct hdmi_pll_data *pll, struct seq_file *s);
-int hdmi_pll_init(struct dss_device *dss, struct platform_device *pdev,
-		  struct hdmi_pll_data *pll, struct hdmi_wp_data *wp);
+int hdmi_pll_init(struct platform_device *pdev, struct hdmi_pll_data *pll,
+	struct hdmi_wp_data *wp);
 void hdmi_pll_uninit(struct hdmi_pll_data *hpll);
 
 /* HDMI PHY funcs */
@@ -359,9 +357,6 @@ static inline bool hdmi_mode_has_audio(struct hdmi_config *cfg)
 struct omap_hdmi {
 	struct mutex lock;
 	struct platform_device *pdev;
-	struct dss_device *dss;
-
-	struct dss_debugfs_entry *debugfs;
 
 	struct hdmi_wp_data	wp;
 	struct hdmi_pll_data	pll;
@@ -388,7 +383,5 @@ struct omap_hdmi {
 	bool audio_playing;
 	bool display_enabled;
 };
-
-#define dssdev_to_hdmi(dssdev) container_of(dssdev, struct omap_hdmi, output)
 
 #endif

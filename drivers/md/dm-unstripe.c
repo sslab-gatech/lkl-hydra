@@ -7,6 +7,12 @@
 #include "dm.h"
 
 #include <linux/module.h>
+#include <linux/init.h>
+#include <linux/blkdev.h>
+#include <linux/bio.h>
+#include <linux/slab.h>
+#include <linux/bitops.h>
+#include <linux/device-mapper.h>
 
 struct unstripe_c {
 	struct dm_dev *dev;
@@ -63,6 +69,12 @@ static int unstripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto err;
 	}
 
+	// FIXME: must support non power of 2 chunk_size, dm-stripe.c does
+	if (!is_power_of_2(uc->chunk_size)) {
+		ti->error = "Non power of 2 chunk_size is not supported yet";
+		goto err;
+	}
+
 	if (kstrtouint(argv[2], 10, &uc->unstripe)) {
 		ti->error = "Invalid stripe number";
 		goto err;
@@ -78,7 +90,7 @@ static int unstripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto err;
 	}
 
-	if (sscanf(argv[4], "%llu%c", &start, &dummy) != 1 || start != (sector_t)start) {
+	if (sscanf(argv[4], "%llu%c", &start, &dummy) != 1) {
 		ti->error = "Invalid striped device offset";
 		goto err;
 	}
@@ -86,7 +98,7 @@ static int unstripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	uc->unstripe_offset = uc->unstripe * uc->chunk_size;
 	uc->unstripe_width = (uc->stripes - 1) * uc->chunk_size;
-	uc->chunk_shift = is_power_of_2(uc->chunk_size) ? fls(uc->chunk_size) - 1 : 0;
+	uc->chunk_shift = fls(uc->chunk_size) - 1;
 
 	tmp_len = ti->len;
 	if (sector_div(tmp_len, uc->chunk_size)) {
@@ -117,18 +129,14 @@ static sector_t map_to_core(struct dm_target *ti, struct bio *bio)
 {
 	struct unstripe_c *uc = ti->private;
 	sector_t sector = bio->bi_iter.bi_sector;
-	sector_t tmp_sector = sector;
 
 	/* Shift us up to the right "row" on the stripe */
-	if (uc->chunk_shift)
-		tmp_sector >>= uc->chunk_shift;
-	else
-		sector_div(tmp_sector, uc->chunk_size);
-
-	sector += uc->unstripe_width * tmp_sector;
+	sector += uc->unstripe_width * (sector >> uc->chunk_shift);
 
 	/* Account for what stripe we're operating on */
-	return sector + uc->unstripe_offset;
+	sector += uc->unstripe_offset;
+
+	return sector;
 }
 
 static int unstripe_map(struct dm_target *ti, struct bio *bio)
@@ -177,7 +185,7 @@ static void unstripe_io_hints(struct dm_target *ti,
 
 static struct target_type unstripe_target = {
 	.name = "unstriped",
-	.version = {1, 1, 0},
+	.version = {1, 0, 0},
 	.module = THIS_MODULE,
 	.ctr = unstripe_ctr,
 	.dtr = unstripe_dtr,
@@ -189,7 +197,13 @@ static struct target_type unstripe_target = {
 
 static int __init dm_unstripe_init(void)
 {
-	return dm_register_target(&unstripe_target);
+	int r;
+
+	r = dm_register_target(&unstripe_target);
+	if (r < 0)
+		DMERR("target registration failed");
+
+	return r;
 }
 
 static void __exit dm_unstripe_exit(void)
@@ -201,6 +215,5 @@ module_init(dm_unstripe_init);
 module_exit(dm_unstripe_exit);
 
 MODULE_DESCRIPTION(DM_NAME " unstriped target");
-MODULE_ALIAS("dm-unstriped");
 MODULE_AUTHOR("Scott Bauer <scott.bauer@intel.com>");
 MODULE_LICENSE("GPL");

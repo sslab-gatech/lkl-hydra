@@ -28,7 +28,7 @@ static u32 starfire_get_time(void)
 static int starfire_read_time(struct device *dev, struct rtc_time *tm)
 {
 	rtc_time_to_tm(starfire_get_time(), tm);
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static const struct rtc_class_ops starfire_rtc_ops = {

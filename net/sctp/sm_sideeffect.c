@@ -52,7 +52,7 @@
 #include <net/sctp/sm.h>
 #include <net/sctp/stream_sched.h>
 
-static int sctp_cmd_interpreter(enum sctp_event_type event_type,
+static int sctp_cmd_interpreter(enum sctp_event event_type,
 				union sctp_subtype subtype,
 				enum sctp_state state,
 				struct sctp_endpoint *ep,
@@ -61,7 +61,7 @@ static int sctp_cmd_interpreter(enum sctp_event_type event_type,
 				enum sctp_disposition status,
 				struct sctp_cmd_seq *commands,
 				gfp_t gfp);
-static int sctp_side_effects(enum sctp_event_type event_type,
+static int sctp_side_effects(enum sctp_event event_type,
 			     union sctp_subtype subtype,
 			     enum sctp_state state,
 			     struct sctp_endpoint *ep,
@@ -623,7 +623,7 @@ static void sctp_cmd_init_failed(struct sctp_cmd_seq *commands,
 /* Worker routine to handle SCTP_CMD_ASSOC_FAILED.  */
 static void sctp_cmd_assoc_failed(struct sctp_cmd_seq *commands,
 				  struct sctp_association *asoc,
-				  enum sctp_event_type event_type,
+				  enum sctp_event event_type,
 				  union sctp_subtype subtype,
 				  struct sctp_chunk *chunk,
 				  unsigned int error)
@@ -1049,16 +1049,6 @@ static void sctp_cmd_assoc_change(struct sctp_cmd_seq *commands,
 		asoc->stream.si->enqueue_event(&asoc->ulpq, ev);
 }
 
-static void sctp_cmd_peer_no_auth(struct sctp_cmd_seq *commands,
-				  struct sctp_association *asoc)
-{
-	struct sctp_ulpevent *ev;
-
-	ev = sctp_ulpevent_make_authkey(asoc, 0, SCTP_AUTH_NO_AUTH, GFP_ATOMIC);
-	if (ev)
-		asoc->stream.si->enqueue_event(&asoc->ulpq, ev);
-}
-
 /* Helper function to generate an adaptation indication event */
 static void sctp_cmd_adaptation_ind(struct sctp_cmd_seq *commands,
 				    struct sctp_association *asoc)
@@ -1162,7 +1152,7 @@ static void sctp_cmd_send_asconf(struct sctp_association *asoc)
  * If you want to understand all of lksctp, this is a
  * good place to start.
  */
-int sctp_do_sm(struct net *net, enum sctp_event_type event_type,
+int sctp_do_sm(struct net *net, enum sctp_event event_type,
 	       union sctp_subtype subtype, enum sctp_state state,
 	       struct sctp_endpoint *ep, struct sctp_association *asoc,
 	       void *event_arg, gfp_t gfp)
@@ -1199,7 +1189,7 @@ int sctp_do_sm(struct net *net, enum sctp_event_type event_type,
 /*****************************************************************
  * This the master state function side effect processing function.
  *****************************************************************/
-static int sctp_side_effects(enum sctp_event_type event_type,
+static int sctp_side_effects(enum sctp_event event_type,
 			     union sctp_subtype subtype,
 			     enum sctp_state state,
 			     struct sctp_endpoint *ep,
@@ -1285,7 +1275,7 @@ bail:
  ********************************************************************/
 
 /* This is the side-effect interpreter.  */
-static int sctp_cmd_interpreter(enum sctp_event_type event_type,
+static int sctp_cmd_interpreter(enum sctp_event event_type,
 				union sctp_subtype subtype,
 				enum sctp_state state,
 				struct sctp_endpoint *ep,
@@ -1765,9 +1755,6 @@ static int sctp_cmd_interpreter(enum sctp_event_type event_type,
 		case SCTP_CMD_ADAPTATION_IND:
 			sctp_cmd_adaptation_ind(commands, asoc);
 			break;
-		case SCTP_CMD_PEER_NO_AUTH:
-			sctp_cmd_peer_no_auth(commands, asoc);
-			break;
 
 		case SCTP_CMD_ASSOC_SHKEY:
 			error = sctp_auth_asoc_init_active_key(asoc,
@@ -1827,3 +1814,4 @@ nomem:
 	error = -ENOMEM;
 	goto out;
 }
+

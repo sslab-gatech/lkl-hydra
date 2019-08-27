@@ -99,7 +99,6 @@ pof_handle_data(hysdn_card *card, int datlen)
 
 	case TAG_CBOOTDTA:
 		DecryptBuf(boot, datlen);	/* we need to encrypt the buffer */
-		/* fall through */
 	case TAG_BOOTDTA:
 		if (card->debug_flags & LOG_POF_RECORD)
 			hysdn_addlog(card, "POF got %s len=%d offs=0x%lx",
@@ -138,7 +137,6 @@ pof_handle_data(hysdn_card *card, int datlen)
 
 	case TAG_CABSDATA:
 		DecryptBuf(boot, datlen);	/* we need to encrypt the buffer */
-		/* fall through */
 	case TAG_ABSDATA:
 		if (card->debug_flags & LOG_POF_RECORD)
 			hysdn_addlog(card, "POF got %s len=%d offs=0x%lx",

@@ -42,7 +42,6 @@ enum {
 struct inet6_ifaddr {
 	struct in6_addr		addr;
 	__u32			prefix_len;
-	__u32			rt_priority;
 
 	/* In seconds, relative to tstamp. Expiry is at tstamp + HZ * lft. */
 	__u32			valid_lft;
@@ -65,7 +64,7 @@ struct inet6_ifaddr {
 	struct delayed_work	dad_work;
 
 	struct inet6_dev	*idev;
-	struct fib6_info	*rt;
+	struct rt6_info		*rt;
 
 	struct hlist_node	addr_lst;
 	struct list_head	if_list;
@@ -144,14 +143,13 @@ struct ipv6_ac_socklist {
 
 struct ifacaddr6 {
 	struct in6_addr		aca_addr;
-	struct fib6_info	*aca_rt;
+	struct inet6_dev	*aca_idev;
+	struct rt6_info		*aca_rt;
 	struct ifacaddr6	*aca_next;
-	struct hlist_node	aca_addr_lst;
 	int			aca_users;
 	refcount_t		aca_refcnt;
 	unsigned long		aca_cstamp;
 	unsigned long		aca_tstamp;
-	struct rcu_head		rcu;
 };
 
 #define	IFA_HOST	IPV6_ADDR_LOOPBACK

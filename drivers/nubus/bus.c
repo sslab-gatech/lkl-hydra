@@ -5,7 +5,6 @@
 // Copyright (C) 2017 Finn Thain
 
 #include <linux/device.h>
-#include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <linux/nubus.h>
 #include <linux/seq_file.h>
@@ -64,15 +63,20 @@ static struct device nubus_parent = {
 	.init_name	= "nubus",
 };
 
-static int __init nubus_bus_register(void)
+int __init nubus_bus_register(void)
 {
-	return bus_register(&nubus_bus_type);
-}
-postcore_initcall(nubus_bus_register);
+	int err;
 
-int __init nubus_parent_device_register(void)
-{
-	return device_register(&nubus_parent);
+	err = device_register(&nubus_parent);
+	if (err)
+		return err;
+
+	err = bus_register(&nubus_bus_type);
+	if (!err)
+		return 0;
+
+	device_unregister(&nubus_parent);
+	return err;
 }
 
 static void nubus_device_release(struct device *dev)
@@ -94,8 +98,6 @@ int nubus_device_register(struct nubus_board *board)
 	board->dev.release = nubus_device_release;
 	board->dev.bus = &nubus_bus_type;
 	dev_set_name(&board->dev, "slot.%X", board->slot);
-	board->dev.dma_mask = &board->dev.coherent_dma_mask;
-	dma_set_mask(&board->dev, DMA_BIT_MASK(32));
 	return device_register(&board->dev);
 }
 

@@ -73,9 +73,6 @@
  * Drivers should detect this situation and return back the gem object
  * from the dma-buf private.  Prime will do this automatically for drivers that
  * use the drm_gem_prime_{import,export} helpers.
- *
- * GEM struct &dma_buf_ops symbols are now exported. They can be resued by
- * drivers which implement GEM interface.
  */
 
 struct drm_prime_member {
@@ -183,22 +180,13 @@ static int drm_prime_lookup_buf_handle(struct drm_prime_file_private *prime_fpri
 	return -ENOENT;
 }
 
-/**
- * drm_gem_map_attach - dma_buf attach implementation for GEM
- * @dma_buf: buffer to attach device to
- * @attach: buffer attachment data
- *
- * Allocates &drm_prime_attachment and calls &drm_driver.gem_prime_pin for
- * device specific attachment. This can be used as the &dma_buf_ops.attach
- * callback.
- *
- * Returns 0 on success, negative error code on failure.
- */
-int drm_gem_map_attach(struct dma_buf *dma_buf,
-		       struct dma_buf_attachment *attach)
+static int drm_gem_map_attach(struct dma_buf *dma_buf,
+			      struct device *target_dev,
+			      struct dma_buf_attachment *attach)
 {
 	struct drm_prime_attachment *prime_attach;
 	struct drm_gem_object *obj = dma_buf->priv;
+	struct drm_device *dev = obj->dev;
 
 	prime_attach = kzalloc(sizeof(*prime_attach), GFP_KERNEL);
 	if (!prime_attach)
@@ -207,44 +195,39 @@ int drm_gem_map_attach(struct dma_buf *dma_buf,
 	prime_attach->dir = DMA_NONE;
 	attach->priv = prime_attach;
 
-	return drm_gem_pin(obj);
-}
-EXPORT_SYMBOL(drm_gem_map_attach);
+	if (!dev->driver->gem_prime_pin)
+		return 0;
 
-/**
- * drm_gem_map_detach - dma_buf detach implementation for GEM
- * @dma_buf: buffer to detach from
- * @attach: attachment to be detached
- *
- * Cleans up &dma_buf_attachment. This can be used as the &dma_buf_ops.detach
- * callback.
- */
-void drm_gem_map_detach(struct dma_buf *dma_buf,
-			struct dma_buf_attachment *attach)
+	return dev->driver->gem_prime_pin(obj);
+}
+
+static void drm_gem_map_detach(struct dma_buf *dma_buf,
+			       struct dma_buf_attachment *attach)
 {
 	struct drm_prime_attachment *prime_attach = attach->priv;
 	struct drm_gem_object *obj = dma_buf->priv;
+	struct drm_device *dev = obj->dev;
+	struct sg_table *sgt;
 
-	if (prime_attach) {
-		struct sg_table *sgt = prime_attach->sgt;
+	if (dev->driver->gem_prime_unpin)
+		dev->driver->gem_prime_unpin(obj);
 
-		if (sgt) {
-			if (prime_attach->dir != DMA_NONE)
-				dma_unmap_sg_attrs(attach->dev, sgt->sgl,
-						   sgt->nents,
-						   prime_attach->dir,
-						   DMA_ATTR_SKIP_CPU_SYNC);
-			sg_free_table(sgt);
-		}
+	if (!prime_attach)
+		return;
 
-		kfree(sgt);
-		kfree(prime_attach);
-		attach->priv = NULL;
+	sgt = prime_attach->sgt;
+	if (sgt) {
+		if (prime_attach->dir != DMA_NONE)
+			dma_unmap_sg_attrs(attach->dev, sgt->sgl, sgt->nents,
+					   prime_attach->dir,
+					   DMA_ATTR_SKIP_CPU_SYNC);
+		sg_free_table(sgt);
 	}
 
-	drm_gem_unpin(obj);
+	kfree(sgt);
+	kfree(prime_attach);
+	attach->priv = NULL;
 }
-EXPORT_SYMBOL(drm_gem_map_detach);
 
 void drm_prime_remove_buf_handle_locked(struct drm_prime_file_private *prime_fpriv,
 					struct dma_buf *dma_buf)
@@ -271,20 +254,8 @@ void drm_prime_remove_buf_handle_locked(struct drm_prime_file_private *prime_fpr
 	}
 }
 
-/**
- * drm_gem_map_dma_buf - map_dma_buf implementation for GEM
- * @attach: attachment whose scatterlist is to be returned
- * @dir: direction of DMA transfer
- *
- * Calls &drm_driver.gem_prime_get_sg_table and then maps the scatterlist. This
- * can be used as the &dma_buf_ops.map_dma_buf callback.
- *
- * Returns sg_table containing the scatterlist to be returned; returns ERR_PTR
- * on error. May return -EINTR if it is interrupted by a signal.
- */
-
-struct sg_table *drm_gem_map_dma_buf(struct dma_buf_attachment *attach,
-				     enum dma_data_direction dir)
+static struct sg_table *drm_gem_map_dma_buf(struct dma_buf_attachment *attach,
+					    enum dma_data_direction dir)
 {
 	struct drm_prime_attachment *prime_attach = attach->priv;
 	struct drm_gem_object *obj = attach->dmabuf->priv;
@@ -304,10 +275,7 @@ struct sg_table *drm_gem_map_dma_buf(struct dma_buf_attachment *attach,
 	if (WARN_ON(prime_attach->dir != DMA_NONE))
 		return ERR_PTR(-EBUSY);
 
-	if (obj->funcs)
-		sgt = obj->funcs->get_sg_table(obj);
-	else
-		sgt = obj->dev->driver->gem_prime_get_sg_table(obj);
+	sgt = obj->dev->driver->gem_prime_get_sg_table(obj);
 
 	if (!IS_ERR(sgt)) {
 		if (!dma_map_sg_attrs(attach->dev, sgt->sgl, sgt->nents, dir,
@@ -323,24 +291,13 @@ struct sg_table *drm_gem_map_dma_buf(struct dma_buf_attachment *attach,
 
 	return sgt;
 }
-EXPORT_SYMBOL(drm_gem_map_dma_buf);
 
-/**
- * drm_gem_unmap_dma_buf - unmap_dma_buf implementation for GEM
- * @attach: attachment to unmap buffer from
- * @sgt: scatterlist info of the buffer to unmap
- * @dir: direction of DMA transfer
- *
- * Not implemented. The unmap is done at drm_gem_map_detach().  This can be
- * used as the &dma_buf_ops.unmap_dma_buf callback.
- */
-void drm_gem_unmap_dma_buf(struct dma_buf_attachment *attach,
-			   struct sg_table *sgt,
-			   enum dma_data_direction dir)
+static void drm_gem_unmap_dma_buf(struct dma_buf_attachment *attach,
+				  struct sg_table *sgt,
+				  enum dma_data_direction dir)
 {
 	/* nothing to be done here */
 }
-EXPORT_SYMBOL(drm_gem_unmap_dma_buf);
 
 /**
  * drm_gem_dmabuf_export - dma_buf export implementation for GEM
@@ -391,55 +348,47 @@ void drm_gem_dmabuf_release(struct dma_buf *dma_buf)
 }
 EXPORT_SYMBOL(drm_gem_dmabuf_release);
 
-/**
- * drm_gem_dmabuf_vmap - dma_buf vmap implementation for GEM
- * @dma_buf: buffer to be mapped
- *
- * Sets up a kernel virtual mapping. This can be used as the &dma_buf_ops.vmap
- * callback.
- *
- * Returns the kernel virtual address.
- */
-void *drm_gem_dmabuf_vmap(struct dma_buf *dma_buf)
+static void *drm_gem_dmabuf_vmap(struct dma_buf *dma_buf)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
-	void *vaddr;
+	struct drm_device *dev = obj->dev;
 
-	vaddr = drm_gem_vmap(obj);
-	if (IS_ERR(vaddr))
-		vaddr = NULL;
-
-	return vaddr;
+	return dev->driver->gem_prime_vmap(obj);
 }
-EXPORT_SYMBOL(drm_gem_dmabuf_vmap);
 
-/**
- * drm_gem_dmabuf_vunmap - dma_buf vunmap implementation for GEM
- * @dma_buf: buffer to be unmapped
- * @vaddr: the virtual address of the buffer
- *
- * Releases a kernel virtual mapping. This can be used as the
- * &dma_buf_ops.vunmap callback.
- */
-void drm_gem_dmabuf_vunmap(struct dma_buf *dma_buf, void *vaddr)
+static void drm_gem_dmabuf_vunmap(struct dma_buf *dma_buf, void *vaddr)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
+	struct drm_device *dev = obj->dev;
 
-	drm_gem_vunmap(obj, vaddr);
+	dev->driver->gem_prime_vunmap(obj, vaddr);
 }
-EXPORT_SYMBOL(drm_gem_dmabuf_vunmap);
 
-/**
- * drm_gem_dmabuf_mmap - dma_buf mmap implementation for GEM
- * @dma_buf: buffer to be mapped
- * @vma: virtual address range
- *
- * Provides memory mapping for the buffer. This can be used as the
- * &dma_buf_ops.mmap callback.
- *
- * Returns 0 on success or a negative error code on failure.
- */
-int drm_gem_dmabuf_mmap(struct dma_buf *dma_buf, struct vm_area_struct *vma)
+static void *drm_gem_dmabuf_kmap_atomic(struct dma_buf *dma_buf,
+					unsigned long page_num)
+{
+	return NULL;
+}
+
+static void drm_gem_dmabuf_kunmap_atomic(struct dma_buf *dma_buf,
+					 unsigned long page_num, void *addr)
+{
+
+}
+static void *drm_gem_dmabuf_kmap(struct dma_buf *dma_buf,
+				 unsigned long page_num)
+{
+	return NULL;
+}
+
+static void drm_gem_dmabuf_kunmap(struct dma_buf *dma_buf,
+				  unsigned long page_num, void *addr)
+{
+
+}
+
+static int drm_gem_dmabuf_mmap(struct dma_buf *dma_buf,
+			       struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
 	struct drm_device *dev = obj->dev;
@@ -449,7 +398,6 @@ int drm_gem_dmabuf_mmap(struct dma_buf *dma_buf, struct vm_area_struct *vma)
 
 	return dev->driver->gem_prime_mmap(obj, vma);
 }
-EXPORT_SYMBOL(drm_gem_dmabuf_mmap);
 
 static const struct dma_buf_ops drm_gem_prime_dmabuf_ops =  {
 	.attach = drm_gem_map_attach,
@@ -457,6 +405,10 @@ static const struct dma_buf_ops drm_gem_prime_dmabuf_ops =  {
 	.map_dma_buf = drm_gem_map_dma_buf,
 	.unmap_dma_buf = drm_gem_unmap_dma_buf,
 	.release = drm_gem_dmabuf_release,
+	.map = drm_gem_dmabuf_kmap,
+	.map_atomic = drm_gem_dmabuf_kmap_atomic,
+	.unmap = drm_gem_dmabuf_kunmap,
+	.unmap_atomic = drm_gem_dmabuf_kunmap_atomic,
 	.mmap = drm_gem_dmabuf_mmap,
 	.vmap = drm_gem_dmabuf_vmap,
 	.vunmap = drm_gem_dmabuf_vunmap,
@@ -525,12 +477,7 @@ static struct dma_buf *export_and_register_object(struct drm_device *dev,
 		return dmabuf;
 	}
 
-	if (obj->funcs && obj->funcs->export)
-		dmabuf = obj->funcs->export(obj, flags);
-	else if (dev->driver->gem_prime_export)
-		dmabuf = dev->driver->gem_prime_export(dev, obj, flags);
-	else
-		dmabuf = drm_gem_prime_export(dev, obj, flags);
+	dmabuf = dev->driver->gem_prime_export(dev, obj, flags);
 	if (IS_ERR(dmabuf)) {
 		/* normally the created dma-buf takes ownership of the ref,
 		 * but if that fails then drop the ref
@@ -650,52 +597,6 @@ out_unlock:
 EXPORT_SYMBOL(drm_gem_prime_handle_to_fd);
 
 /**
- * drm_gem_prime_mmap - PRIME mmap function for GEM drivers
- * @obj: GEM object
- * @vma: Virtual address range
- *
- * This function sets up a userspace mapping for PRIME exported buffers using
- * the same codepath that is used for regular GEM buffer mapping on the DRM fd.
- * The fake GEM offset is added to vma->vm_pgoff and &drm_driver->fops->mmap is
- * called to set up the mapping.
- *
- * Drivers can use this as their &drm_driver.gem_prime_mmap callback.
- */
-int drm_gem_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
-{
-	struct drm_file *priv;
-	struct file *fil;
-	int ret;
-
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	fil = kzalloc(sizeof(*fil), GFP_KERNEL);
-	if (!priv || !fil) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/* Used by drm_gem_mmap() to lookup the GEM object */
-	priv->minor = obj->dev->primary;
-	fil->private_data = priv;
-
-	ret = drm_vma_node_allow(&obj->vma_node, priv);
-	if (ret)
-		goto out;
-
-	vma->vm_pgoff += drm_vma_node_start(&obj->vma_node);
-
-	ret = obj->dev->driver->fops->mmap(fil, vma);
-
-	drm_vma_node_revoke(&obj->vma_node, priv);
-out:
-	kfree(priv);
-	kfree(fil);
-
-	return ret;
-}
-EXPORT_SYMBOL(drm_gem_prime_mmap);
-
-/**
  * drm_gem_prime_import_dev - core implementation of the import callback
  * @dev: drm_device to import into
  * @dma_buf: dma-buf object to import
@@ -809,10 +710,7 @@ int drm_gem_prime_fd_to_handle(struct drm_device *dev,
 
 	/* never seen this one, need to import */
 	mutex_lock(&dev->object_name_lock);
-	if (dev->driver->gem_prime_import)
-		obj = dev->driver->gem_prime_import(dev, dma_buf);
-	else
-		obj = drm_gem_prime_import(dev, dma_buf);
+	obj = dev->driver->gem_prime_import(dev, dma_buf);
 	if (IS_ERR(obj)) {
 		ret = PTR_ERR(obj);
 		goto out_unlock;
@@ -864,7 +762,7 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 	struct drm_prime_handle *args = data;
 
 	if (!drm_core_check_feature(dev, DRIVER_PRIME))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (!dev->driver->prime_handle_to_fd)
 		return -ENOSYS;
@@ -883,7 +781,7 @@ int drm_prime_fd_to_handle_ioctl(struct drm_device *dev, void *data,
 	struct drm_prime_handle *args = data;
 
 	if (!drm_core_check_feature(dev, DRIVER_PRIME))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (!dev->driver->prime_fd_to_handle)
 		return -ENOSYS;
@@ -927,40 +825,40 @@ EXPORT_SYMBOL(drm_prime_pages_to_sg);
 /**
  * drm_prime_sg_to_page_addr_arrays - convert an sg table into a page array
  * @sgt: scatter-gather table to convert
- * @pages: optional array of page pointers to store the page array in
+ * @pages: array of page pointers to store the page array in
  * @addrs: optional array to store the dma bus address of each page
- * @max_entries: size of both the passed-in arrays
+ * @max_pages: size of both the passed-in arrays
  *
  * Exports an sg table into an array of pages and addresses. This is currently
  * required by the TTM driver in order to do correct fault handling.
  */
 int drm_prime_sg_to_page_addr_arrays(struct sg_table *sgt, struct page **pages,
-				     dma_addr_t *addrs, int max_entries)
+				     dma_addr_t *addrs, int max_pages)
 {
 	unsigned count;
 	struct scatterlist *sg;
 	struct page *page;
-	u32 len, index;
+	u32 len;
+	int pg_index;
 	dma_addr_t addr;
 
-	index = 0;
+	pg_index = 0;
 	for_each_sg(sgt->sgl, sg, sgt->nents, count) {
 		len = sg->length;
 		page = sg_page(sg);
 		addr = sg_dma_address(sg);
 
 		while (len > 0) {
-			if (WARN_ON(index >= max_entries))
+			if (WARN_ON(pg_index >= max_pages))
 				return -1;
-			if (pages)
-				pages[index] = page;
+			pages[pg_index] = page;
 			if (addrs)
-				addrs[index] = addr;
+				addrs[pg_index] = addr;
 
 			page++;
 			addr += PAGE_SIZE;
 			len -= PAGE_SIZE;
-			index++;
+			pg_index++;
 		}
 	}
 	return 0;
